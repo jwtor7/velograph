@@ -1,0 +1,126 @@
+# =============================================================================
+# Velograph .gitignore — DEFAULT-DENY FOR DATA (PRD §12.2, CLAUDE.md)
+#
+# This is a PUBLIC repository. Nothing data-shaped is committable except the
+# explicit synthetic-fixture allowlist below. Never bypass with `git add -f`;
+# if a legitimate file is blocked, change these rules in a reviewed PR.
+# This file is a guardrail, not the defense — the pre-commit privacy scanner
+# and CI secret/data-leak scans are the blocking checks.
+# =============================================================================
+
+# --- Health data & export formats (denied everywhere) ------------------------
+*.csv
+*.gpx
+# Health Auto Export artifacts, common naming variants
+HealthAutoExport*
+Health Auto Export*
+Health-Auto-Export*
+healthautoexport*
+
+# --- Synthetic fixture allowlist (the ONLY re-include) -----------------------
+# Invented values, invented dates, invented routes only — see CLAUDE.md.
+# ZIP fixtures are never committed: build them at test runtime from these files.
+!fixtures/synthetic/**/*.csv
+!fixtures/synthetic/**/*.gpx
+
+# --- Archives (raw exports and backups travel as these) ----------------------
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.bz2
+*.xz
+*.7z
+*.rar
+
+# --- SQLite in every form ----------------------------------------------------
+*.sqlite*
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.dump
+
+# --- Application data, backups, generated output -----------------------------
+# VELO_DATA_DIR must live OUTSIDE the checkout; these are insurance if it
+# doesn't. Root-anchored so they can never shadow fixture or source subdirs.
+/data/
+/.data/
+/velograph-data/
+/.velograph/
+/backups/
+/backup/
+/reports/
+/exports/
+/out/
+*.backup
+*.bak
+
+# --- Logs & diagnostics (may embed sample values, env vars, absolute paths) --
+*.log
+logs/
+log/
+# Node diagnostic reports (report.<date>.<time>.<pid>.<tid>.json) dump full env
+report.*.json
+*.har
+*.heapsnapshot
+*.cpuprofile
+*.heapprofile
+
+# --- Credentials & local AI-provider state -----------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.keystore
+.netrc
+# .npmrc can carry registry auth tokens; commit a config-only one via reviewed PR
+.npmrc
+# Codex CLI auth cache filename — must never appear in the repo
+auth.json
+.codex/
+.ollama/
+# Claude Code local (unshared) state
+.claude/settings.local.json
+CLAUDE.local.md
+
+# --- Local container overrides (can embed absolute host paths) ---------------
+docker-compose.override.yml
+docker-compose.override.yaml
+compose.override.yml
+compose.override.yaml
+
+# --- Dependencies & build output ---------------------------------------------
+# Lockfiles (pnpm-lock.yaml) are deliberately committed — never ignore them.
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.vite/
+.turbo/
+.cache/
+.eslintcache
+playwright-report/
+test-results/
+blob-report/
+
+# --- OS & editor noise (editor config can embed absolute local paths) --------
+.DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+tmp/
+.tmp/
+*.tmp
+scratch/
