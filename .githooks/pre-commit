@@ -1,0 +1,6 @@
+#!/bin/sh
+# Velograph pre-commit privacy scanner (PRD §12.2).
+# Installed via `pnpm install` (prepare script sets core.hooksPath).
+# Never bypass with --no-verify; if a legitimate file is blocked, change the
+# rules in a reviewed PR.
+node "$(git rev-parse --show-toplevel)/scripts/privacy-scan.mjs" --staged

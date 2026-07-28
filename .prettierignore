@@ -1,0 +1,8 @@
+pnpm-lock.yaml
+Velograph-PRD.md
+CLAUDE.md
+AGENTS.md
+fixtures/synthetic/
+dist/
+coverage/
+*.png
