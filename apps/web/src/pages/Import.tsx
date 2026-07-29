@@ -125,13 +125,19 @@ export function ImportPage() {
           hidden
           onChange={(e) => e.target.files && addFiles(e.target.files)}
         />
+        {/*
+          No `accept` here, deliberately. A directory matches none of the
+          allowed extensions, so combining `accept` with `webkitdirectory`
+          makes the OS picker grey folders out and the control unusable.
+          `addFiles` already filters the selection by extension, so the
+          folder can contain anything.
+        */}
         <input
           ref={(node) => {
             folderInputRef.current = node;
             node?.setAttribute('webkitdirectory', '');
           }}
           type="file"
-          accept={ACCEPT}
           multiple
           hidden
           onChange={(e) => e.target.files && addFiles(e.target.files)}
