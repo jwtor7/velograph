@@ -1,0 +1,22 @@
+{
+  "name": "@velograph/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Velograph local import CLI",
+  "bin": {
+    "velograph-import": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@velograph/db": "workspace:*",
+    "@velograph/importers": "workspace:*",
+    "@velograph/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@velograph/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Canonical types, units, and helpers shared across Velograph packages",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.2"
+  }
+}
