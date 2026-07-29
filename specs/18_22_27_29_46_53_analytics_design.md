@@ -9,11 +9,14 @@
   system shall not create an interval across the gap; usable geometry and elevation shall remain.
 - While metric samples are weighted or split across windows, when an interval meets a boundary,
   the system shall clip and interpolate it so coverage, zones, distance, and split times cannot
-  exceed their window or be fabricated.
+  exceed their window or be fabricated. The final metric sample shall use the statistical median
+  positive gap, using the arithmetic mean of the two middle gaps when the count is even.
 - While analytics snapshots share the same provenance key, when a replay differs, the system
   shall preserve the original immutable result and return a value-free conflict.
 - While analytics settings are submitted or loaded, when keys, types, ranges, or zone ordering
-  are invalid, the system shall reject the complete update without persistence.
+  are invalid, the system shall reject the complete update without persistence. Accepted numeric
+  ranges are HR bounds 40–230 bpm, moving threshold 0–30 m/s, efficiency coverage `(0, 1]`, and
+  elevation hysteresis 0–100 metres.
 - While efficiency drift is computed, when HR, distance, or route moving-time coverage is
   insufficient or the baseline is unstable, the system shall return `null` with a stable reason.
 - While a trend value is unavailable, when charts render, the system shall preserve the gap

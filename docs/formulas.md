@@ -16,8 +16,10 @@ stored as a separate snapshot.
 - **Window convention** — analytics windows are half-open `[from, to)`.
 - **Forward metric weighting** — heart-rate and cadence samples represent their value from the
   sample timestamp forward to the next sample, capped at 90 seconds. The final sample uses the
-  stream's median positive interval (60 seconds for a singleton). Every interval is intersected
-  with the active workout, half, or split window. A sample exactly at `to` has zero weight.
+  stream's statistical median positive interval: for an even number of gaps, this is the
+  arithmetic mean of the two middle values; a singleton stream uses 60 seconds. Every interval is
+  intersected with the active workout, half, or split window. A sample exactly at `to` has zero
+  weight.
 - **Coverage** — the union of covered time divided by the exact window length, clamped to
   `[0, 1]`. Only positive-weight samples affect averages or extrema.
 - **Duration** — `end − start` of the workout span in seconds.
@@ -41,8 +43,10 @@ stored as a separate snapshot.
   every route-file or segment boundary, so a recording gap cannot become elevation gain or loss.
 - **Heart-rate zones** — user-configured ascending bpm boundaries are authoritative and never
   inferred from age. Weights are clipped to the workout window. Integer zone seconds use a
-  deterministic largest-remainder allocation whose total cannot exceed covered or workout time;
-  shares use exact weighted time divided by workout duration.
+  deterministic largest-remainder allocation. The covered milliseconds are rounded to the nearest
+  whole second (so presentation can round up by at most 0.5 seconds), then capped at the number of
+  complete seconds in the workout window. Shares use exact weighted time divided by workout
+  duration.
 - **Efficiency** — average speed (km/h) divided by interval-weighted average HR (bpm), reported
   only when HR coverage meets the configured minimum. The default minimum is 0.7, provisional
   pending PRD §20.5. This is descriptive, not clinical.
@@ -61,3 +65,17 @@ stored as a separate snapshot.
   five-minute windows; HR uses the same bounded forward weighting.
 - **Unavailability** — any metric that cannot be computed carries a stable reason code in
   `unavailable` (RIDE-006); no missing value is silently guessed.
+
+## Validated settings
+
+The API merges a settings patch with the current settings, then validates the complete object
+atomically. Unknown keys, wrong types, non-finite numbers, and values outside these ranges are
+rejected without changing stored settings:
+
+| Setting                    | Accepted value                                                              |
+| -------------------------- | --------------------------------------------------------------------------- |
+| `hrZoneBounds`             | `null`, or exactly five strictly ascending integers from 40 through 230 bpm |
+| `movingSpeedThresholdMs`   | finite number from 0 through 30 m/s                                         |
+| `minCoverageForEfficiency` | finite number greater than 0 and at most 1                                  |
+| `elevationHysteresisM`     | finite number from 0 through 100 metres                                     |
+| `timeZone`                 | valid IANA timezone identifier                                              |

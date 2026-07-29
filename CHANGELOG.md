@@ -69,13 +69,14 @@ is pre-1.0, and for the release procedure.
   screen now treats five blank zones as an explicit disable action and announces partial or invalid
   drafts instead of silently converting them to `null` (#22).
 - **Analytics v2 clips every metric to its real window and uses moving time for drift.** Heart-rate
-  coverage and zone seconds cannot run past the workout or half boundary; distance increments are
-  interval-aligned across time windows; kilometre crossings are interpolated even when one row
-  crosses several thresholds; elevation never jumps across route boundaries; and decoupling now
-  requires independent HR, distance, and route coverage, using exact unrounded coverage for
-  threshold decisions, with stable reasons for an unstable result. The immutable `analytics-v2`
-  snapshot is computed beside any prior `analytics-v1` evidence rather than overwriting it (#18,
-  #19, #29, analytics half of #53).
+  coverage and zone seconds cannot run past the workout or half boundary, and an even number of
+  positive sample gaps now gives the final sample the true statistical median instead of the upper
+  middle gap. Distance increments are interval-aligned across time windows; kilometre
+  crossings are interpolated even when one row crosses several thresholds; elevation never jumps
+  across route boundaries; and decoupling now requires independent HR, distance, and route
+  coverage, using exact unrounded coverage for threshold decisions, with stable reasons for an
+  unstable result. The immutable `analytics-v2` snapshot is computed beside any prior
+  `analytics-v1` evidence rather than overwriting it (#18, #19, #29, analytics half of #53).
 - **Trend charts preserve unavailable metrics instead of inventing zero observations.** Missing
   heart rate, speed, and efficiency values render as explicit dashed `n/a` markers with a
   privacy-safe coverage note, while a genuinely recorded zero remains a distinct solid bar (#27).

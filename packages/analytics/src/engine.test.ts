@@ -310,6 +310,34 @@ describe('deterministic analytics engine', () => {
     expect(a.zones![5]!.seconds).toBe(0);
   });
 
+  it('uses the arithmetic median for an even number of positive sample gaps', () => {
+    const a = computeRideAnalytics(
+      mkInput({
+        workout: {
+          id: 7,
+          type: 'outdoor_cycling',
+          startUtc: T0,
+          endUtc: T0 + 200_000,
+        },
+        metrics: {
+          heart_rate: [
+            { t: T0, value: 100 },
+            { t: T0 + 10_000, value: 100 },
+            { t: T0 + 100_000, value: 200 },
+          ],
+        },
+        route: [],
+      }),
+      settings,
+    );
+
+    // Positive gaps are 10 s and 90 s, so the final sample receives their
+    // statistical median of 50 s rather than either middle observation.
+    expect(a.heartRate.avg).toBe(133.333);
+    expect(a.heartRate.coverage).toBe(0.75);
+    expect(a.zones!.reduce((sum, zone) => sum + zone.seconds, 0)).toBe(150);
+  });
+
   it('is byte-deterministic across runs', () => {
     const a = JSON.stringify(computeRideAnalytics(mkInput(), settings));
     const b = JSON.stringify(computeRideAnalytics(mkInput(), settings));

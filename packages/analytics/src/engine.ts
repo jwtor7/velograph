@@ -179,7 +179,13 @@ function intervalWeights(samples: MetricSample[], from: number, to: number): num
     if (gap > 0) gaps.push(Math.min(gap, COVERAGE_GAP_CAP_MS));
   }
   const sortedGaps = [...gaps].sort((a, b) => a - b);
-  const median = sortedGaps[Math.floor(sortedGaps.length / 2)] ?? SINGLE_SAMPLE_COVERAGE_MS;
+  const middle = Math.floor(sortedGaps.length / 2);
+  const median =
+    sortedGaps.length === 0
+      ? SINGLE_SAMPLE_COVERAGE_MS
+      : sortedGaps.length % 2 === 1
+        ? sortedGaps[middle]!
+        : (sortedGaps[middle - 1]! + sortedGaps[middle]!) / 2;
 
   return samples.map((sample, index) => {
     const next = samples[index + 1];
