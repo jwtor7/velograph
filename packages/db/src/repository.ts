@@ -4,6 +4,7 @@ import type {
   MetricKind,
   MetricSample,
   QuarantineCode,
+  RoutePoint,
   RouteSegment,
   WorkoutType,
 } from '@velograph/shared';
@@ -261,6 +262,30 @@ export class Repository {
   }): number {
     const first = row.samples[0]!;
     const last = row.samples[row.samples.length - 1]!;
+    const seriesId = this.createMetricSeries({
+      workoutId: row.workoutId,
+      sourceFileId: row.sourceFileId,
+      metric: row.metric,
+      unit: row.unit,
+      source: row.source,
+      startUtc: first.t,
+      endUtc: last.t,
+      sampleCount: row.samples.length,
+    });
+    this.insertMetricSampleChunk(seriesId, row.samples);
+    return seriesId;
+  }
+
+  createMetricSeries(row: {
+    workoutId: number;
+    sourceFileId: number;
+    metric: MetricKind;
+    unit: string;
+    source: string | null;
+    startUtc: number;
+    endUtc: number;
+    sampleCount: number;
+  }): number {
     const r = this.db
       .prepare(
         `INSERT INTO metric_series
@@ -273,19 +298,21 @@ export class Repository {
         row.metric,
         row.unit,
         row.source,
-        first.t,
-        last.t,
-        row.samples.length,
+        row.startUtc,
+        row.endUtc,
+        row.sampleCount,
       );
-    const seriesId = Number(r.lastInsertRowid);
+    return Number(r.lastInsertRowid);
+  }
+
+  insertMetricSampleChunk(seriesId: number, samples: readonly MetricSample[]): void {
     const ins = this.db.prepare(
       `INSERT INTO metric_samples (series_id, t_utc, value, value_min, value_max, context)
        VALUES (?, ?, ?, ?, ?, ?)`,
     );
-    for (const s of row.samples) {
+    for (const s of samples) {
       ins.run(seriesId, s.t, s.value, s.min ?? null, s.max ?? null, s.context ?? null);
     }
-    return seriesId;
   }
 
   insertRoute(row: {
@@ -310,12 +337,29 @@ export class Repository {
       }
     }
     if (pointCount === 0) throw new Error('route_has_no_points');
-    const bounds = {
-      latMin,
-      latMax,
-      lonMin,
-      lonMax,
-    };
+    const bounds = { latMin, latMax, lonMin, lonMax };
+    const routeId = this.createRoute({
+      workoutId: row.workoutId,
+      sourceFileId: row.sourceFileId,
+      format: row.format,
+      pointCount,
+      distanceM: row.distanceM,
+      bounds,
+    });
+    row.segments.forEach((segment, segIdx) => {
+      this.insertRoutePointChunk(routeId, segIdx, 0, segment.points);
+    });
+    return routeId;
+  }
+
+  createRoute(row: {
+    workoutId: number;
+    sourceFileId: number;
+    format: 'gpx' | 'csv';
+    pointCount: number;
+    distanceM: number | null;
+    bounds: { latMin: number; latMax: number; lonMin: number; lonMax: number };
+  }): number {
     const r = this.db
       .prepare(
         `INSERT INTO routes (workout_id, source_file_id, source_format, point_count, distance_m, bounds_json)
@@ -325,34 +369,39 @@ export class Repository {
         row.workoutId,
         row.sourceFileId,
         row.format,
-        pointCount,
+        row.pointCount,
         row.distanceM,
-        JSON.stringify(bounds),
+        JSON.stringify(row.bounds),
       );
-    const routeId = Number(r.lastInsertRowid);
+    return Number(r.lastInsertRowid);
+  }
+
+  insertRoutePointChunk(
+    routeId: number,
+    segmentIndex: number,
+    startSeq: number,
+    points: readonly RoutePoint[],
+  ): void {
     const ins = this.db.prepare(
       `INSERT INTO route_points
          (route_id, segment, seq, t_utc, lat, lon, ele_m, speed_ms, course_deg, hacc_m, vacc_m)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    row.segments.forEach((segment, segIdx) => {
-      segment.points.forEach((p, i) => {
-        ins.run(
-          routeId,
-          segIdx,
-          i,
-          p.t ?? null,
-          p.lat,
-          p.lon,
-          p.ele ?? null,
-          p.speed ?? null,
-          p.course ?? null,
-          p.hAcc ?? null,
-          p.vAcc ?? null,
-        );
-      });
+    points.forEach((p, index) => {
+      ins.run(
+        routeId,
+        segmentIndex,
+        startSeq + index,
+        p.t ?? null,
+        p.lat,
+        p.lon,
+        p.ele ?? null,
+        p.speed ?? null,
+        p.course ?? null,
+        p.hAcc ?? null,
+        p.vAcc ?? null,
+      );
     });
-    return routeId;
   }
 
   /** A workout already has a GPX route (IMP-006 GPX preferred over CSV). */

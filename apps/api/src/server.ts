@@ -484,6 +484,11 @@ function route(
             now: now(),
             timeZone: loadSettings(db).timeZone,
             signal: cancellation.signal,
+            zipLimits: {
+              maxEntries: limits.maxFiles,
+              maxEntryBytes: limits.maxFileBytes,
+              maxTotalBytes: limits.maxTotalDecodedBytes,
+            },
           });
           send(res, 200, { result });
         } finally {

@@ -1,11 +1,19 @@
-import type { ImportCounts, ImportSkipCode, ParsedFile, QuarantineCode } from '@velograph/shared';
+import type {
+  ImportCounts,
+  ImportSkipCode,
+  MetricKind,
+  MetricSample,
+  ParsedFile,
+  QuarantineCode,
+  RouteSegment,
+} from '@velograph/shared';
 import { CANONICAL_UNITS, sha256Hex } from '@velograph/shared';
 import { Repository, type Database } from '@velograph/db';
 import {
   AdapterError,
   ADAPTER_VERSION,
   classifyImportFileName,
-  parseHaeCsv,
+  parseHaeCsvSteps,
   parseHaeFilenameTimestamps,
   parseHaeGpx,
   parseHaeFilename,
@@ -16,6 +24,7 @@ import {
   sampleTimeRange,
 } from './association.ts';
 import { assertGpxByteLength, GPX_PARSER_VERSION, GpxError } from './gpx.ts';
+import { assertCsvByteLength, CsvError } from './csv.ts';
 import {
   createZipDecodedBudget,
   DEFAULT_ZIP_LIMITS,
@@ -26,6 +35,7 @@ import {
 } from './zip.ts';
 
 export const IMPORTER_VERSION = 'importer-v4';
+export const IMPORT_DB_CHUNK_ROWS = 2_048;
 
 export interface ImportFile {
   name: string;
@@ -292,7 +302,7 @@ function* runImportSteps(
       let parsed: ParsedFile;
       let filenameTimestamps: number[];
       try {
-        parsed = parseFile(file, opts.timeZone);
+        parsed = yield* parseFileSteps(file, opts.timeZone, opts.signal);
         filenameTimestamps = parseHaeFilenameTimestamps(
           file.name,
           opts.timeZone ? { timeZone: opts.timeZone } : {},
@@ -375,33 +385,45 @@ function* runImportSteps(
       repo.linkSourceFileToWorkout(workoutId, sourceFileId);
 
       if (parsed.kind === 'metric') {
-        repo.insertMetricSeries({
-          workoutId,
-          sourceFileId,
-          metric: parsed.metric,
-          unit: CANONICAL_UNITS[parsed.metric],
-          source: parsed.source,
-          samples: parsed.samples,
-        });
+        yield* insertMetricSeriesSteps(
+          repo,
+          {
+            workoutId,
+            sourceFileId,
+            metric: parsed.metric,
+            unit: CANONICAL_UNITS[parsed.metric],
+            source: parsed.source,
+            samples: parsed.samples,
+          },
+          opts.signal,
+        );
       } else {
         const existingFormat = repo.workoutRouteFormat(workoutId);
         if (existingFormat === undefined) {
-          repo.insertRoute({
-            workoutId,
-            sourceFileId,
-            format: parsed.format,
-            segments: parsed.segments,
-            distanceM: null,
-          });
+          yield* insertRouteSteps(
+            repo,
+            {
+              workoutId,
+              sourceFileId,
+              format: parsed.format,
+              segments: parsed.segments,
+              distanceM: null,
+            },
+            opts.signal,
+          );
         } else if (existingFormat === 'csv' && parsed.format === 'gpx') {
           repo.deleteRoutesForWorkout(workoutId);
-          repo.insertRoute({
-            workoutId,
-            sourceFileId,
-            format: 'gpx',
-            segments: parsed.segments,
-            distanceM: null,
-          });
+          yield* insertRouteSteps(
+            repo,
+            {
+              workoutId,
+              sourceFileId,
+              format: 'gpx',
+              segments: parsed.segments,
+              distanceM: null,
+            },
+            opts.signal,
+          );
         }
         // gpx already present, or csv arriving when a route exists: keep the
         // preferred geometry; the independent workout ownership preserves
@@ -426,7 +448,11 @@ function* runImportSteps(
   return { batchId: id, ...counts, quarantinedFiles };
 }
 
-function parseFile(file: ImportFile, timeZone?: string): ParsedFile {
+function* parseFileSteps(
+  file: ImportFile,
+  timeZone: string | undefined,
+  signal: AbortSignal | undefined,
+): Generator<void, ParsedFile> {
   const lower = file.name.toLowerCase();
   if (lower.endsWith('.gpx')) {
     let text: string;
@@ -443,10 +469,105 @@ function parseFile(file: ImportFile, timeZone?: string): ParsedFile {
     if (!parseHaeFilename(file.name)) {
       throw new AdapterError('unsupported_file_type', 'filename not recognized');
     }
-    const text = new TextDecoder('utf-8', { fatal: false }).decode(file.data);
-    return parseHaeCsv(file.name, text, timeZone ? { timeZone } : {});
+    let text: string;
+    try {
+      assertCsvByteLength(file.data.byteLength);
+      text = new TextDecoder('utf-8', { fatal: false }).decode(file.data);
+    } catch (err) {
+      if (err instanceof CsvError) throw new AdapterError(err.code, err.message);
+      throw err;
+    }
+    const parseSteps = parseHaeCsvSteps(file.name, text, timeZone ? { timeZone } : {});
+    for (;;) {
+      throwIfImportAborted(signal);
+      const step = parseSteps.next();
+      if (step.done) return step.value;
+      yield* importCheckpoint(signal);
+    }
   }
   throw new AdapterError('unsupported_file_type', 'extension not supported');
+}
+
+function* insertMetricSeriesSteps(
+  repo: Repository,
+  row: {
+    workoutId: number;
+    sourceFileId: number;
+    metric: MetricKind;
+    unit: string;
+    source: string | null;
+    samples: MetricSample[];
+  },
+  signal: AbortSignal | undefined,
+): Generator<void, number> {
+  const first = row.samples[0]!;
+  const last = row.samples[row.samples.length - 1]!;
+  const seriesId = repo.createMetricSeries({
+    workoutId: row.workoutId,
+    sourceFileId: row.sourceFileId,
+    metric: row.metric,
+    unit: row.unit,
+    source: row.source,
+    startUtc: first.t,
+    endUtc: last.t,
+    sampleCount: row.samples.length,
+  });
+  for (let start = 0; start < row.samples.length; start += IMPORT_DB_CHUNK_ROWS) {
+    repo.insertMetricSampleChunk(seriesId, row.samples.slice(start, start + IMPORT_DB_CHUNK_ROWS));
+    yield* importCheckpoint(signal);
+  }
+  return seriesId;
+}
+
+function* insertRouteSteps(
+  repo: Repository,
+  row: {
+    workoutId: number;
+    sourceFileId: number;
+    format: 'gpx' | 'csv';
+    segments: RouteSegment[];
+    distanceM: number | null;
+  },
+  signal: AbortSignal | undefined,
+): Generator<void, number> {
+  let pointCount = 0;
+  let latMin = Number.POSITIVE_INFINITY;
+  let latMax = Number.NEGATIVE_INFINITY;
+  let lonMin = Number.POSITIVE_INFINITY;
+  let lonMax = Number.NEGATIVE_INFINITY;
+  for (const segment of row.segments) {
+    for (const point of segment.points) {
+      pointCount++;
+      if (point.lat < latMin) latMin = point.lat;
+      if (point.lat > latMax) latMax = point.lat;
+      if (point.lon < lonMin) lonMin = point.lon;
+      if (point.lon > lonMax) lonMax = point.lon;
+      if (pointCount % IMPORT_DB_CHUNK_ROWS === 0) yield* importCheckpoint(signal);
+    }
+  }
+  if (pointCount === 0) throw new Error('route_has_no_points');
+
+  const routeId = repo.createRoute({
+    workoutId: row.workoutId,
+    sourceFileId: row.sourceFileId,
+    format: row.format,
+    pointCount,
+    distanceM: row.distanceM,
+    bounds: { latMin, latMax, lonMin, lonMax },
+  });
+  for (let segmentIndex = 0; segmentIndex < row.segments.length; segmentIndex++) {
+    const points = row.segments[segmentIndex]!.points;
+    for (let start = 0; start < points.length; start += IMPORT_DB_CHUNK_ROWS) {
+      repo.insertRoutePointChunk(
+        routeId,
+        segmentIndex,
+        start,
+        points.slice(start, start + IMPORT_DB_CHUNK_ROWS),
+      );
+      yield* importCheckpoint(signal);
+    }
+  }
+  return routeId;
 }
 
 function parserVersionForFile(name: string): string {

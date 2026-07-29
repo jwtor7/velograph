@@ -72,9 +72,11 @@ export type ParsedFile = ParsedMetricFile | ParsedRouteFile;
 export type QuarantineCode =
   | 'unsupported_file_type'
   | 'unrecognized_headers'
+  | 'metric_kind_mismatch'
   | 'unit_unsupported'
   | 'empty_file'
   | 'malformed_csv'
+  | 'csv_limits_exceeded'
   | 'malformed_xml'
   | 'xml_doctype_rejected'
   | 'gpx_limits_exceeded'

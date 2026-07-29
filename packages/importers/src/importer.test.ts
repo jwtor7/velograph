@@ -7,6 +7,7 @@ import { loadWorkoutData, openDatabase, Repository } from '@velograph/db';
 import { sha256Hex } from '@velograph/shared';
 import { DEFAULT_GPX_LIMITS } from './gpx.ts';
 import {
+  IMPORT_DB_CHUNK_ROWS,
   ImportAbortedError,
   runImport,
   runImportGroups,
@@ -63,7 +64,7 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     ).toEqual({ importer_version: 'importer-v4' });
     expect(
       db.prepare('SELECT DISTINCT parser_version FROM source_files ORDER BY parser_version').all(),
-    ).toEqual([{ parser_version: 'gpx-v5' }, { parser_version: 'hae-csv-v3' }]);
+    ).toEqual([{ parser_version: 'gpx-v5' }, { parser_version: 'hae-csv-v4' }]);
     db.close();
   });
 
@@ -187,6 +188,34 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM import_batches').get()).toEqual({ count: 0 });
     expect(db.prepare('SELECT COUNT(*) AS count FROM source_files').get()).toEqual({ count: 0 });
     expect(new Repository(db).countRows('workouts')).toBe(0);
+    db.close();
+  });
+
+  it('checks cancellation between bounded metric-sample insert chunks', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const base = Date.UTC(2035, 0, 1);
+    const rows = ['Date/Time,Cadence (rpm)'];
+    for (let index = 0; index < IMPORT_DB_CHUNK_ROWS + 1; index++) {
+      rows.push(`${new Date(base + index * 1_000).toISOString()},80`);
+    }
+    const file: ImportFile = {
+      name: 'Outdoor Cycling-Cycling Cadence-20350101_000000.csv',
+      data: new TextEncoder().encode(rows.join('\n')),
+    };
+    const signal = {
+      get aborted() {
+        return repo.countRows('metric_samples') >= IMPORT_DB_CHUNK_ROWS;
+      },
+    } as unknown as AbortSignal;
+
+    expect(() => runImport(db, [file], { now: FIXED_NOW, signal })).toThrow(ImportAbortedError);
+    expect(db.inTransaction).toBe(false);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM import_batches').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM source_files').get()).toEqual({ count: 0 });
+    expect(repo.countRows('workouts')).toBe(0);
+    expect(repo.countRows('metric_series')).toBe(0);
+    expect(repo.countRows('metric_samples')).toBe(0);
     db.close();
   });
 
@@ -356,7 +385,7 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     ).toEqual({
       id: source.id,
       batch_id: second.batchId,
-      parser_version: 'hae-csv-v3',
+      parser_version: 'hae-csv-v4',
       status: 'imported',
       error_code: null,
     });
@@ -371,7 +400,13 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
   it('records a failed parser upgrade without deleting last-known-good data or notes', () => {
     const db = openDatabase(':memory:');
     const repo = new Repository(db);
-    const file = hardeningFixture('Outdoor Cycling-Route-20310608_080000-invalid-time.gpx');
+    const invalidTimeFixture = hardeningFixture(
+      'Outdoor Cycling-Route-20310608_080000-invalid-time.gpx',
+    );
+    const file = {
+      ...invalidTimeFixture,
+      name: 'Outdoor Cycling-Route-20310608_080000.gpx',
+    };
     const legacyBatchId = repo.createBatch('synthetic-legacy-importer', FIXED_NOW);
     const sourceFileId = repo.insertSourceFile({
       batchId: legacyBatchId,
@@ -548,7 +583,7 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
         .get(),
     ).toEqual({
       source_file_id: source.id,
-      attempted_parser_version: 'hae-csv-v3',
+      attempted_parser_version: 'hae-csv-v4',
       error_code: 'association_ambiguous',
     });
     db.close();

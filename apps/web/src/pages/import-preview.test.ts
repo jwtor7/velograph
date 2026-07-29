@@ -2,9 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { FolderPreviewBody } from '../api.ts';
 import { requestCurrentFolderPreview } from './import-preview.ts';
 
-function syntheticPreview(root: string): FolderPreviewBody {
+function syntheticPreview(): FolderPreviewBody {
   return {
-    root,
     rides: [],
     ungrouped: [],
     skipped: [],
@@ -35,7 +34,7 @@ describe('requestCurrentFolderPreview', () => {
     const pending = requestCurrentFolderPreview(currentPath, () => currentPath, request);
 
     currentPath = '/invented/export-b';
-    pendingResponse.resolve({ preview: syntheticPreview('/invented/export-a') });
+    pendingResponse.resolve({ preview: syntheticPreview() });
 
     await expect(pending).resolves.toEqual({ status: 'stale' });
     expect(request).toHaveBeenCalledWith('/invented/export-a');
@@ -58,7 +57,7 @@ describe('requestCurrentFolderPreview', () => {
 
   it('returns a response while its requested path is still current', async () => {
     const currentPath = '/invented/export-a';
-    const preview = syntheticPreview(currentPath);
+    const preview = syntheticPreview();
 
     await expect(
       requestCurrentFolderPreview(

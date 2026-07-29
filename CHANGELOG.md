@@ -38,7 +38,9 @@ is pre-1.0, and for the release procedure.
   file-count, per-file, decoded-total, and encoded-body limits; large exports are directed to
   path import. The API validates the complete exact-key schema and canonical base64 before
   decoding or writing, rejects mixed invalid requests atomically, returns stable value-free
-  errors, and uses HTTP 413 for every limit breach (#23, #26).
+  errors, and uses HTTP 413 for every limit breach. ZIPs selected through this route inherit the
+  same expanded per-entry and aggregate byte ceilings as ordinary browser files, so compression
+  cannot bypass the loose-upload memory contract (#23, #26).
 - **Web imports are cancellable end to end.** File review/encoding, path preview, loose-file
   import, and path import expose explicit Cancel controls backed by request-scoped
   `AbortController`s. The API converts aborted/incomplete loopback requests and disconnected
@@ -55,7 +57,8 @@ is pre-1.0, and for the release procedure.
   too. Each directory's canonical target and device/inode identity are captured before it is
   opened and revalidated after enumeration, so replacing a nested directory with a symlink
   during traversal fails the whole value-free plan with `path_changed` rather than returning
-  entries from the replacement. Preview returns an opaque digest of the exact private manifest.
+  entries from the replacement. Preview returns an opaque digest of the exact private manifest
+  and never echoes the requested or canonical absolute root path.
   Confirmation repeats the bounded walk and requires that digest to match before reading source
   bytes or beginning the database transaction, so mutation, addition, deletion, replacement, or
   a path swap fails closed with `path_changed`; a root deleted or replaced by a non-directory
@@ -197,18 +200,25 @@ is pre-1.0, and for the release procedure.
   Explicit zone-share percentage representations remain supported without allowing unrelated
   metrics with colliding values to validate a claim (#34, #35).
 
-- **CSV units are explicit, converted, and versioned.** `hae-csv-v3` converts distance `km`/`m`,
+- **CSV inputs are bounded, kind-checked, converted, and versioned.** `hae-csv-v4` requires the
+  filename metric label to agree with the recognized metric or route headers before any row is
+  normalized. It limits raw input to 32 MiB, 500,000 samples, 64 columns, and 64 KiB per field;
+  parsing no longer retains a second `string[][]` copy. API parsing, bounded timestamp sorting,
+  route segmentation, bounds calculation, and SQLite inserts yield at cooperative checkpoints,
+  and cancellation still rolls the complete transaction back. It converts distance `km`/`m`,
   energy `kJ`/`J`/`kcal`, route altitude/accuracy `m`/`ft`, and route speed `m/s`/`km/h` to
   canonical SI before persistence. Route course accepts `deg`. Generic or unsupported
   distance, energy, altitude, speed, accuracy, or course headers now quarantine with
-  `unit_unsupported` instead of silently treating their values as kilometres, kilojoules,
-  metres, or metres per second (IMP-004).
+  `unit_unsupported`; filename/header disagreement uses `metric_kind_mismatch`, and a breached
+  CSV bound uses `csv_limits_exceeded`. None of these cases can silently reinterpret values
+  (IMP-004).
 - **Out-of-scope Health Auto Export files are normal aggregate skips.** Unmodelled cycling
   metrics and non-cycling workouts increment value-free skip codes without storing hashes,
   filenames, warnings, or quarantine rows, so a future adapter can import those same bytes.
-  Malformed in-scope files still quarantine. GPX parsing now requires an explicit cycling
-  filename and can never default a Running or other non-cycling route to outdoor cycling
-  (#53).
+  Malformed in-scope files still quarantine. GPX inventory and parsing now require the same
+  canonical `Indoor|Outdoor Cycling-Route-YYYYMMDD_HHMMSS.gpx` form; noncanonical names and GPX
+  files labelled as other cycling metrics fail closed instead of being previewed as importable.
+  A Running or other non-cycling route can never default to outdoor cycling (#53).
 - **The `webkitdirectory` folder picker could not be confirmed on macOS.** Removing its
   `accept` attribute (#49) was necessary but not sufficient — the OS picker still could not
   be confirmed from inside the target folder on macOS, reported as still unusable against a

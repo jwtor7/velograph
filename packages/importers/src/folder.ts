@@ -660,7 +660,6 @@ export interface FolderUngroupedItem {
 }
 
 export interface FolderPreview {
-  root: string;
   rides: FolderRideGroup[];
   ungrouped: FolderUngroupedItem[];
   skipped: FolderSkip[];
@@ -752,7 +751,6 @@ export function previewImportFolder(rootPath: string, opts: FolderWalkOptions = 
   }
 
   return {
-    root: plan.root,
     rides,
     ungrouped,
     skipped: plan.skipped,

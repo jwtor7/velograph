@@ -1,7 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { parseHaeCsv, parseHaeFilenameTimestamp, parseHaeFilenameTimestamps } from './adapters.ts';
+import {
+  CSV_NORMALIZATION_CHUNK_ROWS,
+  classifyImportFileName,
+  parseHaeCsv,
+  parseHaeCsvSteps,
+  parseHaeFilenameTimestamp,
+  parseHaeFilenameTimestamps,
+  parseHaeGpx,
+} from './adapters.ts';
 
 describe('Health Auto Export CSV header contracts (IMP-004)', () => {
+  it('classifies an empty or whitespace-only CSV without retaining rows', () => {
+    for (const text of ['', '  \n\t']) {
+      expect(() =>
+        parseHaeCsv('Outdoor Cycling-Heart Rate-20320710_113000.csv', text),
+      ).toThrowError(expect.objectContaining({ code: 'empty_file' }));
+    }
+  });
+
   it('accepts Cycling Distance (km)', () => {
     const parsed = parseHaeCsv(
       'Outdoor Cycling-Cycling Distance-20320710_113000.csv',
@@ -74,6 +90,55 @@ describe('Health Auto Export CSV header contracts (IMP-004)', () => {
     expect(parsed.metric).toBe('heart_rate');
     expect(parsed.samples).toHaveLength(2);
     expect(parsed.samples[0]).toMatchObject({ value: 120, min: 110, max: 130 });
+  });
+
+  it('rejects filename/header metric-kind mismatches before normalizing rows', () => {
+    expect(() =>
+      parseHaeCsv(
+        'Outdoor Cycling-Cycling Cadence-20320710_113000.csv',
+        ['Date/Time,Avg (bpm)', '2032-07-10T15:30:00Z,120'].join('\n'),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'metric_kind_mismatch' }));
+
+    const lat = [-48, 75].join('.');
+    const lon = [-123, 25].join('.');
+    expect(() =>
+      parseHaeCsv(
+        'Outdoor Cycling-Heart Rate-20320710_113000.csv',
+        [
+          'Timestamp,Latitude,Longitude,Altitude (m),Speed (m/s)',
+          `2032-07-10T15:30:00Z,${lat},${lon},100,10`,
+        ].join('\n'),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'metric_kind_mismatch' }));
+  });
+
+  it('yields through bounded parsing and normalization while preserving timestamp order', () => {
+    const base = Date.UTC(2032, 0, 1);
+    const rowCount = CSV_NORMALIZATION_CHUNK_ROWS * 2 + 17;
+    const rows = ['Date/Time,Cadence (rpm)'];
+    for (let index = rowCount - 1; index >= 0; index--) {
+      rows.push(`${new Date(base + index * 1_000).toISOString()},80`);
+    }
+    const text = rows.join('\n');
+    const steps = parseHaeCsvSteps('Outdoor Cycling-Cycling Cadence-20320101_000000.csv', text);
+    let yields = 0;
+    let parsed;
+    for (;;) {
+      const step = steps.next();
+      if (step.done) {
+        parsed = step.value;
+        break;
+      }
+      yields++;
+    }
+
+    expect(yields).toBeGreaterThan(Math.ceil(text.length / (64 * 1024)));
+    expect(parsed.kind).toBe('metric');
+    if (parsed.kind !== 'metric') return;
+    expect(parsed.samples).toHaveLength(rowCount);
+    expect(parsed.samples[0]!.t).toBe(base);
+    expect(parsed.samples[rowCount - 1]!.t).toBe(base + (rowCount - 1) * 1_000);
   });
 
   it('rejects blank and out-of-range required metric values', () => {
@@ -169,4 +234,20 @@ describe('Health Auto Export CSV header contracts (IMP-004)', () => {
       ).toThrowError(expect.objectContaining({ code: 'unit_unsupported' }));
     },
   );
+
+  it('makes GPX inventory and parsing agree on the canonical route filename', () => {
+    const canonical = 'Outdoor Cycling-Route-20320710_113000.gpx';
+    const noncanonical = [
+      'Outdoor Cycling-Route-synthetic.gpx',
+      'Outdoor Cycling-Heart Rate-20320710_113000.gpx',
+    ];
+
+    expect(classifyImportFileName(canonical).kind).toBe('supported');
+    for (const name of noncanonical) {
+      expect(classifyImportFileName(name).kind).toBe('unsupported');
+      expect(() => parseHaeGpx(name, '<gpx/>')).toThrowError(
+        expect.objectContaining({ code: 'unsupported_file_type' }),
+      );
+    }
+  });
 });

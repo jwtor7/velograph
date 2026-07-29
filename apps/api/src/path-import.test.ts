@@ -104,7 +104,9 @@ describe('POST /api/import/path/inventory', () => {
       body: JSON.stringify({ path: exportDir }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
+    const rawBody = await res.text();
+    expect(rawBody).not.toContain(exportDir);
+    const body = JSON.parse(rawBody) as {
       preview: {
         confirmationToken: string;
         rides: { files: unknown[] }[];

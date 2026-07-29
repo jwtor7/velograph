@@ -138,7 +138,6 @@ export interface FolderSkipItem {
 }
 
 export interface FolderPreviewBody {
-  root: string;
   rides: FolderRideGroup[];
   ungrouped: FolderUngroupedItem[];
   skipped: FolderSkipItem[];

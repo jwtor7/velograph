@@ -532,6 +532,8 @@ describe('readFolderFileGroups — lazy bounded reads and TOCTOU checks', () => 
     writeFileSync(join(root, 'Outdoor Cycling-Heart Rate-20260101_070000.csv'), 'x');
     const preview = previewImportFolder(root);
     const serialized = JSON.stringify(preview);
+    expect(preview).not.toHaveProperty('root');
+    expect(serialized).not.toContain(root);
     expect(serialized).not.toContain('canonicalRoot');
     expect(serialized).not.toContain('canonicalPath');
     expect(serialized).not.toContain('rootDevice');

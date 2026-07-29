@@ -30,6 +30,10 @@ describe('import scope classification (#53)', () => {
     expect(classifyImportFileName('Running-Route-20330405_070000.gpx').kind).toBe(
       'non_cycling_workout',
     );
+    expect(classifyImportFileName('Outdoor Cycling-Heart Rate-20330405_070000.gpx').kind).toBe(
+      'unsupported',
+    );
+    expect(classifyImportFileName('Outdoor Cycling-Route-synthetic.gpx').kind).toBe('unsupported');
     expect(classifyImportFileName('synthetic.zip').kind).toBe('archive');
     expect(classifyImportFileName('not-an-export.gpx').kind).toBe('unsupported');
   });
@@ -88,7 +92,7 @@ describe('import scope classification (#53)', () => {
     expect(result.quarantinedFiles).toEqual([
       {
         name: 'Outdoor Cycling-Heart Rate-20330405_070000.csv',
-        code: 'no_valid_samples',
+        code: 'unrecognized_headers',
       },
     ]);
   });
@@ -97,6 +101,30 @@ describe('import scope classification (#53)', () => {
     expect(() =>
       parseHaeGpx('Running-Route-20330405_070000.gpx', new TextDecoder().decode(syntheticGpx)),
     ).toThrowError(expect.objectContaining({ code: 'unsupported_file_type' }));
+  });
+
+  it('quarantines noncanonical cycling GPX names that inventory marks unsupported', () => {
+    db = openDatabase(':memory:');
+    const names = [
+      'Outdoor Cycling-Route-synthetic.gpx',
+      'Outdoor Cycling-Heart Rate-20330405_070000.gpx',
+    ];
+    const files = names.map((name, index) => ({
+      name,
+      data: new TextEncoder().encode(
+        `${new TextDecoder().decode(syntheticGpx)}${' '.repeat(index)}`,
+      ),
+    }));
+    const result = runImport(db, files, { now: Date.UTC(2033, 3, 6), timeZone: 'UTC' });
+
+    expect(inventoryFiles(files).map((item) => item.classification)).toEqual([
+      'unsupported',
+      'unsupported',
+    ]);
+    expect(result).toMatchObject({ imported: 0, skipped: 0, quarantined: 2 });
+    expect(result.quarantinedFiles).toEqual(
+      [...names].sort().map((name) => ({ name, code: 'unsupported_file_type' })),
+    );
   });
 
   it('exposes aggregate skip classifications and exact duplicate status in inventory', () => {

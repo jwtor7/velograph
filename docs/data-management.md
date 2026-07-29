@@ -123,7 +123,12 @@ file Velograph was expected to understand but could not parse safely.
 
 ## Canonical input-unit contract
 
-`hae-csv-v3` matches explicit, normalized headers and converts accepted values before persistence:
+`hae-csv-v4` first requires the canonical filename label to agree with the recognized header
+kind, then matches explicit normalized headers and converts accepted values before persistence.
+A cadence filename carrying heart-rate columns, a heart-rate filename carrying route columns,
+or any other disagreement is quarantined with the value-free `metric_kind_mismatch` code before
+data rows are normalized. GPX inventory and parsing likewise agree on one canonical route
+filename form: `Indoor|Outdoor Cycling-Route-YYYYMMDD_HHMMSS.gpx`.
 
 | Input family                       | Accepted header units | Stored unit |
 | ---------------------------------- | --------------------- | ----------- |
@@ -143,6 +148,13 @@ closed before samples are stored. Missing or unsupported units use the stable, v
 `unit_unsupported` quarantine code. Changing this interpretation requires another adapter version,
 which makes existing content hashes eligible for safe parser-version reprocessing.
 
+CSV input is capped before decoding at 32 MiB. The streaming parser admits at most 500,000 data
+rows, 64 columns per row, and 64 KiB per field, and normalizes each delivered row directly
+instead of retaining a second `string[][]` representation. Limit failures use
+`csv_limits_exceeded` without including source values. Loose-upload ZIP entries use the same
+32 MiB per-entry and 64 MiB aggregate defaults as decoded browser uploads, so compressed input
+cannot expand beyond the route's ordinary file budgets.
+
 ## Import cancellation and rollback
 
 Browser file encoding is sequential and receives the same `AbortSignal` as its subsequent
@@ -152,13 +164,14 @@ response close before completion aborts one request-scoped controller. That sign
 through `runImport`/`runImportGroups`.
 
 The SQLite transaction checks cancellation before loading each lazy group, while expanding and
-processing files, and immediately before it marks the batch committed. API imports yield to the
-event loop at those bounded checkpoints while keeping other database requests out of the open
-transaction. An observed abort throws `ImportAbortedError`, so SQLite rolls back the batch row,
-sources, normalized data, and workouts together. Folder imports remain bounded to one association
-group at a time, making those checkpoints practical without retaining the full export. Contract
-tests cover cancellation before work, after an earlier group has written inside the
-still-uncommitted transaction, and after a loopback client disconnects.
+processing files, during bounded CSV parse/normalization work, between 2,048-row SQLite insert
+chunks, and immediately before it marks the batch committed. API imports yield to the event loop
+at those checkpoints while keeping other database requests out of the open transaction. An
+observed abort throws `ImportAbortedError`, so SQLite rolls back the batch row, sources,
+normalized data, and workouts together. Folder imports remain bounded to one association group
+at a time, making those checkpoints practical without retaining the full export. Contract tests
+cover cancellation before work, after an earlier group has written inside the still-uncommitted
+transaction, during sample insertion, and after a loopback client disconnects.
 
 ## Backup / restore
 

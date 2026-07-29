@@ -7,7 +7,7 @@ import type {
   WorkoutType,
 } from '@velograph/shared';
 import { parseInstant } from '@velograph/shared';
-import { parseCsv } from './csv.ts';
+import { CsvError, CsvStreamParser, DEFAULT_CSV_LIMITS } from './csv.ts';
 import { parseGpx, GpxError } from './gpx.ts';
 import { parseStrictNumber, type NumericBounds } from './numeric.ts';
 
@@ -17,7 +17,7 @@ import { parseStrictNumber, type NumericBounds } from './numeric.ts';
  * (IMP-010). Header matching is tolerant of spacing/case but never guesses:
  * unrecognized headers quarantine the file rather than half-importing it.
  */
-export const ADAPTER_VERSION = 'hae-csv-v3';
+export const ADAPTER_VERSION = 'hae-csv-v4';
 
 export class AdapterError extends Error {
   readonly code: QuarantineCode;
@@ -59,6 +59,16 @@ const SUPPORTED_CYCLING_LABELS = new Set([
 
 const normalizeLabel = (label: string) => label.toLowerCase().replace(/[^a-z0-9]/g, '');
 
+function expectedKindForLabel(label: string): MetricKind | 'route' | null {
+  const normalized = normalizeLabel(label);
+  if (normalized === 'heartrate') return 'heart_rate';
+  if (normalized === 'cyclingcadence') return 'cadence';
+  if (normalized === 'cyclingdistance') return 'distance';
+  if (normalized === 'activeenergy') return 'energy';
+  if (normalized === 'route') return 'route';
+  return null;
+}
+
 /**
  * Classify only from the value-free filename before parsing or persistence.
  * Well-formed but out-of-scope HAE files are normal aggregate skips; malformed
@@ -86,6 +96,9 @@ export function classifyImportFileName(name: string): ImportCandidateClassificat
   }
   if (!SUPPORTED_CYCLING_LABELS.has(normalizeLabel(metricLabel))) {
     return { kind: 'unmodelled_metric', detectedType: 'skip:unmodelled_metric' };
+  }
+  if (format === 'gpx' && normalizeLabel(metricLabel) !== 'route') {
+    return { kind: 'unsupported', detectedType: 'unsupported:gpx_filename' };
   }
   return {
     kind: 'supported',
@@ -203,31 +216,173 @@ const CSV_SHAPES: CsvShape[] = [
 ];
 
 const ROUTE_CSV_HEADERS = ['timestamp', 'latitude', 'longitude'];
+const CSV_PARSE_CHUNK_CHARS = 64 * 1024;
+export const MAX_HAE_CSV_SAMPLES = DEFAULT_CSV_LIMITS.maxRows - 1;
+export const CSV_NORMALIZATION_CHUNK_ROWS = 2_048;
+
+interface MetricCsvSpec {
+  kind: 'metric';
+  shape: CsvShape;
+  tIdx: number;
+  vIdx: number;
+  minIdx: number;
+  maxIdx: number;
+  srcIdx: number;
+  ctxIdx: number;
+}
+
+interface RouteCsvSpec {
+  kind: 'route';
+  tIdx: number;
+  latIdx: number;
+  lonIdx: number;
+  altitude: UnitColumn | null;
+  speed: UnitColumn | null;
+  course: UnitColumn | null;
+  horizontalAccuracy: UnitColumn | null;
+  verticalAccuracy: UnitColumn | null;
+}
+
+type CsvSpec = MetricCsvSpec | RouteCsvSpec;
 
 /** Parse a Health Auto Export CSV (metric or route) into normalized form. */
 export function parseHaeCsv(name: string, text: string, options: AdapterOptions = {}): ParsedFile {
+  const steps = parseHaeCsvSteps(name, text, options);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/**
+ * Incrementally parse and normalize a CSV without retaining a second
+ * `string[][]` copy. Cancellable API imports yield between bounded text
+ * chunks; synchronous CLI/tests consume the same generator immediately.
+ */
+export function* parseHaeCsvSteps(
+  name: string,
+  text: string,
+  options: AdapterOptions = {},
+): Generator<void, ParsedFile> {
   const info = parseHaeFilename(name);
   if (!info) throw new AdapterError('unsupported_file_type', 'filename not recognized');
-  if (text.trim() === '') throw new AdapterError('empty_file', 'file is empty');
-
-  let rows: string[][];
-  try {
-    rows = parseCsv(text);
-  } catch {
-    throw new AdapterError('malformed_csv', 'CSV structure invalid');
+  if (!expectedKindForLabel(info.label)) {
+    throw new AdapterError('unsupported_file_type', 'filename metric not supported');
   }
-  if (rows.length < 2) throw new AdapterError('no_valid_samples', 'no data rows');
-  const header = rows[0]!.map(norm);
-  const idx = (names: string[]) => header.findIndex((h) => names.includes(h));
+  if (text.length === 0) {
+    throw new AdapterError('empty_file', 'file is empty');
+  }
 
+  let spec: CsvSpec | null = null;
+  const samples: MetricSample[] = [];
+  const points: RoutePoint[] = [];
+  let source: string | null = null;
+  const parser = new CsvStreamParser((row) => {
+    if (!spec) {
+      if (row.every((field) => field.trim() === '')) return;
+      spec = parseCsvHeader(info, row);
+      return;
+    }
+    if (spec.kind === 'metric') {
+      if (samples.length >= MAX_HAE_CSV_SAMPLES) {
+        throw new AdapterError('csv_limits_exceeded', 'CSV sample limit exceeded');
+      }
+      const sample = parseMetricCsvRow(spec, row, options);
+      const context = spec.ctxIdx === -1 ? undefined : row[spec.ctxIdx];
+      if (context) sample.context = context;
+      if (spec.srcIdx !== -1 && row[spec.srcIdx]) source = row[spec.srcIdx]!;
+      samples.push(sample);
+      return;
+    }
+    if (points.length >= MAX_HAE_CSV_SAMPLES) {
+      throw new AdapterError('csv_limits_exceeded', 'CSV sample limit exceeded');
+    }
+    points.push(parseRouteCsvRow(spec, row, options));
+  }, DEFAULT_CSV_LIMITS);
+
+  try {
+    for (let offset = 0; offset < text.length; offset += CSV_PARSE_CHUNK_CHARS) {
+      parser.push(text.slice(offset, offset + CSV_PARSE_CHUNK_CHARS));
+      yield;
+    }
+    parser.end();
+  } catch (err) {
+    if (err instanceof CsvError) {
+      throw new AdapterError(err.code, 'CSV structure or limits invalid');
+    }
+    throw err;
+  }
+
+  // The parser callback initializes this from the header. TypeScript cannot
+  // observe assignments made inside that callback, so narrow the post-parse
+  // value explicitly after `end()` has delivered all rows.
+  const finalSpec = spec as CsvSpec | null;
+  if (!finalSpec) throw new AdapterError('empty_file', 'file is empty');
+  if (samples.length === 0 && points.length === 0) {
+    throw new AdapterError('no_valid_samples', 'no data rows');
+  }
+  if (finalSpec.kind === 'metric') {
+    const sortedSamples = yield* sortInBoundedSteps(samples, (a, b) => a.t - b.t);
+    return {
+      kind: 'metric',
+      metric: finalSpec.shape.metric,
+      workoutType: info.workoutType,
+      source,
+      samples: sortedSamples,
+    };
+  }
+  const sortedPoints = yield* sortInBoundedSteps(points, (a, b) => (a.t ?? 0) - (b.t ?? 0));
+  return {
+    kind: 'route',
+    format: 'csv',
+    workoutType: info.workoutType,
+    segments: yield* splitRouteSegmentsSteps(sortedPoints),
+  };
+}
+
+function parseCsvHeader(info: FilenameInfo, rawHeader: string[]): CsvSpec {
+  const expectedKind = expectedKindForLabel(info.label);
+  if (!expectedKind) {
+    throw new AdapterError('unsupported_file_type', 'filename metric not supported');
+  }
+  const header = rawHeader.map(norm);
+  const idx = (names: string[]) => header.findIndex((h) => names.includes(h));
   const tIdx = idx(['date/time', 'datetime', 'date', 'timestamp']);
   if (tIdx === -1) throw new AdapterError('unrecognized_headers', 'no timestamp column');
 
   if (ROUTE_CSV_HEADERS.every((h) => header.includes(h))) {
-    return parseRouteCsvRows(info, rows, header, options);
+    if (expectedKind !== 'route') {
+      throw new AdapterError('metric_kind_mismatch', 'filename and route headers disagree');
+    }
+    return {
+      kind: 'route',
+      tIdx: header.indexOf('timestamp'),
+      latIdx: header.indexOf('latitude'),
+      lonIdx: header.indexOf('longitude'),
+      altitude: resolveUnitColumn(header, 'altitude', {
+        altitudem: 1,
+        altitudeft: 0.3048,
+      }),
+      speed: resolveUnitColumn(header, 'speed', {
+        'speedm/s': 1,
+        'speedkm/h': 1 / 3.6,
+      }),
+      course: resolveUnitColumn(header, 'course', {
+        coursedeg: 1,
+      }),
+      horizontalAccuracy: resolveUnitColumn(header, 'horizontalaccuracy', {
+        horizontalaccuracym: 1,
+        horizontalaccuracyft: 0.3048,
+      }),
+      verticalAccuracy: resolveUnitColumn(header, 'verticalaccuracy', {
+        verticalaccuracym: 1,
+        verticalaccuracyft: 0.3048,
+      }),
+    };
   }
 
-  const shape = CSV_SHAPES.find((s) => idx(s.value) !== -1);
+  const matchingShapes = CSV_SHAPES.filter((shape) => idx(shape.value) !== -1);
+  const shape = matchingShapes.length === 1 ? matchingShapes[0] : undefined;
   if (!shape) {
     const unitSensitiveHeader = header.some(
       (h) =>
@@ -245,116 +400,159 @@ export function parseHaeCsv(name: string, text: string, options: AdapterOptions 
     }
     throw new AdapterError('unrecognized_headers', 'no known metric column');
   }
-  const vIdx = idx(shape.value);
-  const minIdx = shape.min ? idx(shape.min) : -1;
-  const maxIdx = shape.max ? idx(shape.max) : -1;
-  const srcIdx = idx(['source']);
-  const ctxIdx = idx(['context']);
-
-  const samples: MetricSample[] = [];
-  let source: string | null = null;
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i]!;
-    const t = parseRequiredInstant(row[tIdx], options);
-    const v = parseRequiredNumber(row[vIdx], shape.bounds);
-    const value = shape.toCanonical(v);
-    if (!Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER) {
-      throw new AdapterError('numeric_value_invalid', 'canonical numeric value invalid');
-    }
-    const s: MetricSample = { t, value };
-    if (minIdx !== -1) {
-      const min = parseStrictNumber(row[minIdx], shape.bounds);
-      if (min != null) s.min = shape.toCanonical(min);
-    }
-    if (maxIdx !== -1) {
-      const max = parseStrictNumber(row[maxIdx], shape.bounds);
-      if (max != null) s.max = shape.toCanonical(max);
-    }
-    if (ctxIdx !== -1 && row[ctxIdx]) s.context = row[ctxIdx];
-    if (srcIdx !== -1 && row[srcIdx]) source = row[srcIdx]!;
-    samples.push(s);
+  if (expectedKind === 'route' || shape.metric !== expectedKind) {
+    throw new AdapterError('metric_kind_mismatch', 'filename and metric headers disagree');
   }
-  if (samples.length === 0) throw new AdapterError('no_valid_samples', 'no parseable rows');
-  samples.sort((a, b) => a.t - b.t);
-  return { kind: 'metric', metric: shape.metric, workoutType: info.workoutType, source, samples };
+  return {
+    kind: 'metric',
+    shape,
+    tIdx,
+    vIdx: idx(shape.value),
+    minIdx: shape.min ? idx(shape.min) : -1,
+    maxIdx: shape.max ? idx(shape.max) : -1,
+    srcIdx: idx(['source']),
+    ctxIdx: idx(['context']),
+  };
 }
 
-function parseRouteCsvRows(
-  info: FilenameInfo,
-  rows: string[][],
-  header: string[],
+function parseMetricCsvRow(
+  spec: MetricCsvSpec,
+  row: string[],
   options: AdapterOptions,
-): ParsedFile {
-  const col = (n: string) => header.indexOf(n);
-  const tIdx = col('timestamp');
-  const latIdx = col('latitude');
-  const lonIdx = col('longitude');
-  const altitude = resolveUnitColumn(header, 'altitude', {
-    altitudem: 1,
-    altitudeft: 0.3048,
-  });
-  const speed = resolveUnitColumn(header, 'speed', {
-    'speedm/s': 1,
-    'speedkm/h': 1 / 3.6,
-  });
-  const course = resolveUnitColumn(header, 'course', {
-    coursedeg: 1,
-  });
-  const horizontalAccuracy = resolveUnitColumn(header, 'horizontalaccuracy', {
-    horizontalaccuracym: 1,
-    horizontalaccuracyft: 0.3048,
-  });
-  const verticalAccuracy = resolveUnitColumn(header, 'verticalaccuracy', {
-    verticalaccuracym: 1,
-    verticalaccuracyft: 0.3048,
-  });
+): MetricSample {
+  const t = parseRequiredInstant(row[spec.tIdx], options);
+  const v = parseRequiredNumber(row[spec.vIdx], spec.shape.bounds);
+  const value = spec.shape.toCanonical(v);
+  if (!Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER) {
+    throw new AdapterError('numeric_value_invalid', 'canonical numeric value invalid');
+  }
+  const sample: MetricSample = { t, value };
+  if (spec.minIdx !== -1) {
+    const min = parseStrictNumber(row[spec.minIdx], spec.shape.bounds);
+    if (min != null) sample.min = spec.shape.toCanonical(min);
+  }
+  if (spec.maxIdx !== -1) {
+    const max = parseStrictNumber(row[spec.maxIdx], spec.shape.bounds);
+    if (max != null) sample.max = spec.shape.toCanonical(max);
+  }
+  return sample;
+}
 
-  const points: RoutePoint[] = [];
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i]!;
-    const t = parseRequiredInstant(row[tIdx], options);
-    const lat = parseRequiredNumber(row[latIdx], { min: -90, max: 90 });
-    const lon = parseRequiredNumber(row[lonIdx], { min: -180, max: 180 });
-    const p: RoutePoint = { t, lat, lon };
-    const opt = (
-      column: UnitColumn | null,
-      key: 'ele' | 'speed' | 'course' | 'hAcc' | 'vAcc',
-      bounds: NumericBounds,
-    ) => {
-      if (column) {
-        const raw = parseStrictNumber(row[column.index]);
-        if (raw != null) {
-          const value = raw * column.toCanonicalFactor;
-          if (Number.isFinite(value) && isWithinBounds(value, bounds)) {
-            p[key] = value;
-          }
+function parseRouteCsvRow(spec: RouteCsvSpec, row: string[], options: AdapterOptions): RoutePoint {
+  const t = parseRequiredInstant(row[spec.tIdx], options);
+  const lat = parseRequiredNumber(row[spec.latIdx], { min: -90, max: 90 });
+  const lon = parseRequiredNumber(row[spec.lonIdx], { min: -180, max: 180 });
+  const point: RoutePoint = { t, lat, lon };
+  parseOptionalRouteField(point, row, spec.altitude, 'ele', {
+    minExclusive: -500,
+    maxExclusive: 10_000,
+  });
+  parseOptionalRouteField(point, row, spec.speed, 'speed', { min: 0, maxExclusive: 150 });
+  parseOptionalRouteField(point, row, spec.course, 'course', { min: 0, maxExclusive: 360 });
+  parseOptionalRouteField(point, row, spec.horizontalAccuracy, 'hAcc', {
+    min: 0,
+    max: Number.MAX_SAFE_INTEGER,
+  });
+  parseOptionalRouteField(point, row, spec.verticalAccuracy, 'vAcc', {
+    min: 0,
+    max: Number.MAX_SAFE_INTEGER,
+  });
+  return point;
+}
+
+function parseOptionalRouteField(
+  point: RoutePoint,
+  row: string[],
+  column: UnitColumn | null,
+  key: 'ele' | 'speed' | 'course' | 'hAcc' | 'vAcc',
+  bounds: NumericBounds,
+): void {
+  if (!column) return;
+  const raw = parseStrictNumber(row[column.index]);
+  if (raw == null) return;
+  const value = raw * column.toCanonicalFactor;
+  if (Number.isFinite(value) && isWithinBounds(value, bounds)) {
+    point[key] = value;
+  }
+}
+
+function* splitRouteSegmentsSteps(
+  points: RoutePoint[],
+): Generator<void, { points: RoutePoint[] }[]> {
+  const segments: { points: RoutePoint[] }[] = [];
+  let segment: RoutePoint[] = [];
+  let previous: number | null = null;
+  for (let index = 0; index < points.length; index++) {
+    const point = points[index]!;
+    if (previous != null && point.t != null && point.t - previous > 60_000 && segment.length) {
+      segments.push({ points: segment });
+      segment = [];
+    }
+    segment.push(point);
+    if (point.t != null) previous = point.t;
+    if ((index + 1) % CSV_NORMALIZATION_CHUNK_ROWS === 0) yield;
+  }
+  if (segment.length) segments.push({ points: segment });
+  return segments;
+}
+
+/**
+ * Sort bounded runs with the native stable sorter, then merge those runs in
+ * cooperative chunks. This avoids one uninterruptible sort over the maximum
+ * 500,000-sample CSV while preserving deterministic timestamp order.
+ */
+function* sortInBoundedSteps<T>(
+  values: T[],
+  compare: (left: T, right: T) => number,
+): Generator<void, T[]> {
+  if (values.length < 2) return values;
+
+  for (let start = 0; start < values.length; start += CSV_NORMALIZATION_CHUNK_ROWS) {
+    const sorted = values.slice(start, start + CSV_NORMALIZATION_CHUNK_ROWS).sort(compare);
+    for (let index = 0; index < sorted.length; index++) {
+      values[start + index] = sorted[index]!;
+    }
+    yield;
+  }
+
+  let source = values;
+  let target = new Array<T>(values.length);
+  for (let width = CSV_NORMALIZATION_CHUNK_ROWS; width < values.length; width *= 2) {
+    let writtenSinceYield = 0;
+    for (let left = 0; left < values.length; left += width * 2) {
+      const middle = Math.min(left + width, values.length);
+      const right = Math.min(left + width * 2, values.length);
+      let leftIndex = left;
+      let rightIndex = middle;
+      for (let output = left; output < right; output++) {
+        if (
+          rightIndex >= right ||
+          (leftIndex < middle && compare(source[leftIndex]!, source[rightIndex]!) <= 0)
+        ) {
+          target[output] = source[leftIndex++]!;
+        } else {
+          target[output] = source[rightIndex++]!;
+        }
+        writtenSinceYield++;
+        if (writtenSinceYield >= CSV_NORMALIZATION_CHUNK_ROWS) {
+          writtenSinceYield = 0;
+          yield;
         }
       }
-    };
-    opt(altitude, 'ele', { minExclusive: -500, maxExclusive: 10_000 });
-    opt(speed, 'speed', { min: 0, maxExclusive: 150 });
-    opt(course, 'course', { min: 0, maxExclusive: 360 });
-    opt(horizontalAccuracy, 'hAcc', { min: 0, max: Number.MAX_SAFE_INTEGER });
-    opt(verticalAccuracy, 'vAcc', { min: 0, max: Number.MAX_SAFE_INTEGER });
-    points.push(p);
-  }
-  if (points.length === 0) throw new AdapterError('no_valid_samples', 'no valid route rows');
-  points.sort((a, b) => (a.t ?? 0) - (b.t ?? 0));
-
-  // Split into segments on recording gaps > 60 s (ROUTE-004: preserve gaps).
-  const segments = [];
-  let seg: (typeof points)[number][] = [];
-  let prev: number | null = null;
-  for (const p of points) {
-    if (prev != null && p.t != null && p.t - prev > 60_000 && seg.length) {
-      segments.push({ points: seg });
-      seg = [];
     }
-    seg.push(p);
-    if (p.t != null) prev = p.t;
+    const previousSource = source;
+    source = target;
+    target = previousSource;
   }
-  if (seg.length) segments.push({ points: seg });
-  return { kind: 'route', format: 'csv', workoutType: info.workoutType, segments };
+
+  if (source !== values) {
+    for (let start = 0; start < values.length; start += CSV_NORMALIZATION_CHUNK_ROWS) {
+      const end = Math.min(start + CSV_NORMALIZATION_CHUNK_ROWS, values.length);
+      for (let index = start; index < end; index++) values[index] = source[index]!;
+      yield;
+    }
+  }
+  return values;
 }
 
 interface UnitColumn {
@@ -397,16 +595,15 @@ function isWithinBounds(value: number, bounds: NumericBounds): boolean {
 /** Parse a GPX file into the same normalized route form. */
 export function parseHaeGpx(name: string, text: string): ParsedFile {
   const info = parseHaeFilename(name);
-  const looseCycling =
-    /^(Outdoor|Indoor) Cycling-(?:Heart Rate|Cycling Cadence|Cycling Distance|Active Energy|Route)-.+\.gpx$/i.exec(
-      name.trim(),
-    );
-  if ((!info || classifyImportFileName(name).kind !== 'supported') && !looseCycling) {
+  if (
+    !info ||
+    expectedKindForLabel(info.label) !== 'route' ||
+    classifyImportFileName(name).kind !== 'supported' ||
+    !/\.gpx$/i.test(name.trim())
+  ) {
     throw new AdapterError('unsupported_file_type', 'filename not recognized');
   }
-  const workoutType: WorkoutType =
-    info?.workoutType ??
-    (looseCycling![1]!.toLowerCase() === 'indoor' ? 'indoor_cycling' : 'outdoor_cycling');
+  const workoutType: WorkoutType = info.workoutType;
   try {
     const { segments } = parseGpx(text);
     if (segments.length === 0) throw new AdapterError('no_valid_samples', 'no track points');

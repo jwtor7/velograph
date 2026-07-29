@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
 import { openDatabase, type Database } from '@velograph/db';
 import type { ImportUploadLimits } from '@velograph/shared';
+import { zipSync } from 'fflate';
 import { createApiServer } from './server.ts';
 
 const limits: ImportUploadLimits = {
@@ -247,6 +248,33 @@ describe('bounded strict upload API (#23/#26)', () => {
     });
     expect(aggregate.status).toBe(413);
     expect(await aggregate.json()).toEqual({ error: 'import_total_size_exceeded' });
+  });
+
+  it.each([
+    [
+      'per-entry',
+      zipSync({ 'synthetic.csv': new TextEncoder().encode('A'.repeat(limits.maxFileBytes + 1)) }),
+    ],
+    [
+      'aggregate',
+      zipSync({
+        'synthetic-a.csv': new TextEncoder().encode('A'.repeat(151)),
+        'synthetic-b.csv': new TextEncoder().encode('B'.repeat(151)),
+      }),
+    ],
+  ])('applies loose-upload %s byte budgets to expanded ZIP contents', async (_case, archive) => {
+    expect(archive.byteLength).toBeLessThanOrEqual(limits.maxFileBytes);
+    const response = await post('/api/import', {
+      files: [upload('archive', 'synthetic.zip', archive)],
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      result: {
+        imported: 0,
+        quarantined: 1,
+        quarantinedFiles: [{ name: 'synthetic.zip', code: 'zip_limits_exceeded' }],
+      },
+    });
   });
 
   it.each(['abc', 'AB==', '%%%%'])('rejects non-canonical base64 atomically: %s', async (value) => {

@@ -51,6 +51,9 @@ importers:
       '@types/node':
         specifier: ^24.13.3
         version: 24.13.3
+      fflate:
+        specifier: ^0.8.2
+        version: 0.8.3
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
