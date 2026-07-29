@@ -38,7 +38,14 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 
 function restoreArtifacts(dir: string): string[] {
   return readdirSync(dir).filter(
-    (name) => name.includes('.restore-') || name.includes('.rollback-'),
+    (name) =>
+      name.includes('.restore-') || name.includes('.rollback-') || name.includes('.recovery-'),
+  );
+}
+
+function backupArtifacts(dir: string): string[] {
+  return readdirSync(dir).filter(
+    (name) => name.includes('.backup-') || name.includes('.previous-'),
   );
 }
 
@@ -214,6 +221,89 @@ describe('backupDatabase / restoreDatabase', () => {
       const db = openDatabase(':memory:');
       await expect(backupDatabase(db, outPath)).rejects.toThrow(/checkout/);
       expect(existsSync(outPath)).toBe(false);
+      db.close();
+    }));
+
+  it('atomically replaces an existing permissive backup with a private validated snapshot', () =>
+    withTempDir(async (dir) => {
+      const db = openDatabase(join(dir, 'live.sqlite3'));
+      const backupPath = join(dir, 'export.sqlite3');
+      writeRestoreState(db, 'previous-backup');
+      await backupDatabase(db, backupPath);
+      chmodSync(backupPath, 0o644);
+      writeRestoreState(db, 'replacement-backup');
+
+      let observedStageMode: number | undefined;
+      await backupDatabase(db, backupPath, {
+        stageBackup: async (source, stagedPath) => {
+          observedStageMode = statSync(stagedPath).mode & 0o777;
+          return source.backup(stagedPath);
+        },
+      });
+
+      expect(observedStageMode).toBe(0o600);
+      expect(statSync(backupPath).mode & 0o777).toBe(0o600);
+      expect(backupArtifacts(dir)).toEqual([]);
+      const probe = openDatabase(backupPath);
+      expect(readRestoreState(probe)).toBe('replacement-backup');
+      probe.close();
+      db.close();
+    }));
+
+  it('preserves an existing backup and cleans the private stage when backup copy fails', () =>
+    withTempDir(async (dir) => {
+      const db = openDatabase(join(dir, 'live.sqlite3'));
+      const backupPath = join(dir, 'export.sqlite3');
+      writeRestoreState(db, 'previous-backup');
+      await backupDatabase(db, backupPath);
+      chmodSync(backupPath, 0o644);
+      writeRestoreState(db, 'replacement-backup');
+
+      await expect(
+        backupDatabase(db, backupPath, {
+          stageBackup: async (_source, stagedPath) => {
+            expect(statSync(stagedPath).mode & 0o777).toBe(0o600);
+            writeFileSync(stagedPath, 'synthetic partial write');
+            throw new Error('simulated_backup_copy_failure');
+          },
+        }),
+      ).rejects.toThrow('simulated_backup_copy_failure');
+
+      expect(statSync(backupPath).mode & 0o777).toBe(0o644);
+      expect(backupArtifacts(dir)).toEqual([]);
+      const probe = openDatabase(backupPath);
+      expect(readRestoreState(probe)).toBe('previous-backup');
+      probe.close();
+      db.close();
+    }));
+
+  it('restores the previous backup if a post-install durability step fails', () =>
+    withTempDir(async (dir) => {
+      const db = openDatabase(join(dir, 'live.sqlite3'));
+      const backupPath = join(dir, 'export.sqlite3');
+      writeRestoreState(db, 'previous-backup');
+      await backupDatabase(db, backupPath);
+      chmodSync(backupPath, 0o644);
+      writeRestoreState(db, 'replacement-backup');
+
+      await expect(
+        backupDatabase(db, backupPath, {
+          afterInstall: () => {
+            const priorArtifacts = backupArtifacts(dir).filter((name) =>
+              name.includes('.previous-'),
+            );
+            expect(priorArtifacts).toHaveLength(1);
+            expect(statSync(join(dir, priorArtifacts[0]!)).mode & 0o777).toBe(0o600);
+            throw new Error('simulated_post_install_failure');
+          },
+        }),
+      ).rejects.toThrow('simulated_post_install_failure');
+
+      expect(statSync(backupPath).mode & 0o777).toBe(0o600);
+      expect(backupArtifacts(dir)).toEqual([]);
+      const probe = openDatabase(backupPath);
+      expect(readRestoreState(probe)).toBe('previous-backup');
+      probe.close();
       db.close();
     }));
 
@@ -439,5 +529,49 @@ describe('backupDatabase / restoreDatabase', () => {
         'restore_reopen_failed',
       );
       expect(reopenCalls).toBe(2);
+    }));
+
+  it('retains a separate private recovery snapshot when original reopen cannot be proven', () =>
+    withTempDir(async (dir) => {
+      const { db, dbPath, backupPath } = await createRestoreScenario(dir);
+      chmodSync(dbPath, 0o640);
+
+      let caught: RestoreDatabaseError | undefined;
+      try {
+        await restoreDatabase(db, dbPath, backupPath, {
+          afterInstall: () => {
+            throw new Error('simulated_post_install_failure');
+          },
+          reopenDatabase: () => {
+            throw new Error('simulated_recovery_open_failure');
+          },
+        });
+      } catch (error) {
+        expect(error).toBeInstanceOf(RestoreDatabaseError);
+        caught = error as RestoreDatabaseError;
+      }
+
+      expect(caught?.code).toBe('restore_recovery_failed');
+      expect(caught?.message).toBe('restore_recovery_failed');
+      expect(caught?.message).not.toContain(dir);
+      expect(caught?.recoveredDatabase).toBeUndefined();
+      expect(db.open).toBe(false);
+
+      const retained = restoreArtifacts(dir).filter((name) => name.includes('.rollback-'));
+      expect(retained).toHaveLength(1);
+      const retainedPath = join(dir, retained[0]!);
+      expect(statSync(retainedPath).mode & 0o777).toBe(0o600);
+      expect(isVelographBackup(retainedPath)).toBe(true);
+      const retainedProbe = openDatabase(retainedPath);
+      expect(readRestoreState(retainedProbe)).toBe('current-live');
+      retainedProbe.close();
+
+      // Recovery installed an independent copy at the live path. The
+      // injected open still prevents the operation from claiming recovery,
+      // while a direct probe proves both copies contain the original data.
+      expect(statSync(dbPath).mode & 0o777).toBe(0o640);
+      const liveProbe = openDatabase(dbPath);
+      expect(readRestoreState(liveProbe)).toBe('current-live');
+      liveProbe.close();
     }));
 });

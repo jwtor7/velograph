@@ -24,15 +24,17 @@ is pre-1.0, and for the release procedure.
 - **Strict, rollback-safe restore and graceful shutdown.** Restore now rejects corrupt input,
   forged or incomplete schemas, foreign-key violations, and unknown/future/out-of-order migration
   histories. It migrates a private staged copy and compares its complete schema against a freshly
-  migrated canonical database before touching the live handle. Stage and rollback snapshots both
-  use SQLite's backup API, begin as `0600`, preserve the live database's ownership/mode, and are
-  closed and fsynced before cutover. Any failure after the live handle closes reinstalls and
-  reopens the original rollback snapshot; surfaces expose only stable value-free error codes. The
-  API rejects concurrent work during the restore barrier, tracks asynchronous work after client
-  disconnect, and fails closed only when recovery cannot be proven. SIGINT/SIGTERM drain accepted
-  work and checkpoint/close the current handle. `app:stop` waits 12 seconds for the verified
-  process, safely escalates, and treats a final `SIGKILL` `ESRCH` race as a completed stop
-  (#43, #55).
+  migrated canonical database before touching the live handle. Every backup, including replacement
+  of an existing permissive destination, is now built and validated in a unique `0600` sibling,
+  fsynced, atomically installed, and followed by a parent-directory fsync; failures preserve the
+  prior backup and clean incomplete stages. Restore stage and rollback snapshots use SQLite's
+  backup API and are closed/fsynced before cutover. Recovery installs an independent copy of the
+  original, retaining a separate canonical `0600` rollback snapshot whenever reopen cannot be
+  proven; surfaces expose only stable value-free codes. The API rejects concurrent work during the
+  restore barrier, tracks asynchronous work after client disconnect, and fails closed only when
+  recovery cannot be proven. SIGINT/SIGTERM drain accepted work and checkpoint/close the current
+  handle. `app:stop` waits 12 seconds for the verified process, safely escalates, and treats a
+  final `SIGKILL` `ESRCH` race as a completed stop (#43, #55).
 - **"Choose export folder" could not select a folder.** The directory input carried
   `accept=".csv,.gpx,.zip"`; since a directory matches none of those extensions, the OS
   picker greyed folders out. Because Health Auto Export writes one CSV per metric, this

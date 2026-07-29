@@ -14,6 +14,12 @@
 - While a database contains private health and location data, when stage and rollback artifacts
   are created, the system shall create them with mode `0600` and preserve the live database's
   ownership and mode for the installed file.
+- While a backup destination is new or already exists with permissive permissions, when backup is
+  requested, the system shall populate and validate a unique `0600` sibling, fsync it, atomically
+  rename it over the destination, and fsync the parent directory without writing the destination
+  in place.
+- While an older backup exists, when creating its replacement fails before or after install, the
+  system shall preserve the older backup and clean the incomplete stage.
 - While an error crosses the database/API/CLI boundary, when it is reported, the system shall
   expose only a stable value-free code and shall not expose paths, SQL, or stored values.
 - While `app:stop` escalates to `SIGKILL`, when the process exits between the final identity check
@@ -38,13 +44,25 @@
    database.
 4. Checkpoint the live handle, then create and validate a separate `0600` rollback snapshot through
    SQLite's backup API while the live handle remains open.
-5. Copy the live database's mode and ownership onto both complete artifacts, fsync them, close the
-   live handle, and atomically rename the stage over the live path.
+5. Copy the live database's mode and ownership onto the incoming stage, retain the rollback
+   artifact with private mode `0600` and the live file's ownership, fsync both, close the live
+   handle, and atomically rename the stage over the live path.
 6. Reopen the replacement. On every failure after close, atomically reinstall the rollback
-   snapshot (or reopen the still-original path when cutover did not commit) and return that handle
-   in a structured recovery error.
+   snapshot from an independently validated SQLite-backup copy (or reopen the still-original path
+   when cutover did not commit) and return that handle in a structured recovery error.
 7. Remove temporary files and sidecars after a proven outcome. Retain the rollback snapshot if
    recovery itself cannot be proven.
+
+### Backup replacement
+
+1. If a destination already exists, copy it to a unique `0600`, fsynced prior-snapshot artifact.
+2. Create a different unique sibling with mode `0600`; SQLite's backup API writes only to that
+   stage.
+3. Open the stage read-only, require canonical schema/integrity/migrations/foreign keys, close it,
+   remove sidecars, and fsync it.
+4. Atomically rename the validated stage over the destination and fsync the parent directory.
+5. If any post-install step fails, atomically reinstall the prior snapshot. If reinstall cannot be
+   proven, retain the private prior snapshot; never delete the only known-good older backup.
 
 ### Security
 
@@ -54,20 +72,22 @@
 - Migration rows must be an exact ordered prefix of bundled migration filenames; unknown, future,
   missing-middle, or reordered histories fail closed.
 - Stage and rollback files are never populated with process-default public permissions.
+- Existing permissive backup destinations cannot transfer their mode to new snapshots; every
+  installed backup comes from a `0600` stage.
 - API and CLI surfaces map all failures to stable codes; native filesystem and SQLite messages do
   not cross the boundary.
 - Restore remains protected by the loopback Host/Origin/CSRF controls and exclusive request barrier.
 
 ## Failure model
 
-| Phase                                             | Live path           | Required outcome                                    |
-| ------------------------------------------------- | ------------------- | --------------------------------------------------- |
-| Source open / stage copy / validation / migration | Original, open      | Reject; original handle stays usable                |
-| Live checkpoint / rollback snapshot               | Original, open      | Reject; original handle stays usable                |
-| After live close, before stage rename             | Original, closed    | Reopen original; fall back to rollback install      |
-| After stage rename, before replacement open       | Replacement, closed | Reinstall rollback snapshot and reopen original     |
-| Replacement open fails                            | Replacement, closed | Reinstall rollback snapshot and reopen original     |
-| Recovery cannot be proven                         | Unknown             | Fail closed and retain the `0600` rollback artifact |
+| Phase                                             | Live path                            | Required outcome                                             |
+| ------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------ |
+| Source open / stage copy / validation / migration | Original, open                       | Reject; original handle stays usable                         |
+| Live checkpoint / rollback snapshot               | Original, open                       | Reject; original handle stays usable                         |
+| After live close, before stage rename             | Original, closed                     | Reopen original; fall back to rollback install               |
+| After stage rename, before replacement open       | Replacement, closed                  | Reinstall rollback snapshot and reopen original              |
+| Replacement open fails                            | Replacement, closed                  | Reinstall rollback snapshot and reopen original              |
+| Recovery cannot be proven                         | Original copy at live path, unproven | Fail closed and retain the separate `0600` rollback artifact |
 
 ## Deterministic test plan
 
@@ -78,6 +98,11 @@
 - Injected failures immediately after live close, after replacement install, and on replacement
   reopen; each must prove original data, integrity, handle usability, mode, and artifact cleanup.
 - `0600` stage/rollback population plus final live mode preservation.
+- New and existing backup destinations, including an existing `0644` file, install only from a
+  validated `0600` stage.
+- Injected backup-copy and post-install failures preserve the older backup and clean the stage.
+- Failed original reopen leaves a separate canonical `0600` recovery snapshot and returns only
+  `restore_recovery_failed`.
 - `SIGKILL` `ESRCH` race returns success without an uncaught error.
 
 ## Implementation plan

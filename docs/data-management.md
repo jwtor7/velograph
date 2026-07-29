@@ -75,12 +75,18 @@ identical bytes → the ride comes back.
 `packages/db/src/backup.ts`:
 
 - `backupDatabase(db, destPath)` calls `guardAgainstCheckout(dirname(destPath))` — the same guard
-  `resolveDataDir` uses for `VELO_DATA_DIR` — before writing anything, then uses
-  `better-sqlite3`'s `Database.prototype.backup()`, which wraps SQLite's own online backup API
-  (`sqlite3_backup_init`/`step`/`finish`). This is a safe, consistent snapshot of a live
-  WAL-mode database; it is never a raw `fs.copyFile` of the `.sqlite3`/`-wal`/`-shm` files, which
-  could copy a torn, mid-write state. A new destination is pre-created as `0600` before any
-  private bytes are written.
+  `resolveDataDir` uses for `VELO_DATA_DIR` — before writing anything. It creates a unique sibling
+  with mode `0600`, writes that stage through `better-sqlite3`'s
+  `Database.prototype.backup()` (SQLite's `sqlite3_backup_init`/`step`/`finish`), then verifies
+  canonical schema, migration history, integrity, and foreign keys. The stage is closed, sidecars
+  removed, and file fsynced before one same-directory atomic rename installs it and the parent
+  directory is fsynced. The destination is never populated in place, including when an existing
+  destination is `0644`; the installed backup is always the private staged inode.
+- When replacing an existing backup, the old file is first preserved in a separate unique `0600`,
+  fsynced sibling. A copy or validation failure leaves the original destination untouched. A
+  post-install failure reinstalls the preserved file atomically. If that reinstall itself cannot
+  be proven, Velograph retains the private prior snapshot rather than deleting the only known-good
+  backup. Completed and failed operations clean incomplete backup stages.
 - `restoreDatabase(liveDb, dbPath, backupPath)` opens the selected source once, read-only, then
   backs it into a uniquely named sibling stage through SQLite's backup API. Before touching the
   live handle, restore verifies SQLite integrity and requires the recorded migration names to be
@@ -96,16 +102,19 @@ identical bytes → the ride comes back.
   a temporary health/location database broader than the live file and preserves restrictive
   permissions across inode replacement.
 - The live handle is checkpointed, but remains open while restore creates and validates a second
-  rollback snapshot through SQLite's backup API. Only then is the handle closed. A same-directory
-  `rename` installs the complete stage atomically. If any operation after close fails—including
-  install durability or reopening the replacement—restore atomically reinstalls the rollback
-  snapshot and returns a reopened handle for the original database. If recovery itself cannot be
-  proven, the API fails closed and the private rollback artifact is retained rather than deleted.
-  Old `-wal`/`-shm`/`-journal` sidecars are removed only around a proven atomic outcome.
+  rollback snapshot through SQLite's backup API. The rollback remains `0600`; it is never renamed
+  away during recovery. Only then is the handle closed. A same-directory `rename` installs the
+  complete incoming stage atomically. If any operation after close fails—including install
+  durability or reopening the replacement—restore uses SQLite's backup API to make another
+  independent, validated recovery-install stage from the rollback, atomically installs that copy,
+  and attempts to reopen it. Recovery success removes the rollback. If reopening still cannot be
+  proven, the API returns only `restore_recovery_failed`, fails closed, and retains the separate
+  canonical `0600` rollback sibling without exposing its path. Old `-wal`/`-shm`/`-journal`
+  sidecars are removed only around a proven atomic outcome.
 - Restore failures cross API/CLI boundaries only as stable value-free codes such as
   `invalid_backup_schema`, `invalid_backup_migrations`, `invalid_backup_foreign_keys`,
-  `restore_cutover_failed`, or `restore_reopen_failed`; native SQLite/filesystem messages, paths,
-  SQL, and stored values are not returned.
+  `restore_cutover_failed`, `restore_reopen_failed`, or `restore_recovery_failed`; native
+  SQLite/filesystem messages, paths, SQL, and stored values are not returned.
 - The API places restore behind an exclusive request barrier. New non-health requests receive a
   privacy-safe `restore_in_progress` response while every earlier request drains. Async operations
   remain leased after a client disconnects, so SIGINT/SIGTERM stop new connections and wait for
@@ -121,9 +130,11 @@ identical bytes → the ride comes back.
 
 Both directions are exercised end to end (round trip, and rejecting a backup path inside a git
 checkout), along with forged/incomplete/current/future migration histories, corrupt input,
-foreign-key failure, copy and migration failure, private artifact modes, original-mode
-preservation, failures before and after replacement install, replacement-open rollback, graceful
-WAL checkpoint/close, privacy-safe surface codes, and stop escalation/`ESRCH`, in
+foreign-key failure, copy and migration failure, atomic replacement of an existing permissive
+backup, failed-backup preservation/cleanup, private artifact modes, original-mode preservation,
+failures before and after replacement install, replacement-open rollback, separate recovery
+retention when reopen cannot be proven, graceful WAL checkpoint/close, privacy-safe surface codes,
+and stop escalation/`ESRCH`, in
 `packages/db/src/backup.test.ts`, `packages/db/src/migrate.test.ts`,
 `apps/api/src/shutdown.test.ts`, `apps/api/src/shutdown-coordinator.test.ts`,
 `apps/api/src/data-management.test.ts`, `scripts/app.test.mjs`, and

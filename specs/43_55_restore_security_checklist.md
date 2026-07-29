@@ -18,6 +18,9 @@
 ## Private-data protection
 
 - [x] Stage and rollback files are created as `0600` before private bytes are written.
+- [x] Every backup destination is atomically replaced from a unique validated and fsynced `0600`
+      sibling, even when the existing destination is permissive.
+- [x] Failed backup creation preserves the prior backup and removes incomplete stages.
 - [x] Installed database mode and ownership match the original database.
 - [x] Temporary artifacts and sidecars are removed after a proven outcome.
 - [x] A rollback artifact is retained rather than deleted when recovery cannot be proven.
@@ -28,6 +31,8 @@
 - [x] The live handle remains open through all staging and validation.
 - [x] The rollback snapshot uses SQLite's online backup API.
 - [x] Every injected post-close failure reinstalls and reopens the original database.
+- [x] Recovery installs from an independent SQLite-backup copy, leaving the separate `0600`
+      rollback snapshot unchanged until reopening is proven.
 - [x] Busy WAL checkpoints fail before close.
 - [x] `SIGTERM`/`SIGKILL` PID identity checks prevent signalling a replacement process.
 - [x] Final-force-stop `ESRCH` is treated as an already-completed stop.
