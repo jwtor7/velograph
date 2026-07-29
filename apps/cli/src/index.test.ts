@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +19,7 @@ const FIXTURES = join(
   'synthetic',
   'rides',
 );
+const CLI_ENTRYPOINT = fileURLToPath(new URL('./index.ts', import.meta.url));
 
 let dataDir: string;
 
@@ -113,9 +115,38 @@ describe('velograph CLI', () => {
       .map((f) => join(FIXTURES, f));
     await main(['import', ...files, '--data-dir', dataDir]);
     const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    const error = vi.mocked(console.error);
+    error.mockClear();
     expect(
       await main(['backup', join(repoRoot, 'should-not-exist.sqlite3'), '--data-dir', dataDir]),
     ).toBe(1);
+    expect(error).toHaveBeenLastCalledWith('Backup failed: destination_inside_checkout');
+    expect(JSON.stringify(error.mock.calls)).not.toContain(repoRoot);
+  });
+
+  it('reports value-free backup destination failures without changing the live database', async () => {
+    const files = readdirSync(FIXTURES)
+      .filter((f) => /\.(csv|gpx)$/.test(f))
+      .map((f) => join(FIXTURES, f));
+    await main(['import', ...files, '--data-dir', dataDir]);
+    const before = workoutCount();
+    const error = vi.mocked(console.error);
+
+    error.mockClear();
+    expect(await main(['backup', databasePath(dataDir), '--data-dir', dataDir])).toBe(1);
+    expect(error).toHaveBeenLastCalledWith(
+      'Backup failed: destination_conflicts_with_live_database',
+    );
+
+    const notDirectory = join(dataDir, 'synthetic-not-a-directory');
+    writeFileSync(notDirectory, 'invented');
+    error.mockClear();
+    expect(
+      await main(['backup', join(notDirectory, 'export.sqlite3'), '--data-dir', dataDir]),
+    ).toBe(1);
+    expect(error).toHaveBeenLastCalledWith('Backup failed: invalid_backup_destination');
+    expect(JSON.stringify(error.mock.calls)).not.toContain(dataDir);
+    expect(workoutCount()).toBe(before);
   });
 
   it('reports a stable value-free code for an invalid restore source', async () => {
@@ -128,5 +159,25 @@ describe('velograph CLI', () => {
     } finally {
       error.mockRestore();
     }
+  });
+
+  it('keeps corrupt live-database startup failures behind the spawned CLI boundary', () => {
+    writeFileSync(databasePath(dataDir), 'synthetic invalid sqlite');
+    const result = spawnSync(
+      process.execPath,
+      [CLI_ENTRYPOINT, 'backup', join(dataDir, 'synthetic-export.sqlite3'), '--data-dir', dataDir],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, VELO_DATA_DIR: '' },
+      },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr.trim()).toBe('Backup failed: backup_failed');
+    expect(result.stderr).not.toContain(dataDir);
+    expect(result.stderr).not.toContain(process.cwd());
+    expect(result.stderr).not.toContain('SqliteError');
+    expect(result.stderr).not.toContain(' at ');
   });
 });

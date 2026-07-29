@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import type { Database } from '@velograph/db';
 import {
+  BackupValidationError,
   Repository,
   RestoreDatabaseError,
   RestoreValidationError,
@@ -387,10 +388,11 @@ function route(
           const result = await backupDatabase(db, dest);
           send(res, 200, { ok: true, totalPages: result.totalPages });
         } catch (err) {
-          const insideCheckout = err instanceof Error && /checkout/.test(err.message);
-          send(res, insideCheckout ? 400 : 500, {
-            error: insideCheckout ? 'destination_inside_checkout' : 'backup_failed',
-          });
+          if (err instanceof BackupValidationError) {
+            send(res, 400, { error: err.code });
+            return;
+          }
+          send(res, 500, { error: 'backup_failed' });
         }
       })
       .catch(() => send(res, 400, { error: 'invalid_body' }));

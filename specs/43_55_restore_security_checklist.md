@@ -21,10 +21,18 @@
 - [x] Every backup destination is atomically replaced from a unique validated and fsynced `0600`
       sibling, even when the existing destination is permissive.
 - [x] Failed backup creation preserves the prior backup and removes incomplete stages.
+- [x] Backup rejects the live database, its sidecars, and filesystem aliases as destinations.
+- [x] Same-destination backup requests are serialized in-process and across processes, with the
+      filesystem-backed lock held through rollback and cleanup.
+- [x] The verified destination parent device/inode and canonical path are checked after
+      asynchronous staging and immediately around final install; cleanup never follows a changed
+      parent.
+- [x] Backup rollback retains an independent prior snapshot until directory durability is proven.
 - [x] Installed database mode and ownership match the original database.
 - [x] Temporary artifacts and sidecars are removed after a proven outcome.
 - [x] A rollback artifact is retained rather than deleted when recovery cannot be proven.
-- [x] No source path, database content, SQL error, or native exception is returned by API/CLI.
+- [x] No source path, destination path, database content, SQL error, native exception, or stack is
+      returned by API/CLI, including data-directory resolution and live-database open/close errors.
 
 ## Failure and recovery
 

@@ -1,24 +1,32 @@
 import { describe, expect, it } from 'vitest';
 import DatabaseConstructor, { type Database } from 'better-sqlite3';
+import { spawn, type ChildProcess } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
+  linkSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { checkpointDatabase, openDatabase } from './database.ts';
 import { Repository } from './repository.ts';
 import {
+  BackupValidationError,
   RestoreDatabaseError,
   RestoreValidationError,
   backupDatabase,
   isVelographBackup,
   restoreDatabase,
+  type BackupValidationErrorCode,
   type RestoreOptions,
   type RestoreValidationErrorCode,
 } from './backup.ts';
@@ -27,6 +35,8 @@ import {
 // created outside the checkout via the OS temp directory, never under the
 // repo, and is removed at the end of each test.
 
+const BACKUP_LOCK_CHILD = fileURLToPath(new URL('./backup-lock-child.ts', import.meta.url));
+
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), 'velo-backup-'));
   try {
@@ -34,6 +44,29 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+async function waitForPath(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (existsSync(path)) return;
+    await new Promise<void>((resolveDelay) => {
+      setTimeout(resolveDelay, 25);
+    });
+  }
+  throw new Error('test_barrier_timeout');
+}
+
+function waitForChild(child: ChildProcess): Promise<{ code: number | null; stderr: string }> {
+  if (!child.stderr) throw new Error('child_stderr_unavailable');
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk: string) => {
+    stderr += chunk;
+  });
+  return new Promise((resolveChild, rejectChild) => {
+    child.once('error', rejectChild);
+    child.once('exit', (code) => resolveChild({ code, stderr }));
+  });
 }
 
 function restoreArtifacts(dir: string): string[] {
@@ -59,6 +92,20 @@ async function expectValidationError(
   } catch (error) {
     expect(error).toBeInstanceOf(RestoreValidationError);
     expect((error as RestoreValidationError).code).toBe(code);
+    expect((error as Error).message).toBe(code);
+  }
+}
+
+async function expectBackupValidationError(
+  operation: Promise<unknown>,
+  code: BackupValidationErrorCode,
+): Promise<void> {
+  try {
+    await operation;
+    throw new Error('expected_backup_to_fail');
+  } catch (error) {
+    expect(error).toBeInstanceOf(BackupValidationError);
+    expect((error as BackupValidationError).code).toBe(code);
     expect((error as Error).message).toBe(code);
   }
 }
@@ -224,6 +271,70 @@ describe('backupDatabase / restoreDatabase', () => {
       db.close();
     }));
 
+  it('rejects the live database, its sidecars, and aliases as backup destinations', () =>
+    withTempDir(async (dir) => {
+      const dbPath = join(dir, 'live.sqlite3');
+      const db = openDatabase(dbPath);
+      writeRestoreState(db, 'still-live');
+
+      for (const suffix of ['', '-wal', '-shm', '-journal']) {
+        await expectBackupValidationError(
+          backupDatabase(db, `${dbPath}${suffix}`),
+          'destination_conflicts_with_live_database',
+        );
+      }
+
+      const hardLink = join(dir, 'live-alias.sqlite3');
+      linkSync(dbPath, hardLink);
+      await expectBackupValidationError(
+        backupDatabase(db, hardLink),
+        'destination_conflicts_with_live_database',
+      );
+
+      expect(db.open).toBe(true);
+      expect(readRestoreState(db)).toBe('still-live');
+      expect(db.pragma('integrity_check', { simple: true })).toBe('ok');
+      db.close();
+    }));
+
+  it('rejects a destination whose verified parent is swapped before install', () =>
+    withTempDir(async (dir) => {
+      const liveDir = join(dir, 'live');
+      const destinationDir = join(dir, 'destination');
+      const movedDestinationDir = join(dir, 'destination-moved');
+      mkdirSync(liveDir);
+      mkdirSync(destinationDir);
+      const dbPath = join(liveDir, 'live.sqlite3');
+      const destinationPath = join(destinationDir, 'live.sqlite3');
+      const db = openDatabase(dbPath);
+      writeRestoreState(db, 'before-parent-swap');
+
+      await expectBackupValidationError(
+        backupDatabase(db, destinationPath, {
+          stageBackup: async (source, stagedPath) => {
+            renameSync(destinationDir, movedDestinationDir);
+            symlinkSync(liveDir, destinationDir, 'dir');
+            return source.backup(stagedPath);
+          },
+        }),
+        'invalid_backup_destination',
+      );
+
+      const retainedStages = backupArtifacts(liveDir);
+      expect(retainedStages).toHaveLength(1);
+      expect(statSync(join(liveDir, retainedStages[0]!)).mode & 0o777).toBe(0o600);
+      expect(db.open).toBe(true);
+      expect(readRestoreState(db)).toBe('before-parent-swap');
+      writeRestoreState(db, 'after-parent-swap');
+      checkpointDatabase(db);
+      db.close();
+
+      const reopened = openDatabase(dbPath);
+      expect(readRestoreState(reopened)).toBe('after-parent-swap');
+      expect(reopened.pragma('integrity_check', { simple: true })).toBe('ok');
+      reopened.close();
+    }));
+
   it('atomically replaces an existing permissive backup with a private validated snapshot', () =>
     withTempDir(async (dir) => {
       const db = openDatabase(join(dir, 'live.sqlite3'));
@@ -304,6 +415,184 @@ describe('backupDatabase / restoreDatabase', () => {
       const probe = openDatabase(backupPath);
       expect(readRestoreState(probe)).toBe('previous-backup');
       probe.close();
+      db.close();
+    }));
+
+  it('serializes same-destination backups so a failed writer cannot clobber a later success', () =>
+    withTempDir(async (dir) => {
+      const db = openDatabase(join(dir, 'live.sqlite3'));
+      const backupPath = join(dir, 'export.sqlite3');
+      writeRestoreState(db, 'previous-backup');
+      await backupDatabase(db, backupPath);
+      writeRestoreState(db, 'first-attempt');
+
+      let markFirstInstalled!: () => void;
+      const firstInstalled = new Promise<void>((resolve) => {
+        markFirstInstalled = resolve;
+      });
+      let releaseFirst!: () => void;
+      const holdFirst = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const first = backupDatabase(db, backupPath, {
+        afterInstall: async () => {
+          markFirstInstalled();
+          await holdFirst;
+          throw new Error('simulated_first_backup_failure');
+        },
+      });
+
+      await firstInstalled;
+      writeRestoreState(db, 'second-success');
+      let secondStarted = false;
+      const second = backupDatabase(db, backupPath, {
+        stageBackup: (source, destination) => {
+          secondStarted = true;
+          return source.backup(destination);
+        },
+      });
+      await Promise.resolve();
+      expect(secondStarted).toBe(false);
+
+      releaseFirst();
+      await expect(first).rejects.toThrow('simulated_first_backup_failure');
+      await second;
+      expect(secondStarted).toBe(true);
+      expect(backupArtifacts(dir)).toEqual([]);
+
+      const probe = openDatabase(backupPath);
+      expect(readRestoreState(probe)).toBe('second-success');
+      probe.close();
+      db.close();
+    }));
+
+  it(
+    'serializes same-destination failure and success across separate processes',
+    () =>
+      withTempDir(async (dir) => {
+        const backupPath = join(dir, 'shared-export.sqlite3');
+        const firstDbPath = join(dir, 'first.sqlite3');
+        const secondDbPath = join(dir, 'second.sqlite3');
+        const seedDbPath = join(dir, 'seed.sqlite3');
+        const firstReady = join(dir, 'first-ready');
+        const releaseFirst = join(dir, 'release-first');
+        const secondAttempting = join(dir, 'second-attempting');
+        const secondStarted = join(dir, 'second-started');
+
+        const seed = openDatabase(seedDbPath);
+        seed
+          .prepare(
+            `INSERT INTO user_settings (key, value_json) VALUES ('backup-lock-state', ?)
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json`,
+          )
+          .run(JSON.stringify('previous-backup'));
+        await backupDatabase(seed, backupPath);
+        seed.close();
+        openDatabase(firstDbPath).close();
+        openDatabase(secondDbPath).close();
+
+        const children: ChildProcess[] = [];
+        const childResults: Promise<{ code: number | null; stderr: string }>[] = [];
+        try {
+          const first = spawn(
+            process.execPath,
+            [
+              BACKUP_LOCK_CHILD,
+              'hold-and-fail',
+              firstDbPath,
+              backupPath,
+              firstReady,
+              releaseFirst,
+              join(dir, 'first-started'),
+            ],
+            { stdio: ['ignore', 'pipe', 'pipe'] },
+          );
+          children.push(first);
+          const firstResult = waitForChild(first);
+          childResults.push(firstResult);
+          await waitForPath(firstReady);
+
+          const second = spawn(
+            process.execPath,
+            [
+              BACKUP_LOCK_CHILD,
+              'succeed',
+              secondDbPath,
+              backupPath,
+              secondAttempting,
+              join(dir, 'unused-release'),
+              secondStarted,
+            ],
+            { stdio: ['ignore', 'pipe', 'pipe'] },
+          );
+          children.push(second);
+          const secondResult = waitForChild(second);
+          childResults.push(secondResult);
+          await waitForPath(secondAttempting);
+          await new Promise<void>((resolveDelay) => {
+            setTimeout(resolveDelay, 150);
+          });
+          expect(existsSync(secondStarted)).toBe(false);
+
+          writeFileSync(releaseFirst, 'release');
+          const [firstExit, secondExit] = await Promise.all([firstResult, secondResult]);
+          expect(firstExit).toEqual({ code: 0, stderr: '' });
+          expect(secondExit).toEqual({ code: 0, stderr: '' });
+          expect(existsSync(secondStarted)).toBe(true);
+
+          const probe = openDatabase(backupPath);
+          const row = probe
+            .prepare("SELECT value_json FROM user_settings WHERE key = 'backup-lock-state'")
+            .get() as { value_json: string };
+          expect(JSON.parse(row.value_json)).toBe('second-success');
+          probe.close();
+        } finally {
+          if (!existsSync(releaseFirst)) writeFileSync(releaseFirst, 'release');
+          for (const child of children) {
+            if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+          }
+          await Promise.allSettled(childResults);
+        }
+      }),
+    15_000,
+  );
+
+  it('retains the independent previous snapshot until rollback directory sync is proven', () =>
+    withTempDir(async (dir) => {
+      const db = openDatabase(join(dir, 'live.sqlite3'));
+      const backupPath = join(dir, 'export.sqlite3');
+      writeRestoreState(db, 'previous-backup');
+      await backupDatabase(db, backupPath);
+      writeRestoreState(db, 'replacement-backup');
+      let directorySyncs = 0;
+
+      await expect(
+        backupDatabase(db, backupPath, {
+          syncDirectory: () => {
+            directorySyncs += 1;
+            if (directorySyncs === 2) {
+              throw new Error('simulated_rollback_directory_sync_failure');
+            }
+          },
+          afterInstall: () => {
+            throw new Error('simulated_post_install_failure');
+          },
+        }),
+      ).rejects.toThrow('simulated_post_install_failure');
+
+      expect(directorySyncs).toBe(2);
+      const retained = backupArtifacts(dir).filter((name) => name.includes('.previous-'));
+      expect(retained).toHaveLength(1);
+      const retainedPath = join(dir, retained[0]!);
+      expect(statSync(retainedPath).mode & 0o777).toBe(0o600);
+      expect(isVelographBackup(retainedPath)).toBe(true);
+      const retainedProbe = openDatabase(retainedPath);
+      expect(readRestoreState(retainedProbe)).toBe('previous-backup');
+      retainedProbe.close();
+
+      const destinationProbe = openDatabase(backupPath);
+      expect(readRestoreState(destinationProbe)).toBe('previous-backup');
+      destinationProbe.close();
       db.close();
     }));
 

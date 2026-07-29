@@ -1,5 +1,5 @@
 import DatabaseConstructor, { type Database } from 'better-sqlite3';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   chownSync,
@@ -7,13 +7,16 @@ import {
   copyFileSync,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
 } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { guardAgainstCheckout } from './datadir.ts';
 import { checkpointDatabase, MIGRATIONS_DIR, openDatabase } from './database.ts';
 import { isOrderedMigrationPrefix, listMigrationFiles } from './migrate.ts';
@@ -23,11 +26,29 @@ export interface BackupResult {
   remainingPages: number;
 }
 
+export type BackupValidationErrorCode =
+  | 'destination_inside_checkout'
+  | 'destination_conflicts_with_live_database'
+  | 'invalid_backup_destination';
+
+/** A backup destination failure with a stable, value-free code. */
+export class BackupValidationError extends Error {
+  readonly code: BackupValidationErrorCode;
+
+  constructor(code: BackupValidationErrorCode) {
+    super(code);
+    this.name = 'BackupValidationError';
+    this.code = code;
+  }
+}
+
 export interface BackupOptions {
   /** @internal Deterministic fault-injection seam. */
   stageBackup?: (source: Database, destination: string) => Promise<BackupResult>;
   /** @internal Deterministic fault-injection seam. */
   afterInstall?: () => void | Promise<void>;
+  /** @internal Deterministic fault-injection seam. */
+  syncDirectory?: (path: string) => void;
 }
 
 export type RestoreValidationErrorCode =
@@ -89,41 +110,332 @@ export class RestoreDatabaseError extends Error {
   }
 }
 
+interface FileIdentity {
+  dev: number;
+  ino: number;
+}
+
+interface PreparedBackupTarget {
+  target: string;
+  parent: string;
+  parentIdentity: FileIdentity;
+}
+
+interface CrossProcessBackupLock {
+  release(): void;
+}
+
+const backupDestinationLocks = new Map<string, Promise<void>>();
+const BACKUP_LOCK_RETRY_MS = 25;
+
+function validationGuardAgainstCheckout(path: string): void {
+  try {
+    guardAgainstCheckout(path);
+  } catch {
+    throw new BackupValidationError('destination_inside_checkout');
+  }
+}
+
+function canonicalEntryPath(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return join(realpathSync(dirname(absolute)), basename(absolute));
+  } catch {
+    throw new BackupValidationError('invalid_backup_destination');
+  }
+}
+
+function fileIdentity(path: string): FileIdentity | undefined {
+  try {
+    const stats = statSync(path);
+    return { dev: stats.dev, ino: stats.ino };
+  } catch {
+    return undefined;
+  }
+}
+
+function identitiesMatch(a: FileIdentity | undefined, b: FileIdentity | undefined): boolean {
+  return a !== undefined && b !== undefined && a.dev === b.dev && a.ino === b.ino;
+}
+
+function requiredDirectoryIdentity(path: string): FileIdentity {
+  try {
+    const stats = statSync(path);
+    if (!stats.isDirectory()) {
+      throw new BackupValidationError('invalid_backup_destination');
+    }
+    return { dev: stats.dev, ino: stats.ino };
+  } catch (error) {
+    if (error instanceof BackupValidationError) throw error;
+    throw new BackupValidationError('invalid_backup_destination');
+  }
+}
+
+function assertDestinationDoesNotConflictWithLiveDatabase(db: Database, target: string): void {
+  if (db.memory || db.name === '' || db.name === ':memory:') return;
+  const liveEntries = new Set([canonicalEntryPath(db.name)]);
+  try {
+    liveEntries.add(realpathSync(resolve(db.name)));
+  } catch {
+    throw new BackupValidationError('invalid_backup_destination');
+  }
+  const protectedPaths = [...liveEntries].flatMap((livePath) => [
+    livePath,
+    `${livePath}-wal`,
+    `${livePath}-shm`,
+    `${livePath}-journal`,
+  ]);
+  const targetIdentity = fileIdentity(target);
+  if (
+    protectedPaths.some(
+      (protectedPath) =>
+        target === protectedPath || identitiesMatch(targetIdentity, fileIdentity(protectedPath)),
+    )
+  ) {
+    throw new BackupValidationError('destination_conflicts_with_live_database');
+  }
+}
+
+function backupLockDirectory(): string {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  const root = join(tmpdir(), `velograph-backup-locks-${uid ?? 'portable'}`);
+  try {
+    mkdirSync(root, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+      throw new BackupValidationError('invalid_backup_destination');
+    }
+  }
+
+  try {
+    const stats = lstatSync(root);
+    if (
+      stats.isSymbolicLink() ||
+      !stats.isDirectory() ||
+      (uid !== undefined && stats.uid !== uid)
+    ) {
+      throw new BackupValidationError('invalid_backup_destination');
+    }
+    chmodSync(root, 0o700);
+    return realpathSync(root);
+  } catch (error) {
+    if (error instanceof BackupValidationError) throw error;
+    throw new BackupValidationError('invalid_backup_destination');
+  }
+}
+
+function pathIsInside(path: string, parent: string): boolean {
+  const rel = relative(parent, path);
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+function backupLockPath(target: string): string {
+  const key = createHash('sha256').update(target).digest('hex');
+  return join(backupLockDirectory(), `${key}.sqlite3`);
+}
+
+function preparePrivateLockFile(path: string): void {
+  try {
+    createPrivateArtifact(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+      throw new BackupValidationError('invalid_backup_destination');
+    }
+  }
+
+  try {
+    const stats = lstatSync(path);
+    const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+    if (
+      stats.isSymbolicLink() ||
+      !stats.isFile() ||
+      stats.nlink !== 1 ||
+      (uid !== undefined && stats.uid !== uid)
+    ) {
+      throw new BackupValidationError('invalid_backup_destination');
+    }
+    chmodSync(path, 0o600);
+  } catch (error) {
+    if (error instanceof BackupValidationError) throw error;
+    throw new BackupValidationError('invalid_backup_destination');
+  }
+}
+
+function isSqliteLockContention(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED';
+}
+
+async function acquireCrossProcessBackupLock(target: string): Promise<CrossProcessBackupLock> {
+  const path = backupLockPath(target);
+  preparePrivateLockFile(path);
+
+  let lockDb: Database | undefined;
+  try {
+    lockDb = new DatabaseConstructor(path, { timeout: BACKUP_LOCK_RETRY_MS });
+    for (;;) {
+      try {
+        lockDb.exec('BEGIN EXCLUSIVE');
+        break;
+      } catch (error) {
+        if (!isSqliteLockContention(error)) throw error;
+        await new Promise<void>((resolveDelay) => {
+          setTimeout(resolveDelay, BACKUP_LOCK_RETRY_MS);
+        });
+      }
+    }
+  } catch {
+    closeQuietly(lockDb);
+    throw new BackupValidationError('invalid_backup_destination');
+  }
+
+  let released = false;
+  return {
+    release: () => {
+      if (released) return;
+      released = true;
+      try {
+        lockDb?.exec('ROLLBACK');
+      } catch {
+        // Closing the connection releases the OS-level SQLite lock even when
+        // an explicit rollback cannot be completed.
+      }
+      closeQuietly(lockDb);
+    },
+  };
+}
+
+function assertBackupParentStable(db: Database, prepared: PreparedBackupTarget): void {
+  let currentTarget: string;
+  try {
+    currentTarget = canonicalEntryPath(prepared.target);
+  } catch {
+    throw new BackupValidationError('invalid_backup_destination');
+  }
+  if (
+    currentTarget !== prepared.target ||
+    !identitiesMatch(prepared.parentIdentity, fileIdentity(prepared.parent))
+  ) {
+    throw new BackupValidationError('invalid_backup_destination');
+  }
+  assertDestinationDoesNotConflictWithLiveDatabase(db, prepared.target);
+}
+
+function backupParentIsStable(db: Database, prepared: PreparedBackupTarget): boolean {
+  try {
+    assertBackupParentStable(db, prepared);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function withBackupDestinationLock<T>(
+  db: Database,
+  prepared: PreparedBackupTarget,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const target = prepared.target;
+  const previous = backupDestinationLocks.get(target) ?? Promise.resolve();
+  let release!: () => void;
+  const ownTurn = new Promise<void>((resolveTurn) => {
+    release = resolveTurn;
+  });
+  const tail = previous.then(() => ownTurn);
+  backupDestinationLocks.set(target, tail);
+  await previous;
+  let crossProcessLock: CrossProcessBackupLock | undefined;
+  try {
+    crossProcessLock = await acquireCrossProcessBackupLock(target);
+    assertBackupParentStable(db, prepared);
+    return await operation();
+  } finally {
+    crossProcessLock?.release();
+    release();
+    if (backupDestinationLocks.get(target) === tail) {
+      backupDestinationLocks.delete(target);
+    }
+  }
+}
+
+function prepareBackupTarget(db: Database, destPath: string): PreparedBackupTarget {
+  const lexicalTarget = resolve(destPath);
+  const lexicalParent = dirname(lexicalTarget);
+  validationGuardAgainstCheckout(lexicalParent);
+  try {
+    mkdirSync(lexicalParent, { recursive: true });
+  } catch {
+    throw new BackupValidationError('invalid_backup_destination');
+  }
+  const target = canonicalEntryPath(lexicalTarget);
+  const parent = dirname(target);
+  validationGuardAgainstCheckout(parent);
+  if (pathIsInside(target, backupLockDirectory())) {
+    throw new BackupValidationError('invalid_backup_destination');
+  }
+  assertDestinationDoesNotConflictWithLiveDatabase(db, target);
+  return {
+    target,
+    parent,
+    parentIdentity: requiredDirectoryIdentity(parent),
+  };
+}
+
 /**
  * Export the live database to `destPath` using SQLite's online backup API
  * (PRD: backups use the backup API, never a copy of a live WAL database's
- * files). `destPath` must not resolve inside a git checkout — backups carry
- * real health data — enforced by the same `guardAgainstCheckout` guard used
- * for VELO_DATA_DIR.
+ * files). The destination is serialized per canonical path, must stay outside
+ * a git checkout, and cannot alias the live database or any SQLite sidecar.
  */
 export async function backupDatabase(
   db: Database,
   destPath: string,
   options: BackupOptions = {},
 ): Promise<BackupResult> {
-  const resolved = resolve(destPath);
-  const parent = dirname(resolved);
-  guardAgainstCheckout(parent);
-  mkdirSync(parent, { recursive: true });
+  const prepared = prepareBackupTarget(db, destPath);
+  return withBackupDestinationLock(db, prepared, () =>
+    backupDatabaseAtTarget(db, prepared, options),
+  );
+}
+
+async function backupDatabaseAtTarget(
+  db: Database,
+  prepared: PreparedBackupTarget,
+  options: BackupOptions,
+): Promise<BackupResult> {
+  const resolved = prepared.target;
+  const parent = prepared.parent;
+  const syncDirectory = options.syncDirectory ?? fsyncDirectory;
   const id = randomUUID();
   const stagedPath = join(parent, `.${basename(resolved)}.backup-${id}.tmp`);
   const previousPath = join(parent, `.${basename(resolved)}.previous-${id}.tmp`);
+  const recoveryPath = join(parent, `.${basename(resolved)}.previous-install-${id}.tmp`);
+  assertBackupParentStable(db, prepared);
   const hadPrevious = existsSync(resolved);
   let installed = false;
+  let installedIdentity: FileIdentity | undefined;
   let previousRestored = false;
   try {
     if (hadPrevious) {
+      assertBackupParentStable(db, prepared);
       createPrivateArtifact(previousPath);
       copyFileSync(resolved, previousPath);
       chmodSync(previousPath, 0o600);
       fsyncPath(previousPath);
+      assertBackupParentStable(db, prepared);
     }
 
+    assertBackupParentStable(db, prepared);
     createPrivateArtifact(stagedPath);
     const result = options.stageBackup
       ? await options.stageBackup(db, stagedPath)
       : await db.backup(stagedPath);
+    // A non-cooperating process can replace the parent while SQLite has the
+    // destination open. Reassert private mode before any validation that may
+    // reject the changed parent, so a retained random-name stage is not left
+    // broader than the source database.
     chmodSync(stagedPath, 0o600);
+    assertBackupParentStable(db, prepared);
 
     let probe: Database | undefined;
     try {
@@ -138,23 +450,43 @@ export async function backupDatabase(
     removeSidecars(stagedPath);
     fsyncPath(stagedPath);
 
+    // Node does not expose renameat(2), so bind the pathname to the originally
+    // verified directory identity immediately before and after the single
+    // synchronous rename. This closes observable symlink/directory swaps
+    // during asynchronous staging while keeping the install same-filesystem.
+    assertBackupParentStable(db, prepared);
     renameSync(stagedPath, resolved);
     installed = true;
-    fsyncDirectory(parent);
+    installedIdentity = fileIdentity(resolved);
+    assertBackupParentStable(db, prepared);
+    syncDirectory(parent);
     await options.afterInstall?.();
+    assertBackupParentStable(db, prepared);
 
     removeArtifact(previousPath);
     return result;
   } catch (error) {
-    if (installed) {
+    if (installed && backupParentIsStable(db, prepared)) {
       try {
-        if (hadPrevious) {
-          renameSync(previousPath, resolved);
-          previousRestored = true;
-        } else {
-          removeArtifact(resolved);
+        // Another writer may have replaced this operation's inode. Never
+        // roll back or delete a later successful backup.
+        if (identitiesMatch(installedIdentity, fileIdentity(resolved))) {
+          if (hadPrevious) {
+            createPrivateArtifact(recoveryPath);
+            copyFileSync(previousPath, recoveryPath);
+            chmodSync(recoveryPath, 0o600);
+            fsyncPath(recoveryPath);
+            assertBackupParentStable(db, prepared);
+            renameSync(recoveryPath, resolved);
+            assertBackupParentStable(db, prepared);
+            syncDirectory(parent);
+            previousRestored = true;
+          } else {
+            assertBackupParentStable(db, prepared);
+            removeArtifact(resolved);
+            syncDirectory(parent);
+          }
         }
-        fsyncDirectory(parent);
       } catch {
         // The independently fsynced previous snapshot remains private and
         // separate when it cannot be reinstalled. Preserve the primary
@@ -163,9 +495,15 @@ export async function backupDatabase(
     }
     throw error;
   } finally {
-    removeArtifact(stagedPath);
-    if (!hadPrevious || !installed || previousRestored) {
-      removeArtifact(previousPath);
+    // Do not follow a destination parent that changed identity during the
+    // operation. The random private artifacts are safer retained than cleanup
+    // through an untrusted replacement path.
+    if (backupParentIsStable(db, prepared)) {
+      removeArtifact(stagedPath);
+      removeArtifact(recoveryPath);
+      if (!hadPrevious || !installed || previousRestored) {
+        removeArtifact(previousPath);
+      }
     }
   }
 }
