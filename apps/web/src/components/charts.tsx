@@ -106,32 +106,63 @@ export function BarChart({
   color,
   height = 120,
   format,
+  unavailableText = 'Unavailable',
 }: {
-  items: { label: string; value: number }[];
+  items: { label: string; value: number | null }[];
   color: string;
   height?: number;
   format: (v: number) => string;
+  unavailableText?: string;
 }) {
   const W = 560;
-  const max = Math.max(...items.map((i) => i.value), 1);
+  const max = items.reduce(
+    (maximum, item) => (item.value == null ? maximum : Math.max(maximum, item.value)),
+    1,
+  );
   const bw = W / Math.max(items.length, 1);
   return (
     <svg viewBox={`0 0 ${W} ${height + 18}`} width="100%" role="img" aria-label="bar chart">
       {items.map((item, i) => {
-        const h = (item.value / max) * height;
+        const h = item.value == null ? null : (item.value / max) * height;
+        const visibleHeight = h === 0 ? 2 : h;
         return (
-          <g key={item.label}>
-            <rect
-              x={i * bw + bw * 0.15}
-              y={height - h}
-              width={bw * 0.7}
-              height={h}
-              rx="3"
-              fill={color}
-              opacity="0.85"
-            >
-              <title>{`${item.label}: ${format(item.value)}`}</title>
-            </rect>
+          <g key={`${item.label}-${i}`}>
+            {item.value == null || visibleHeight == null ? (
+              <>
+                <line
+                  x1={i * bw + bw * 0.2}
+                  y1={height - 1}
+                  x2={i * bw + bw * 0.8}
+                  y2={height - 1}
+                  stroke="var(--vg-text-muted)"
+                  strokeWidth="2"
+                  strokeDasharray="3 3"
+                >
+                  <title>{`${item.label}: ${unavailableText}`}</title>
+                </line>
+                <text
+                  x={i * bw + bw / 2}
+                  y={height - 6}
+                  textAnchor="middle"
+                  fontSize="9"
+                  fill="var(--vg-text-muted)"
+                >
+                  n/a
+                </text>
+              </>
+            ) : (
+              <rect
+                x={i * bw + bw * 0.15}
+                y={height - visibleHeight}
+                width={bw * 0.7}
+                height={visibleHeight}
+                rx="3"
+                fill={color}
+                opacity="0.85"
+              >
+                <title>{`${item.label}: ${format(item.value)}`}</title>
+              </rect>
+            )}
             <text
               x={i * bw + bw / 2}
               y={height + 13}

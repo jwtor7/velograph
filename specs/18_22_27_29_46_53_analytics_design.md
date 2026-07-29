@@ -52,7 +52,7 @@
 - [x] Add strict shared analytics settings validation and accessible UI feedback (#22).
 - [x] Implement analytics-v2 bounded weighting, splits, zones, and moving-time decoupling
       (#18, #19, #29, analytics half of #53).
-- [ ] Preserve unavailable trend values as gaps (#27).
+- [x] Preserve unavailable trend values as gaps (#27).
 - [ ] Reload canonical detail state after repair (#46).
 - [x] Update formula documentation, golden output, changelog, and synthetic test coverage.
 - [ ] Run full quality, privacy, security, performance, and browser gates.

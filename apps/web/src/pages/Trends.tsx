@@ -3,6 +3,11 @@ import { api, type TrendsResponse } from '../api.ts';
 import { fmtKm } from '../chartspec/spec.ts';
 import { BarChart } from '../components/charts.tsx';
 import { EmptyState } from '../components/ui.tsx';
+import {
+  buildRideTrendItems,
+  unavailableItemCount,
+  type NullableBarItem,
+} from '../trends-model.ts';
 
 /** Longitudinal dashboard (§9.2, ANA-007 visuals). */
 export function Trends() {
@@ -22,7 +27,9 @@ export function Trends() {
 
   const weekLabel = (t: number) => new Date(t).toISOString().slice(5, 10);
   const rides = [...data.rides].sort((a, b) => a.startUtc - b.startUtc);
-  const rideLabel = (t: number) => new Date(t).toISOString().slice(5, 10);
+  const heartRateItems = buildRideTrendItems(rides, 'avgHr');
+  const speedItems = buildRideTrendItems(rides, 'avgSpeedKmh');
+  const efficiencyItems = buildRideTrendItems(rides, 'efficiency');
 
   // Aggregate zone share across rides that have zones.
   const zoneAgg = new Map<number, { label: string; seconds: number }>();
@@ -75,29 +82,29 @@ export function Trends() {
         <div className="card">
           <h2 className="card-title">Avg heart rate by ride (bpm)</h2>
           <BarChart
-            items={rides.map((r) => ({ label: rideLabel(r.startUtc), value: r.avgHr ?? 0 }))}
+            items={heartRateItems}
             color="var(--vg-ch-hr)"
             format={(v) => `${Math.round(v)} bpm`}
           />
+          <AvailabilityNote items={heartRateItems} />
         </div>
         <div className="card">
           <h2 className="card-title">Avg speed by ride (km/h)</h2>
           <BarChart
-            items={rides.map((r) => ({
-              label: rideLabel(r.startUtc),
-              value: (r.avgSpeedMs ?? 0) * 3.6,
-            }))}
+            items={speedItems}
             color="var(--vg-ch-speed)"
             format={(v) => `${v.toFixed(1)} km/h`}
           />
+          <AvailabilityNote items={speedItems} />
         </div>
         <div className="card">
           <h2 className="card-title">Efficiency by ride (km/h per bpm)</h2>
           <BarChart
-            items={rides.map((r) => ({ label: rideLabel(r.startUtc), value: r.efficiency ?? 0 }))}
+            items={efficiencyItems}
             color="var(--vg-brand-mint)"
             format={(v) => v.toFixed(3)}
           />
+          <AvailabilityNote items={efficiencyItems} />
         </div>
         <div className="card">
           <h2 className="card-title">Time in zone (minutes)</h2>
@@ -143,5 +150,16 @@ export function Trends() {
         </table>
       </div>
     </div>
+  );
+}
+
+function AvailabilityNote({ items }: { items: readonly NullableBarItem[] }) {
+  const count = unavailableItemCount(items);
+  if (count === 0) return null;
+  return (
+    <p className="muted" role="status" style={{ margin: '4px 0 0', fontSize: 11 }}>
+      {count} {count === 1 ? 'ride is' : 'rides are'} unavailable because required source data or
+      coverage is missing (dashed n/a). Recorded zero remains a solid bar.
+    </p>
   );
 }
