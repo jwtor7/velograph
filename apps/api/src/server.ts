@@ -4,11 +4,15 @@ import { extname, join, normalize } from 'node:path';
 import type { Database } from '@velograph/db';
 import { Repository, backupDatabase, loadWorkoutData, restoreDatabase } from '@velograph/db';
 import {
+  DEFAULT_MAX_GROUP_BYTES,
+  DEFAULT_ZIP_LIMITS,
   FolderImportError,
   inventoryFiles,
+  planFolderImport,
   previewImportFolder,
-  readFolderFiles,
+  readFolderFileGroups,
   runImport,
+  runImportGroups,
   type ImportFile,
 } from '@velograph/importers';
 import {
@@ -21,6 +25,11 @@ import {
 export const API_VERSION = '0.1.0';
 const MAX_IMPORT_BODY_BYTES = 600 * 1024 * 1024; // base64-encoded uploads
 const MAX_PATH_BODY_BYTES = 8 * 1024;
+const PATH_IMPORT_ZIP_LIMITS = {
+  ...DEFAULT_ZIP_LIMITS,
+  maxEntryBytes: DEFAULT_MAX_GROUP_BYTES,
+  maxTotalBytes: DEFAULT_MAX_GROUP_BYTES,
+};
 
 /**
  * Loopback-only HTTP API (PRD §11.3, §12.3).
@@ -287,8 +296,8 @@ function route(
   }
 
   // Path-based folder import (issue #51): the client posts a folder path
-  // instead of every file as base64. The API reads it directly from disk,
-  // the same way the CLI already does, bounded by walkImportFolder's caps.
+  // instead of every file as base64. The API plans metadata first, then
+  // reads one bounded association group at a time inside one atomic import.
   // Never a folder that resolves inside this checkout (guardAgainstCheckout,
   // reused — not reimplemented — from @velograph/db).
   if (method === 'POST' && path === '/api/import/path/inventory') {
@@ -318,13 +327,25 @@ function route(
           return;
         }
         try {
-          const { files, skipped, truncated } = readFolderFiles(p);
-          if (files.length === 0) {
-            send(res, 400, { error: 'no_files' });
+          const plan = planFolderImport(p);
+          if (plan.totalFiles === 0) {
+            send(res, 400, {
+              error: 'no_files',
+              skipped: plan.skipped,
+              truncated: plan.truncated,
+            });
             return;
           }
-          const result = runImport(db, files, { now: now(), timeZone: loadSettings(db).timeZone });
-          send(res, 200, { result, skipped, truncated });
+          const result = runImportGroups(db, readFolderFileGroups(plan), {
+            now: now(),
+            timeZone: loadSettings(db).timeZone,
+            zipLimits: PATH_IMPORT_ZIP_LIMITS,
+          });
+          send(res, 200, {
+            result,
+            skipped: plan.skipped,
+            truncated: plan.truncated,
+          });
         } catch (err) {
           send(res, folderErrorStatus(err), { error: folderErrorCode(err) });
         }
@@ -402,7 +423,8 @@ function folderErrorCode(err: unknown): string {
 }
 
 function folderErrorStatus(err: unknown): number {
-  return err instanceof FolderImportError ? 400 : 500;
+  if (!(err instanceof FolderImportError)) return 500;
+  return err.code === 'path_changed' || err.code === 'file_changed' ? 409 : 400;
 }
 
 function decodeFiles(body: unknown): ImportFile[] {

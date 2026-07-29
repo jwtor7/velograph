@@ -74,10 +74,12 @@ path into the "Import from a folder path" field and preview it before confirming
 reads the folder directly from disk — the same way the CLI does, recursively, bounded by a
 file-count/total-size cap — rather than uploading every file through the browser as base64,
 which does not scale to a real export (a single route GPX alone runs a couple of megabytes,
-and a folder holds dozens of files across many rides). The preview groups files by ride
-(workout type + the filename's trailing timestamp) so it's obvious which companion files
-belong together before anything is imported. The multi-file picker and loose-file
-drag-and-drop still work exactly as before; dropping a folder (where the browser supports
+and a folder holds dozens of files across many rides). Confirmation revalidates the selected
+tree and reads one bounded ride group at a time while keeping the whole confirmed import
+atomic; it never holds the entire folder in memory. The preview groups files by ride (workout
+type + the filename's trailing timestamp) so it's obvious which companion files belong
+together before anything is imported. The multi-file picker and loose-file drag-and-drop
+still work exactly as before; dropping a folder (where the browser supports
 `webkitGetAsEntry`) reads its files into that same picker, since browsers do not expose a
 dropped folder's real filesystem path to a web page — only pasting the path does that.
 
@@ -92,7 +94,9 @@ pnpm app:dev       # foreground: build, start, open the browser; Ctrl-C stops ev
 `app:dev` is the everyday workflow — one command builds the web client, starts the API in the
 foreground of your terminal, and opens it in your browser once it answers. Ctrl-C (or a
 `kill`) tears it down cleanly: the API child is signaled, waited on, and force-killed if it
-doesn't exit in time, so nothing is ever left holding the port after you stop it.
+doesn't exit in time, so nothing is ever left holding the port after you stop it. On a
+headless system without an OS browser launcher, the command prints the URL and keeps the
+server in the foreground until you stop it.
 
 ```bash
 pnpm app:start     # background: same build+wait-for-ready, but detached

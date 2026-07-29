@@ -16,11 +16,15 @@ is pre-1.0, and for the release procedure.
   preview the files it finds (grouped by ride — workout type + the filename's trailing
   timestamp — so companion metric files are obviously one ride before anything imports),
   then confirm. The API reads the folder directly from disk, recursing into subfolders,
-  bounded by a file-count and total-byte cap; a symlinked directory is never followed, and a
-  symlinked file is only followed when its target stays inside the walked tree. Anything the
-  cap or a symlink rule excludes is reported, not silently dropped. The destination path is
-  rejected when it resolves inside the repository checkout, reusing `guardAgainstCheckout`
-  (the same guard `VELO_DATA_DIR` and database backups use). New endpoints:
+  with metadata-only traversal bounded by file-count and total-byte caps. Confirmation
+  revalidates canonical root/file identity and reads one bounded association group at a time
+  inside one atomic import transaction, so a large accepted folder is never retained as one
+  giant buffer and a path swap fails closed. A group over the resident-byte cap is reported
+  and skipped in full rather than importing a partial ride. A symlinked directory is never
+  followed, and a symlinked file is only followed when its target stays inside the walked
+  tree. Anything a cap or symlink rule excludes is reported, not silently dropped. The
+  destination path is rejected when it resolves inside the repository checkout, reusing
+  `guardAgainstCheckout` (the same guard `VELO_DATA_DIR` and database backups use). New endpoints:
   `POST /api/import/path/inventory` (preview) and `POST /api/import/path` (import), both
   loopback-only with the same CSRF header and hardened headers as every other mutating route.
   Folder drag-and-drop (`webkitGetAsEntry`) reads a dropped folder's files into the existing
@@ -43,7 +47,9 @@ is pre-1.0, and for the release procedure.
   port free with no process alive. One command starts everything; killing it — by any of
   these means — tears everything down. The background commands
   (`app:start`/`app:stop`/`app:status`/`app:restart`) are unchanged and remain the right
-  choice for a server that should outlive the current shell (#51).
+  choice for a server that should outlive the current shell. Missing OS browser launchers
+  are handled asynchronously before detaching, so a headless Linux `ENOENT` prints the
+  loopback URL without crashing the wrapper or orphaning the API child (#51).
 - **Local server lifecycle commands**: `pnpm app:start`, `app:stop`, `app:status`, and
   `app:restart`. `app:start` builds the web client, refuses to start when a server already
   holds the port, and waits for the API to actually answer before reporting success.

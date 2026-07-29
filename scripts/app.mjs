@@ -25,6 +25,7 @@ import { existsSync, openSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, platform, tmpdir } from 'node:os';
+import { openBrowser } from './open-browser.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env['VELO_PORT'] ?? 5123);
@@ -128,22 +129,6 @@ async function start() {
   }
   console.error(`Server did not become ready within 10s. Check the log: ${LOG_PATH}`);
   return 1;
-}
-
-/** Open `url` in the OS default browser. Best-effort — never fatal. */
-function openBrowser(url) {
-  const plat = platform();
-  const [cmd, args] =
-    plat === 'darwin'
-      ? ['open', [url]]
-      : plat === 'win32'
-        ? ['cmd', ['/c', 'start', '', url]]
-        : ['xdg-open', [url]];
-  try {
-    spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
-  } catch {
-    console.log(`Open ${url} in your browser.`);
-  }
 }
 
 /**

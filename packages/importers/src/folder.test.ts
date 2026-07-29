@@ -1,11 +1,20 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   FolderImportError,
+  planFolderImport,
   previewImportFolder,
-  readFolderFiles,
+  readFolderFileGroups,
   walkImportFolder,
 } from './folder.ts';
 
@@ -222,14 +231,126 @@ describe('previewImportFolder — grouping', () => {
   });
 });
 
-describe('readFolderFiles', () => {
-  it('reads bytes for every walked file, ready for runImport', () => {
+describe('planFolderImport — bounded deterministic groups', () => {
+  it('orders association groups and their files deterministically', () => {
     const root = tempDir();
-    writeFileSync(join(root, 'Outdoor Cycling-Heart Rate-20260101_070000.csv'), 'hello');
-    const { files, truncated } = readFolderFiles(root);
-    expect(truncated).toBe(false);
-    expect(files).toHaveLength(1);
-    expect(files[0]!.name).toBe('Outdoor Cycling-Heart Rate-20260101_070000.csv');
-    expect(Buffer.from(files[0]!.data).toString('utf8')).toBe('hello');
+    for (const name of [
+      'Outdoor Cycling-Heart Rate-20260102_070000.csv',
+      'Outdoor Cycling-Cycling Cadence-20260101_070000.csv',
+      'Outdoor Cycling-Heart Rate-20260101_070000.csv',
+      'Indoor Cycling-Heart Rate-20260103_070000.csv',
+      'bundle.zip',
+      'unknown.csv',
+    ]) {
+      writeFileSync(join(root, name), name);
+    }
+
+    const plan = planFolderImport(root);
+    expect(plan.groups.map((group) => group.groupKey)).toEqual([
+      'ride:outdoor_cycling:20260101_070000',
+      'ride:outdoor_cycling:20260102_070000',
+      'ride:indoor_cycling:20260103_070000',
+      'zip:bundle.zip',
+      'unrecognized:unknown.csv',
+    ]);
+    expect(plan.groups[0]!.files.map((file) => file.relativePath)).toEqual([
+      'Outdoor Cycling-Cycling Cadence-20260101_070000.csv',
+      'Outdoor Cycling-Heart Rate-20260101_070000.csv',
+    ]);
+  });
+
+  it('excludes an over-limit association group in full instead of importing a partial ride', () => {
+    const root = tempDir();
+    writeFileSync(join(root, 'Outdoor Cycling-Heart Rate-20260101_070000.csv'), 'a'.repeat(8));
+    writeFileSync(join(root, 'Outdoor Cycling-Cycling Cadence-20260101_070000.csv'), 'b'.repeat(8));
+    writeFileSync(join(root, 'Outdoor Cycling-Heart Rate-20260102_070000.csv'), 'c'.repeat(4));
+
+    const plan = planFolderImport(root, { maxGroupBytes: 12 });
+    expect(plan.groups).toHaveLength(1);
+    expect(plan.groups[0]!.groupKey).toBe('ride:outdoor_cycling:20260102_070000');
+    expect(plan.totalFiles).toBe(1);
+    expect(plan.totalBytes).toBe(4);
+    expect(plan.truncated).toBe(true);
+    expect(plan.skipped.filter((item) => item.reason === 'max_group_bytes_exceeded')).toHaveLength(
+      2,
+    );
+  });
+});
+
+describe('readFolderFileGroups — lazy bounded reads and TOCTOU checks', () => {
+  it('reads only the requested group and preserves planned order', () => {
+    const root = tempDir();
+    const first = 'Outdoor Cycling-Heart Rate-20260101_070000.csv';
+    const second = 'Outdoor Cycling-Heart Rate-20260102_070000.csv';
+    writeFileSync(join(root, first), 'first-group');
+    writeFileSync(join(root, second), 'second-group');
+
+    const plan = planFolderImport(root);
+    const groups = readFolderFileGroups(plan);
+    const iterator = groups[Symbol.iterator]();
+    const firstRead = iterator.next();
+    expect(firstRead.done).toBe(false);
+    if (firstRead.done) throw new Error('expected first group');
+    const firstFiles = firstRead.value();
+    expect(firstFiles.map((file) => file.name)).toEqual([first]);
+    expect(Buffer.from(firstFiles[0]!.data).toString()).toBe('first-group');
+
+    // Even requesting the second loader does not read it. Changing the file
+    // is detected only when that bounded group's loader is invoked.
+    const secondRead = iterator.next();
+    if (secondRead.done) throw new Error('expected second group');
+    const original = join(root, second);
+    renameSync(original, join(root, 'replaced-second.csv'));
+    writeFileSync(original, 'second-group'); // same size, different inode
+    expect(() => secondRead.value()).toThrowError(
+      expect.objectContaining({ code: 'file_changed' }),
+    );
+  });
+
+  it('rejects a same-size file replacement after metadata traversal', () => {
+    const root = tempDir();
+    const name = 'Outdoor Cycling-Heart Rate-20260101_070000.csv';
+    const path = join(root, name);
+    writeFileSync(path, 'original');
+    const plan = planFolderImport(root);
+    renameSync(path, join(root, 'old.csv'));
+    writeFileSync(path, 'replaced');
+
+    expect(() => [...readFolderFileGroups(plan)].flatMap((load) => load())).toThrowError(
+      expect.objectContaining({ code: 'file_changed' }),
+    );
+  });
+
+  it('rejects a root symlink retargeted after metadata traversal', () => {
+    const firstRoot = tempDir();
+    const secondRoot = tempDir();
+    const linkParent = tempDir();
+    const rootLink = join(linkParent, 'selected-export');
+    const name = 'Outdoor Cycling-Heart Rate-20260101_070000.csv';
+    writeFileSync(join(firstRoot, name), 'first');
+    writeFileSync(join(secondRoot, name), 'other');
+    try {
+      symlinkSync(firstRoot, rootLink, 'dir');
+    } catch {
+      return;
+    }
+    const plan = planFolderImport(rootLink);
+    unlinkSync(rootLink);
+    symlinkSync(secondRoot, rootLink, 'dir');
+
+    expect(() => [...readFolderFileGroups(plan)].flatMap((load) => load())).toThrowError(
+      expect.objectContaining({ code: 'path_changed' }),
+    );
+  });
+
+  it('never returns canonical paths or identity metadata in the public preview', () => {
+    const root = tempDir();
+    writeFileSync(join(root, 'Outdoor Cycling-Heart Rate-20260101_070000.csv'), 'x');
+    const preview = previewImportFolder(root);
+    const serialized = JSON.stringify(preview);
+    expect(serialized).not.toContain('canonicalRoot');
+    expect(serialized).not.toContain('canonicalPath');
+    expect(serialized).not.toContain('rootDevice');
+    expect(serialized).not.toContain('inode');
   });
 });

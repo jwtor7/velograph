@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zipSync } from 'fflate';
 import { openDatabase, Repository } from '@velograph/db';
-import { runImport, type ImportFile } from './importer.ts';
+import { runImport, runImportGroups, type ImportFile } from './importer.ts';
 
 const FIXTURES = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -40,6 +40,66 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     expect(repo.countRows('routes')).toBe(3);
     const formats = db.prepare('SELECT DISTINCT source_format FROM routes').all();
     expect(formats).toEqual([{ source_format: 'gpx' }]);
+    db.close();
+  });
+
+  it('consumes lazy association groups as one deterministic atomic batch', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const groups = new Map<string, ImportFile[]>();
+    for (const file of fixtureFiles()) {
+      const stamp = /-(\d{8}_\d{6})\.(?:csv|gpx)$/i.exec(file.name)?.[1] ?? file.name;
+      const group = groups.get(stamp) ?? [];
+      group.push(file);
+      groups.set(stamp, group);
+    }
+
+    const requested: string[] = [];
+    function* source(): Generator<() => ImportFile[]> {
+      for (const stamp of [...groups.keys()].sort()) {
+        yield () => {
+          requested.push(stamp);
+          return groups.get(stamp)!;
+        };
+      }
+    }
+
+    const result = runImportGroups(db, source(), { now: FIXED_NOW });
+    expect(requested).toEqual([...groups.keys()].sort());
+    expect(result.batchId).toBeGreaterThan(0);
+    expect(result.imported).toBe(18);
+    const batches = db.prepare('SELECT COUNT(*) AS count FROM import_batches').get() as {
+      count: number;
+    };
+    expect(batches.count).toBe(1);
+    expect(repo.countRows('workouts')).toBe(3);
+    db.close();
+  });
+
+  it('rolls back earlier lazy groups when a later read fails (IMP-007)', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const firstFile = fixtureFiles()[0]!;
+    function* failingSource(): Generator<() => ImportFile[]> {
+      yield () => [firstFile];
+      yield () => {
+        throw new Error('synthetic read failure');
+      };
+    }
+
+    expect(() => runImportGroups(db, failingSource(), { now: FIXED_NOW })).toThrow(
+      'synthetic read failure',
+    );
+    const batches = db.prepare('SELECT COUNT(*) AS count FROM import_batches').get() as {
+      count: number;
+    };
+    const sourceFiles = db.prepare('SELECT COUNT(*) AS count FROM source_files').get() as {
+      count: number;
+    };
+    expect(batches.count).toBe(0);
+    expect(sourceFiles.count).toBe(0);
+    expect(repo.countRows('workouts')).toBe(0);
+    expect(repo.countRows('metric_series')).toBe(0);
     db.close();
   });
 
