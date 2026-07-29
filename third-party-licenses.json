@@ -73,17 +73,6 @@
       "licenseBytes": 765
     },
     {
-      "name": "cookie",
-      "version": "1.1.1",
-      "declaredLicense": "MIT",
-      "selectedLicense": "MIT",
-      "scopes": ["web"],
-      "artifactPresence": "graph-only",
-      "licenseFile": "LICENSE",
-      "licenseSha256": "fe9538ec27e7fb9bfbcc05c97bc5087a2a25a7caf4ad7e6bc99fbcbf1a37e6ce",
-      "licenseBytes": 1174
-    },
-    {
       "name": "decompress-response",
       "version": "6.0.0",
       "declaredLicense": "MIT",
@@ -316,28 +305,6 @@
       "licenseBytes": 1088
     },
     {
-      "name": "react-router-dom",
-      "version": "7.18.1",
-      "declaredLicense": "MIT",
-      "selectedLicense": "MIT",
-      "scopes": ["web"],
-      "artifactPresence": "graph-only",
-      "licenseFile": "LICENSE.md",
-      "licenseSha256": "77c9ee6a9c5d5782fb0c50b50d101189116314c14f7df0a1b0d385fc96a7ba49",
-      "licenseBytes": 1161
-    },
-    {
-      "name": "react-router",
-      "version": "7.18.1",
-      "declaredLicense": "MIT",
-      "selectedLicense": "MIT",
-      "scopes": ["web"],
-      "artifactPresence": "required",
-      "licenseFile": "LICENSE.md",
-      "licenseSha256": "77c9ee6a9c5d5782fb0c50b50d101189116314c14f7df0a1b0d385fc96a7ba49",
-      "licenseBytes": 1161
-    },
-    {
       "name": "react",
       "version": "19.2.8",
       "declaredLicense": "MIT",
@@ -388,17 +355,6 @@
       "licenseFile": "LICENSE",
       "licenseSha256": "4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b",
       "licenseBytes": 765
-    },
-    {
-      "name": "set-cookie-parser",
-      "version": "2.7.2",
-      "declaredLicense": "MIT",
-      "selectedLicense": "MIT",
-      "scopes": ["web"],
-      "artifactPresence": "graph-only",
-      "licenseFile": "LICENSE",
-      "licenseSha256": "c5c6c5183a789d122f267c405f685037efb87e27fcde28ab1dd7378a2d2f5962",
-      "licenseBytes": 1126
     },
     {
       "name": "simple-concat",

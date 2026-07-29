@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { api, type Settings } from '../api.ts';
 import { SettingsPage } from './Settings.tsx';
 
@@ -66,5 +66,64 @@ describe('Settings save feedback', () => {
       'Backup written · format 1 · 0004_backup_manifest.sql',
     );
     expect(backupStatus.getAttribute('role')).toBe('status');
+  });
+
+  it.each([
+    ['partial', 'Z3/Z4', '', 'Enter all five boundaries'],
+    ['duplicate', 'Z3/Z4', '110', 'increase strictly'],
+    ['out of order', 'Z3/Z4', '100', 'increase strictly'],
+    ['out of range', 'Z1/Z2', '39', 'whole number from 40 to 230'],
+  ])(
+    'keeps configured zones unchanged when a %s draft is invalid',
+    async (_caseName, label, value, expectedError) => {
+      const settings: Settings = {
+        timeZone: 'America/Toronto',
+        hrZoneBounds: [90, 110, 130, 150, 170],
+        movingSpeedThresholdMs: 1,
+        minCoverageForEfficiency: 0.7,
+        elevationHysteresisM: 1,
+      };
+      vi.spyOn(api, 'settings').mockResolvedValue({ settings });
+      const saveSettings = vi.spyOn(api, 'saveSettings');
+
+      render(<SettingsPage />);
+
+      const input = await screen.findByRole('spinbutton', { name: label });
+      fireEvent.change(input, { target: { value } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+
+      expect(saveSettings).not.toHaveBeenCalled();
+      expect(screen.getByText(new RegExp(expectedError, 'i'))).toBeTruthy();
+      expect(screen.queryByText('Saved')).toBeNull();
+    },
+  );
+
+  it('submits null only when all five configured zone fields are explicitly blanked', async () => {
+    const configured: Settings = {
+      timeZone: 'America/Toronto',
+      hrZoneBounds: [90, 110, 130, 150, 170],
+      movingSpeedThresholdMs: 1,
+      minCoverageForEfficiency: 0.7,
+      elevationHysteresisM: 1,
+    };
+    const disabled: Settings = { ...configured, hrZoneBounds: null };
+    vi.spyOn(api, 'settings').mockResolvedValue({ settings: configured });
+    const saveSettings = vi.spyOn(api, 'saveSettings').mockResolvedValue({ settings: disabled });
+
+    render(<SettingsPage />);
+
+    await screen.findByRole('spinbutton', { name: 'Z1/Z2' });
+    for (const input of screen.getAllByRole('spinbutton')) {
+      fireEvent.change(input, { target: { value: '' } });
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+
+    await waitFor(() =>
+      expect(saveSettings).toHaveBeenCalledWith({
+        hrZoneBounds: null,
+        timeZone: 'America/Toronto',
+      }),
+    );
+    expect(await screen.findByText('Saved')).toBeTruthy();
   });
 });

@@ -4560,6 +4560,10 @@ function confirmFolderImportPlan(plan, token) {
 function previewFolderImportPlan(plan, preflight = [], preflightComplete = false) {
   const rides = [];
   const ungrouped = [];
+  const orderedFiles = plan.groups.flatMap((group) => group.files);
+  if (preflight.length > orderedFiles.length || preflightComplete && preflight.length !== orderedFiles.length) {
+    throw new Error("folder_preflight_plan_mismatch");
+  }
   for (const group of plan.groups) {
     if (group.kind === "ride") {
       rides.push({
@@ -4600,7 +4604,10 @@ function previewFolderImportPlan(plan, preflight = [], preflightComplete = false
     truncated: plan.truncated,
     confirmationToken: planConfirmationToken(plan),
     preflightComplete,
-    preflight: [...preflight]
+    preflight: preflight.map((item, index) => ({
+      ...item,
+      relativePath: orderedFiles[index].relativePath
+    }))
   };
 }
 function revalidateRoot(plan) {
@@ -7007,6 +7014,7 @@ function runImportCmd(args) {
         `Batch ${result.batchId} committed`,
         `  imported files:     ${result.imported}`,
         `  duplicates skipped: ${result.skippedDuplicates}`,
+        `  out-of-scope skipped: ${result.skipped}`,
         `  quarantined:        ${result.quarantined}`,
         `  workouts created:   ${result.workoutsCreated}`
       ].join("\n")
@@ -7019,6 +7027,11 @@ function runImportCmd(args) {
       ([left], [right]) => left.localeCompare(right)
     )) {
       console.log(`  quarantined [${code}]: ${count}`);
+    }
+    for (const [code, count] of Object.entries(result.skippedByCode).sort(
+      ([left], [right]) => left.localeCompare(right)
+    )) {
+      if (count > 0) console.log(`  skipped [${code}]: ${count}`);
     }
     return 0;
   } finally {

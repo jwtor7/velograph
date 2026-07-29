@@ -21,7 +21,6 @@ dependency graph, including facades or modules a particular build may tree-shake
 | `bl` | `4.1.0` | api, cli | `MIT` | `MIT` | `9377db95383c8befacf05c6e465d969d756edf178487ca1344fdf3ba147c596f` |
 | `buffer` | `5.7.1` | api, cli | `MIT` | `MIT` | `06bafa45fdad2579ba0e43b0c9b2c6290287c99c4203c300254a462b38a307f6` |
 | `chownr` | `1.1.4` | api, cli | `ISC` | `ISC` | `4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b` |
-| `cookie` | `1.1.1` | web | `MIT` | `MIT` | `fe9538ec27e7fb9bfbcc05c97bc5087a2a25a7caf4ad7e6bc99fbcbf1a37e6ce` |
 | `decompress-response` | `6.0.0` | api, cli | `MIT` | `MIT` | `5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3` |
 | `deep-extend` | `0.6.0` | api, cli | `MIT` | `MIT` | `e17120ad3deff741c2ca5cbe511971ca33971a1ba6e49694c6498309bb2680b9` |
 | `detect-libc` | `2.1.2` | api, cli | `Apache-2.0` | `Apache-2.0` | `b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1` |
@@ -45,14 +44,11 @@ dependency graph, including facades or modules a particular build may tree-shake
 | `pump` | `3.0.4` | api, cli | `MIT` | `MIT` | `c0993ca46cd47c09710a977d3a3d51602cff96f19e8d2eb8d5887aa20a7beead` |
 | `rc` | `1.2.8` | api, cli | `(BSD-2-Clause OR MIT OR Apache-2.0)` | `MIT` | `d72dea1a8cdf3f4dfa2f594253d0c5b37baefc76e806f5ecb0e426393edcd505` |
 | `react-dom` | `19.2.8` | web | `MIT` | `MIT` | `da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93` |
-| `react-router-dom` | `7.18.1` | web | `MIT` | `MIT` | `77c9ee6a9c5d5782fb0c50b50d101189116314c14f7df0a1b0d385fc96a7ba49` |
-| `react-router` | `7.18.1` | web | `MIT` | `MIT` | `77c9ee6a9c5d5782fb0c50b50d101189116314c14f7df0a1b0d385fc96a7ba49` |
 | `react` | `19.2.8` | web | `MIT` | `MIT` | `da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93` |
 | `readable-stream` | `3.6.2` | api, cli | `MIT` | `MIT` | `ec62dc96da0099b87f4511736c87309335527fb7031639493e06c95728dc8c54` |
 | `safe-buffer` | `5.2.1` | api, cli | `MIT` | `MIT` | `c7cc929b57080f4b9d0c6cf57669f0463fc5b39906344dfc8d3bc43426b30eac` |
 | `scheduler` | `0.27.0` | web | `MIT` | `MIT` | `da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93` |
 | `semver` | `7.8.5` | api, cli | `ISC` | `ISC` | `4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b` |
-| `set-cookie-parser` | `2.7.2` | web | `MIT` | `MIT` | `c5c6c5183a789d122f267c405f685037efb87e27fcde28ab1dd7378a2d2f5962` |
 | `simple-concat` | `1.0.1` | api, cli | `MIT` | `MIT` | `d4c2065e2b936e62a4eb400efb4576edec9ca1388a9f78aa288e147275e7bc8b` |
 | `simple-get` | `4.0.1` | api, cli | `MIT` | `MIT` | `d4c2065e2b936e62a4eb400efb4576edec9ca1388a9f78aa288e147275e7bc8b` |
 | `string_decoder` | `1.3.0` | api, cli | `MIT` | `MIT` | `ec62dc96da0099b87f4511736c87309335527fb7031639493e06c95728dc8c54` |
@@ -637,38 +633,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 <!-- END THIRD-PARTY LICENCE 766daa9b2ab0ab2698c769f334a6d72c42437b0a7d0d0dfd5c13c64b3120117b -->
-
-### MIT — `77c9ee6a9c5d5782fb0c50b50d101189116314c14f7df0a1b0d385fc96a7ba49`
-
-Applies to: `react-router-dom@7.18.1`, `react-router@7.18.1`
-
-<!-- BEGIN THIRD-PARTY LICENCE 77c9ee6a9c5d5782fb0c50b50d101189116314c14f7df0a1b0d385fc96a7ba49 -->
-```text
-MIT License
-
-Copyright (c) React Training LLC 2015-2019
-Copyright (c) Remix Software Inc. 2020-2021
-Copyright (c) Shopify Inc. 2022-2023
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-<!-- END THIRD-PARTY LICENCE 77c9ee6a9c5d5782fb0c50b50d101189116314c14f7df0a1b0d385fc96a7ba49 -->
 
 ### MIT — `77e34b8bcff7968c20cef7a81e56835494746645eea2110dfa0f849d3d02f62e`
 
@@ -3247,36 +3211,6 @@ THE SOFTWARE.
 ```
 <!-- END THIRD-PARTY LICENCE c0993ca46cd47c09710a977d3a3d51602cff96f19e8d2eb8d5887aa20a7beead -->
 
-### MIT — `c5c6c5183a789d122f267c405f685037efb87e27fcde28ab1dd7378a2d2f5962`
-
-Applies to: `set-cookie-parser@2.7.2`
-
-<!-- BEGIN THIRD-PARTY LICENCE c5c6c5183a789d122f267c405f685037efb87e27fcde28ab1dd7378a2d2f5962 -->
-```text
-The MIT License (MIT)
-
-Copyright (c) 2015 Nathan Friedly <nathan@nfriedly.com> (http://nfriedly.com/)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-```
-<!-- END THIRD-PARTY LICENCE c5c6c5183a789d122f267c405f685037efb87e27fcde28ab1dd7378a2d2f5962 -->
-
 ### MIT — `c7cc929b57080f4b9d0c6cf57669f0463fc5b39906344dfc8d3bc43426b30eac`
 
 Applies to: `safe-buffer@5.2.1`
@@ -3483,35 +3417,3 @@ IN THE SOFTWARE.
 """
 ```
 <!-- END THIRD-PARTY LICENCE ec62dc96da0099b87f4511736c87309335527fb7031639493e06c95728dc8c54 -->
-
-### MIT — `fe9538ec27e7fb9bfbcc05c97bc5087a2a25a7caf4ad7e6bc99fbcbf1a37e6ce`
-
-Applies to: `cookie@1.1.1`
-
-<!-- BEGIN THIRD-PARTY LICENCE fe9538ec27e7fb9bfbcc05c97bc5087a2a25a7caf4ad7e6bc99fbcbf1a37e6ce -->
-```text
-(The MIT License)
-
-Copyright (c) 2012-2014 Roman Shtylman <shtylman@gmail.com>
-Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com>
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-```
-<!-- END THIRD-PARTY LICENCE fe9538ec27e7fb9bfbcc05c97bc5087a2a25a7caf4ad7e6bc99fbcbf1a37e6ce -->

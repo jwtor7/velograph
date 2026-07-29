@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
 import { api, type WorkoutSummary } from '../api.ts';
 import { fmtDate, fmtDuration, fmtInt, fmtKm, fmtSpeedKmh } from '../chartspec/spec.ts';
 import { ConfirmDialog, EmptyState } from '../components/ui.tsx';
+import { Link, useNavigate } from '../router.tsx';
 
 /** Ride library (RIDE-001/002): date-listed rides with search and filters. */
 export function Library() {

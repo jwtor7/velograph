@@ -40,7 +40,10 @@ is pre-1.0, and for the release procedure.
   synchronized chart cursor. An optional, validated raster MBTiles package can be loaded only
   from the local data environment and served through the loopback API; the useful route-only
   fallback makes no remote tile, font, geocoding, telemetry, or CDN request. MBTiles files remain
-  ignored and are rejected by the repository privacy scanner (#56).
+  ignored and are rejected by the repository privacy scanner. A dependency-free Chromium/CDP
+  smoke now proves the real Leaflet DOM, geometry, controls, keyboard pan, chart/map cursor
+  synchronization, local tile loading, clean browser runtime, and loopback-only requests while
+  retaining no route, URL, console, pixel, or path values (#56).
 - **One-command development stack**: `pnpm dev` now starts the loopback API and Vite UI
   together, owns both foreground processes, and stops both on exit. The Vite proxy rewrites
   only its configured loopback Origin and Host for API requests, preserving the API's strict
@@ -162,6 +165,31 @@ is pre-1.0, and for the release procedure.
 
 ### Fixed
 
+- **Loose-file review never silently drops unsupported selections.** Files outside the importable
+  CSV, GPX, and ZIP set remain in the exact ordered selection so the server inventory can label
+  them explicitly before confirmation (#26).
+- **Normal import skips no longer look like malformed-file failures.** Unmodelled cycling metrics
+  and non-cycling workouts are summarized compactly with neutral styling in loose-file and folder
+  previews, while only actionable invalid, ambiguous, or unsupported inputs receive warning
+  treatment. Folder preflight outcomes retain their exact relative-path identity so a normal skip
+  cannot hide a same-name, same-size actionable sibling. CLI imports now report the same
+  value-free skip counts without source filenames (#53).
+- **Settings UI regressions now cover the configured-value boundary.** Partial, duplicate,
+  descending, and out-of-range heart-rate zone drafts keep the previously stored configuration
+  untouched and cannot display a successful save; only explicitly blanking all five fields submits
+  the documented `null` disable value (#22).
+- **Navigation no longer ships an advisory-affected router dependency.** Velograph's five local
+  routes now use a small dependency-free browser-history adapter limited to the exact declarative
+  links, parameters, active navigation state, and test-memory history the app needs. This removes
+  React Router's newly disclosed production advisories without adopting v8's Node >=22.22 runtime
+  floor, while dedicated tests cover popstate, history traversal, modified-click passthrough,
+  dynamic ride IDs, accessible active links, and unmatched routes.
+- **High-severity production dependency advisories now block CI.** The release checks run the
+  package-manager audit against the production dependency graph after a frozen install, preventing
+  a newly disclosed high or critical advisory from hiding behind otherwise green static checks.
+- **Programmatic web packaging now forces and verifies production React output.** Deployable
+  bundles fail closed if development JSX diagnostics or checkout-local source paths appear, keeping
+  runtime artifacts compact, reproducible, and free of local build-path disclosure.
 - **Release verification is stable under real CI timing and native BuildKit layers.** The
   development-proxy regression waits for the production build it launches instead of assuming a
   four-second startup, while the release privacy audit accepts only the exact safe tar root marker

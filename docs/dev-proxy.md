@@ -38,7 +38,8 @@ copy user data.
 - Invalid port configuration fails before either child starts and does not echo the
   supplied value.
 - A child spawn error or any unexpected child exit returns a non-zero status.
-- Shutdown first sends `SIGTERM`, then bounds cleanup with `SIGKILL` after three seconds.
+- Shutdown first sends `SIGTERM`, then allows up to twelve seconds for the API's coordinated
+  request drain, WAL checkpoint, and database close before a `SIGKILL` fallback.
 
 ## Verification
 

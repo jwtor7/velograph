@@ -206,6 +206,22 @@ pnpm package:web
 node scripts/privacy-scan.mjs --all   # privacy/data-leak scan
 ```
 
+With the app serving an imported synthetic ride, a release candidate can also exercise the
+actual offline Leaflet map in a caller-supplied Chromium build. The smoke uses a disposable
+browser profile, requires a loopback URL, verifies controls, route geometry, markers, scale,
+keyboard panning, chart/map cursor synchronization, and a locally served basemap tile, and emits
+only fixed pass/failure codes:
+
+```bash
+VELO_BROWSER_SMOKE_CHROME=/path/to/chromium \
+VELO_BROWSER_SMOKE_URL=http://127.0.0.1:5123 \
+VELO_BROWSER_SMOKE_RIDE_ID=1 \
+pnpm browser:smoke:map
+```
+
+Use invented fixture rides for any release evidence. The command does not retain URLs, ride
+values, screenshots, console messages, browser profiles, or source paths.
+
 Backups are self-contained SQLite files with an app/schema manifest and deterministic table
 checksums. Restore is destructive and therefore requires explicit confirmation:
 

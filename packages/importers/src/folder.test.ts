@@ -14,6 +14,7 @@ import {
   confirmFolderImportPlan,
   FolderImportError,
   planFolderImport,
+  previewFolderImportPlan,
   previewImportFolder,
   readFolderFileGroups,
   walkImportFolder,
@@ -353,6 +354,55 @@ describe('previewImportFolder — grouping', () => {
     expect(() =>
       confirmFolderImportPlan(planFolderImport(root), preview.confirmationToken),
     ).not.toThrow();
+  });
+
+  it('binds each preflight outcome to its exact relative path when names and sizes collide', () => {
+    const root = tempDir();
+    mkdirSync(join(root, 'first'));
+    mkdirSync(join(root, 'second'));
+    writeFileSync(join(root, 'first', 'bundle.zip'), 'x');
+    writeFileSync(join(root, 'second', 'bundle.zip'), 'x');
+    const plan = planFolderImport(root);
+
+    const preview = previewFolderImportPlan(
+      plan,
+      [
+        {
+          name: 'bundle.zip',
+          sizeBytes: 1,
+          classification: 'unmodelled_metric',
+          detectedType: 'skip:unmodelled_metric',
+          outcomes: [
+            {
+              classification: 'unmodelled_metric',
+              code: 'unmodelled_metric',
+              detectedType: 'skip:unmodelled_metric',
+              count: 1,
+            },
+          ],
+        },
+        {
+          name: 'bundle.zip',
+          sizeBytes: 1,
+          classification: 'duplicate',
+          detectedType: 'archive:zip',
+          outcomes: [
+            {
+              classification: 'duplicate',
+              code: null,
+              detectedType: 'archive:zip',
+              count: 1,
+            },
+          ],
+        },
+      ],
+      true,
+    );
+
+    expect(preview.preflight.map((item) => item.relativePath)).toEqual([
+      'first/bundle.zip',
+      'second/bundle.zip',
+    ]);
   });
 
   it('returns an opaque digest and refuses confirmation of a truncated manifest', () => {

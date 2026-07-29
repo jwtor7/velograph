@@ -32,6 +32,7 @@
     "privacy:scan:staged": "node scripts/privacy-scan.mjs --staged",
     "license:check": "node scripts/third-party-license-gate.mjs --workspace",
     "package:web": "node scripts/package-web.mjs && node scripts/third-party-license-gate.mjs --stage-artifact apps/web/dist",
+    "browser:smoke:map": "node scripts/offline-map-browser-smoke.mjs",
     "fixtures:generate": "node scripts/generate-fixtures.mjs"
   },
   "devDependencies": {

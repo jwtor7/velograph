@@ -21,6 +21,24 @@ describe('runtime package dependency contract', () => {
     expect(apiManifest.scripts.prepack).toBe('node ../../scripts/build-api-runtime.mjs');
   });
 
+  it('checks in only production web JavaScript without local source paths', () => {
+    const webRoot = join(repositoryRoot, 'apps', 'api', 'dist', 'web');
+    const evidence = JSON.parse(
+      readFileSync(join(webRoot, 'third-party-module-evidence.json'), 'utf8'),
+    );
+    const javascriptFiles = evidence.files
+      .map((file) => file.file)
+      .filter((file) => file.endsWith('.js'));
+
+    expect(javascriptFiles.length).toBeGreaterThan(0);
+    for (const file of javascriptFiles) {
+      const javascript = readFileSync(join(webRoot, file), 'utf8');
+      expect(javascript).not.toContain('jsxDEV');
+      expect(javascript).not.toContain('Each child in a list should have a unique');
+      expect(javascript.replaceAll(String.fromCharCode(92), '/')).not.toContain('/apps/web/src/');
+    }
+  });
+
   it('accepts only the exact audited external dependency set', () => {
     expect(() =>
       assertRuntimeDependencyContract({ dependencies: exactDependencies }),

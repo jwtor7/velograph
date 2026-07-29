@@ -148,7 +148,7 @@ export interface FolderPreviewBody {
   truncated: boolean;
   confirmationToken: string;
   preflightComplete: boolean;
-  preflight: Omit<ImportInventoryItem, 'id'>[];
+  preflight: (Omit<ImportInventoryItem, 'id'> & { relativePath: string })[];
 }
 
 export interface ImportResultBody {

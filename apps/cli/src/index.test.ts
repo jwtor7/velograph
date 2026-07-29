@@ -161,6 +161,29 @@ describe('velograph CLI', () => {
     }
   });
 
+  it('reports normal import skips as compact value-free counts', async () => {
+    const source = mkdtempSync(join(tmpdir(), 'velo-cli-normal-skips-'));
+    try {
+      const unmodelledName = 'Outdoor Cycling-Respiratory Rate-20330405_070000.csv';
+      const nonCyclingName = 'Running-Route-20330405_070000.gpx';
+      const unmodelledPath = join(source, unmodelledName);
+      const nonCyclingPath = join(source, nonCyclingName);
+      writeFileSync(unmodelledPath, 'invented out-of-scope metric');
+      writeFileSync(nonCyclingPath, 'invented out-of-scope route');
+
+      expect(await main(['import', unmodelledPath, nonCyclingPath, '--data-dir', dataDir])).toBe(0);
+      const output = JSON.stringify(vi.mocked(console.log).mock.calls);
+      expect(output).toContain('out-of-scope skipped: 2');
+      expect(output).toContain('skipped [unmodelled_metric]: 1');
+      expect(output).toContain('skipped [non_cycling_workout]: 1');
+      expect(output).not.toContain(unmodelledName);
+      expect(output).not.toContain(nonCyclingName);
+      expect(output).not.toContain(source);
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a symbolic path before reading it', async () => {
     const source = mkdtempSync(join(tmpdir(), 'velo-cli-symbolic-source-'));
     const aliasRoot = mkdtempSync(join(tmpdir(), 'velo-cli-symbolic-alias-'));

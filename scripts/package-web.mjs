@@ -25,6 +25,11 @@ const outputMetadata = new Map();
 let buildPackages;
 let injectedModules;
 
+// Vite's programmatic build API does not set NODE_ENV for callers. Force the
+// production React/JSX branches so deployable bundles never contain development
+// diagnostics or absolute source paths.
+process.env.NODE_ENV = 'production';
+
 function fail(code) {
   throw new Error(code);
 }
@@ -204,10 +209,13 @@ function licenceEvidencePlugin() {
 assertNoPublicAssets();
 assertSafeOutputRoot();
 const viteEntrypoint = webRequire.resolve('vite');
+const reactPluginEntrypoint = webRequire.resolve('@vitejs/plugin-react');
 const { build } = await import(pathToFileURL(viteEntrypoint).href);
+const { default: react } = await import(pathToFileURL(reactPluginEntrypoint).href);
 await build({
   root: webRoot,
-  plugins: [licenceEvidencePlugin()],
+  mode: 'production',
+  plugins: [react(), licenceEvidencePlugin()],
 });
 
 if (!buildPackages || !injectedModules) fail('web_build_evidence_not_generated');
@@ -222,6 +230,18 @@ const files = collectOutputFiles(outputRoot)
     const metadata = outputMetadata.get(file);
     if (!metadata) fail('web_build_output_source_missing');
     const content = readFileSync(join(outputRoot, ...file.split('/')));
+    if (file.endsWith('.js')) {
+      const javascript = content.toString('utf8');
+      if (
+        javascript.includes('jsxDEV') ||
+        javascript.includes('Each child in a list should have a unique')
+      ) {
+        fail('web_build_development_jsx_runtime');
+      }
+      if (javascript.replaceAll(String.fromCharCode(92), '/').includes('/apps/web/src/')) {
+        fail('web_build_absolute_source_path');
+      }
+    }
     return {
       file,
       sha256: sha256(content),

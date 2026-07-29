@@ -2,9 +2,9 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
 import { api } from './api.ts';
 import { App } from './App.tsx';
+import { MemoryRouter } from './router.tsx';
 
 afterEach(() => {
   cleanup();

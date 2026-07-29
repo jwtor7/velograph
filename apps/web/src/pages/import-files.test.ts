@@ -3,7 +3,10 @@ import type { ImportUploadLimits } from '@velograph/shared/import-limits';
 import {
   createPickedFiles,
   encodePickedFilesSequentially,
+  inventoryItemNeedsAttention,
   inventoryMatchesSelection,
+  isNormalImportSkipItem,
+  summarizeNormalImportSkips,
   validateImportSelection,
   type PickedImportFile,
 } from './import-files.ts';
@@ -31,6 +34,21 @@ describe('browser import selection', () => {
     expect(created.files.map((file) => file.id)).toEqual(['upload-7', 'upload-8']);
     expect(created.files[0]!.file).toBe(first);
     expect(created.files[1]!.file).toBe(second);
+  });
+
+  it('preserves unsupported selections so server inventory can report them explicitly', () => {
+    const unsupported = fakeFile('invented-notes.txt', 4);
+    const created = createPickedFiles([unsupported], 9);
+
+    expect(created.files).toEqual([
+      {
+        id: 'upload-9',
+        name: 'invented-notes.txt',
+        size: 4,
+        file: unsupported,
+      },
+    ]);
+    expect(created.nextId).toBe(10);
   });
 
   it('enforces count, per-file, and aggregate limits before encoding', () => {
@@ -137,5 +155,61 @@ describe('browser import selection', () => {
     expect(inventoryMatchesSelection(selected, inventory)).toBe(true);
     expect(inventoryMatchesSelection(selected, [{ ...inventory[0]!, sizeBytes: 5 }])).toBe(false);
     expect(inventoryMatchesSelection(selected, [{ ...inventory[0]!, id: 'upload-2' }])).toBe(false);
+  });
+
+  it('summarizes normal skips without treating them as warnings', () => {
+    const items = [
+      {
+        classification: 'unmodelled_metric' as const,
+        outcomes: [
+          {
+            classification: 'unmodelled_metric' as const,
+            code: 'unmodelled_metric',
+            detectedType: 'skip:unmodelled_metric',
+            count: 3,
+          },
+        ],
+      },
+      {
+        classification: 'mixed' as const,
+        outcomes: [
+          {
+            classification: 'recognized' as const,
+            code: null,
+            detectedType: 'metric:heart_rate',
+            count: 1,
+          },
+          {
+            classification: 'non_cycling_workout' as const,
+            code: 'non_cycling_workout',
+            detectedType: 'skip:non_cycling_workout',
+            count: 2,
+          },
+        ],
+      },
+    ];
+
+    expect(summarizeNormalImportSkips(items)).toEqual({
+      total: 5,
+      unmodelledMetric: 3,
+      nonCyclingWorkout: 2,
+    });
+    expect(isNormalImportSkipItem(items[0]!)).toBe(true);
+    expect(isNormalImportSkipItem(items[1]!)).toBe(false);
+    expect(inventoryItemNeedsAttention(items[0]!)).toBe(false);
+    expect(inventoryItemNeedsAttention(items[1]!)).toBe(false);
+    expect(
+      inventoryItemNeedsAttention({
+        classification: 'invalid',
+        outcomes: [
+          {
+            classification: 'invalid',
+            code: 'malformed_csv',
+            detectedType: null,
+            count: 1,
+          },
+        ],
+      }),
+    ).toBe(true);
   });
 });

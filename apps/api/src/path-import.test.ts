@@ -115,7 +115,7 @@ describe('POST /api/import/path/inventory', () => {
         ungrouped: unknown[];
         totalFiles: number;
         preflightComplete: boolean;
-        preflight: { classification: string }[];
+        preflight: { classification: string; relativePath: string }[];
       };
     };
     expect(body.preview.confirmationToken).toMatch(/^[a-f0-9]{64}$/);
@@ -128,6 +128,14 @@ describe('POST /api/import/path/inventory', () => {
     expect(body.preview.preflightComplete).toBe(true);
     expect(body.preview.preflight).toHaveLength(24);
     expect(body.preview.preflight.every((item) => item.classification === 'recognized')).toBe(true);
+    expect(
+      body.preview.preflight.every(
+        (item) =>
+          item.relativePath.length > 0 &&
+          !item.relativePath.startsWith('/') &&
+          !item.relativePath.includes(exportDir),
+      ),
+    ).toBe(true);
 
     // Confirm the workouts list is untouched — preview never imports.
     const workouts = await fetch(`${base}/api/workouts`);

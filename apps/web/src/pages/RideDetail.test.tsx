@@ -2,9 +2,9 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { api, type RideAnalytics, type WorkoutDetail, type WorkoutSummary } from '../api.ts';
 import { buildLineSpec, fmtDate } from '../chartspec/spec.ts';
+import { MemoryRouter, Route, Routes } from '../router.tsx';
 import { RideDetail } from './RideDetail.tsx';
 
 vi.mock('../components/interactive-route-map.tsx', () => ({

@@ -670,7 +670,7 @@ export interface FolderPreview {
   truncated: boolean;
   confirmationToken: string;
   preflightComplete: boolean;
-  preflight: ImportPreflightItem[];
+  preflight: (ImportPreflightItem & { relativePath: string })[];
 }
 
 function planConfirmationToken(plan: FolderImportPlan): string {
@@ -724,6 +724,13 @@ export function previewFolderImportPlan(
 ): FolderPreview {
   const rides: FolderRideGroup[] = [];
   const ungrouped: FolderUngroupedItem[] = [];
+  const orderedFiles = plan.groups.flatMap((group) => group.files);
+  if (
+    preflight.length > orderedFiles.length ||
+    (preflightComplete && preflight.length !== orderedFiles.length)
+  ) {
+    throw new Error('folder_preflight_plan_mismatch');
+  }
 
   for (const group of plan.groups) {
     if (group.kind === 'ride') {
@@ -766,7 +773,10 @@ export function previewFolderImportPlan(
     truncated: plan.truncated,
     confirmationToken: planConfirmationToken(plan),
     preflightComplete,
-    preflight: [...preflight],
+    preflight: preflight.map((item, index) => ({
+      ...item,
+      relativePath: orderedFiles[index]!.relativePath,
+    })),
   };
 }
 

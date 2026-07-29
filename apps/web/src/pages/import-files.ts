@@ -2,13 +2,70 @@ import {
   DEFAULT_IMPORT_UPLOAD_LIMITS,
   type ImportUploadLimits,
 } from '@velograph/shared/import-limits';
-import type { ImportInventoryItem, UploadFileBody } from '../api.ts';
+import type {
+  ImportInventoryClassification,
+  ImportInventoryItem,
+  ImportInventoryOutcome,
+  UploadFileBody,
+} from '../api.ts';
 
 export interface PickedImportFile {
   id: string;
   name: string;
   size: number;
   file: File;
+}
+
+interface ImportInventorySummaryItem {
+  classification: ImportInventoryClassification;
+  outcomes: readonly ImportInventoryOutcome[];
+}
+
+export interface NormalImportSkipSummary {
+  total: number;
+  unmodelledMetric: number;
+  nonCyclingWorkout: number;
+}
+
+export function isNormalImportSkipClassification(
+  classification: ImportInventoryClassification,
+): boolean {
+  return classification === 'unmodelled_metric' || classification === 'non_cycling_workout';
+}
+
+export function isNormalImportSkipItem(item: ImportInventorySummaryItem): boolean {
+  return isNormalImportSkipClassification(item.classification);
+}
+
+export function summarizeNormalImportSkips(
+  items: readonly ImportInventorySummaryItem[],
+): NormalImportSkipSummary {
+  const summary: NormalImportSkipSummary = {
+    total: 0,
+    unmodelledMetric: 0,
+    nonCyclingWorkout: 0,
+  };
+  for (const item of items) {
+    for (const outcome of item.outcomes) {
+      if (outcome.classification === 'unmodelled_metric') {
+        summary.unmodelledMetric += outcome.count;
+        summary.total += outcome.count;
+      } else if (outcome.classification === 'non_cycling_workout') {
+        summary.nonCyclingWorkout += outcome.count;
+        summary.total += outcome.count;
+      }
+    }
+  }
+  return summary;
+}
+
+export function inventoryItemNeedsAttention(item: ImportInventorySummaryItem): boolean {
+  return item.outcomes.some(
+    (outcome) =>
+      outcome.classification === 'invalid' ||
+      outcome.classification === 'ambiguous' ||
+      outcome.classification === 'unsupported',
+  );
 }
 
 export type ImportSelectionError =
@@ -21,7 +78,6 @@ export function createPickedFiles(
   let nextId = firstId;
   const picked: PickedImportFile[] = [];
   for (const file of files) {
-    if (!/\.(csv|gpx|zip)$/i.test(file.name)) continue;
     picked.push({
       id: `upload-${nextId++}`,
       name: file.name,

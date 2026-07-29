@@ -358,7 +358,7 @@
       "format": "esm"
     },
     "packages/importers/src/folder.ts": {
-      "bytes": 27136,
+      "bytes": 27516,
       "imports": [
         {
           "path": "node:fs",
@@ -879,7 +879,7 @@
           "bytesInOutput": 16688
         },
         "packages/importers/src/folder.ts": {
-          "bytesInOutput": 19450
+          "bytesInOutput": 19785
         },
         "packages/analytics/src/index.ts": {
           "bytesInOutput": 0
@@ -909,7 +909,7 @@
           "bytesInOutput": 1026
         }
       },
-      "bytes": 247762
+      "bytes": 248097
     }
   }
 }

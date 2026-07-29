@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, type WorkoutDetail, type WorkoutSummary } from '../api.ts';
 import { fmtDate, fmtDuration, fmtInt, fmtKm, fmtSpeedKmh, type Pt } from '../chartspec/spec.ts';
 import { TimeSeriesChart } from '../components/charts.tsx';
@@ -7,6 +6,7 @@ import { InteractiveRouteMap } from '../components/interactive-route-map.tsx';
 import { ElevationProfile, ZoneStrip } from '../components/route.tsx';
 import { ConfirmDialog, Kpi, EmptyState } from '../components/ui.tsx';
 import { findPreviousWorkout, repairAndReloadRide } from '../ride-repair.ts';
+import { Link, useNavigate, useParams } from '../router.tsx';
 
 const CH = {
   hr: 'var(--vg-ch-hr)',

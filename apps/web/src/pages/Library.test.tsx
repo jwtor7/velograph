@@ -2,9 +2,9 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
 import { api, type WorkoutSummary } from '../api.ts';
 import { fmtDate } from '../chartspec/spec.ts';
+import { MemoryRouter } from '../router.tsx';
 import { Library } from './Library.tsx';
 
 afterEach(() => {

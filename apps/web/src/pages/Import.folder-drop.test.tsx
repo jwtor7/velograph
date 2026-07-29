@@ -2,8 +2,8 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
 import { api, type FolderPreviewBody, type ImportInventoryItem } from '../api.ts';
+import { MemoryRouter } from '../router.tsx';
 import { ImportPage } from './Import.tsx';
 
 const FALLBACK_NOTICE =
@@ -161,6 +161,101 @@ describe('Import folder drop integration', () => {
     expect(confirmImport.disabled).toBe(false);
     expect(screen.queryByRole('heading', { name: /Selected files/ })).toBeNull();
     expect(looseFileReview).not.toHaveBeenCalled();
+  });
+
+  it('summarizes normal folder-preview skips without listing their filenames as warnings', async () => {
+    const unmodelledName = 'Outdoor Cycling-Respiratory Rate-20400101_070000.csv';
+    const nonCyclingName = 'Running-Heart Rate-20400102_070000.csv';
+    const files = [
+      syntheticFile(unmodelledName, `/synthetic/Health Export/${unmodelledName}`),
+      syntheticFile(nonCyclingName, `/synthetic/Health Export/${nonCyclingName}`),
+    ];
+    const basePreview = completePreview();
+    const preview: FolderPreviewBody = {
+      ...basePreview,
+      rides: [
+        {
+          ...basePreview.rides[0]!,
+          files: [
+            ...basePreview.rides[0]!.files,
+            {
+              relativePath: unmodelledName,
+              name: unmodelledName,
+              sizeBytes: files[0]!.size,
+              label: 'Respiratory Rate',
+              format: 'csv',
+            },
+          ],
+        },
+      ],
+      ungrouped: [
+        {
+          relativePath: nonCyclingName,
+          name: nonCyclingName,
+          sizeBytes: files[1]!.size,
+          classification: 'unrecognized_filename',
+        },
+      ],
+      totalFiles: 4,
+      totalBytes: 52 + files[0]!.size + files[1]!.size,
+      preflight: [
+        {
+          name: unmodelledName,
+          relativePath: unmodelledName,
+          sizeBytes: files[0]!.size,
+          classification: 'unmodelled_metric',
+          detectedType: 'skip:unmodelled_metric',
+          outcomes: [
+            {
+              classification: 'unmodelled_metric',
+              code: 'unmodelled_metric',
+              detectedType: 'skip:unmodelled_metric',
+              count: 1,
+            },
+          ],
+        },
+        {
+          name: nonCyclingName,
+          relativePath: nonCyclingName,
+          sizeBytes: files[1]!.size,
+          classification: 'non_cycling_workout',
+          detectedType: 'skip:non_cycling_workout',
+          outcomes: [
+            {
+              classification: 'non_cycling_workout',
+              code: 'non_cycling_workout',
+              detectedType: 'skip:non_cycling_workout',
+              count: 1,
+            },
+          ],
+        },
+      ],
+    };
+    vi.spyOn(api, 'importPathPreview').mockResolvedValue({ preview });
+    renderImportPage();
+
+    fireEvent.drop(screen.getByRole('group', { name: 'File import drop area' }), {
+      dataTransfer: directoryDataTransfer(directoryEntry('Health Export', files)),
+    });
+
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole('status')
+          .some((status) => status.textContent?.includes('Normal skips')),
+      ).toBe(true),
+    );
+    const summary = screen
+      .getAllByRole('status')
+      .find((status) => status.textContent?.includes('Normal skips'));
+    expect(summary?.textContent).toContain('1 metric not modelled');
+    expect(summary?.textContent).toContain('1 non-cycling workout file');
+    expect(summary?.textContent).toContain('will not be quarantined');
+    expect(screen.queryByText(unmodelledName)).toBeNull();
+    expect(screen.queryByText(nonCyclingName)).toBeNull();
+    expect(screen.getByText('Heart rate (csv)')).toBeTruthy();
+    expect(screen.getByText('Route (gpx)')).toBeTruthy();
+    expect(screen.queryByText(/Not part of a recognized ride/)).toBeNull();
   });
 
   it.each([

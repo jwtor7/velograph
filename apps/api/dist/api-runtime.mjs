@@ -4543,6 +4543,10 @@ function confirmFolderImportPlan(plan, token) {
 function previewFolderImportPlan(plan, preflight = [], preflightComplete = false) {
   const rides = [];
   const ungrouped = [];
+  const orderedFiles = plan.groups.flatMap((group) => group.files);
+  if (preflight.length > orderedFiles.length || preflightComplete && preflight.length !== orderedFiles.length) {
+    throw new Error("folder_preflight_plan_mismatch");
+  }
   for (const group of plan.groups) {
     if (group.kind === "ride") {
       rides.push({
@@ -4583,7 +4587,10 @@ function previewFolderImportPlan(plan, preflight = [], preflightComplete = false
     truncated: plan.truncated,
     confirmationToken: planConfirmationToken(plan),
     preflightComplete,
-    preflight: [...preflight]
+    preflight: preflight.map((item, index) => ({
+      ...item,
+      relativePath: orderedFiles[index].relativePath
+    }))
   };
 }
 function revalidateRoot(plan) {

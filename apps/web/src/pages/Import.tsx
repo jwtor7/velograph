@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
 import {
   ApiError,
   api,
@@ -8,11 +7,16 @@ import {
   type ImportInventoryItem,
   type ImportResultBody,
 } from '../api.ts';
+import { Link } from '../router.tsx';
 import {
   createPickedFiles,
   encodePickedFilesSequentially,
+  inventoryItemNeedsAttention,
   inventoryMatchesSelection,
   isAbortError,
+  isNormalImportSkipClassification,
+  isNormalImportSkipItem,
+  summarizeNormalImportSkips,
   validateImportSelection,
   type ImportSelectionError,
   type PickedImportFile,
@@ -393,6 +397,27 @@ export function ImportPage() {
   };
 
   const inventoryById = new Map(inventory?.map((item) => [item.id, item]) ?? []);
+  const normalSkipSummary = summarizeNormalImportSkips(inventory ?? []);
+  const visiblePicked =
+    inventory === null
+      ? picked
+      : picked.filter((file) => {
+          const item = inventoryById.get(file.id);
+          return !item || !isNormalImportSkipItem(item);
+        });
+  const previewNormalSkipSummary = summarizeNormalImportSkips(preview?.preflight ?? []);
+  const previewDetailedItems =
+    preview?.preflight.filter((item) => !isNormalImportSkipItem(item)) ?? [];
+  const previewNormalSkipPaths = new Set(
+    (preview?.preflight ?? []).filter(isNormalImportSkipItem).map((item) => item.relativePath),
+  );
+  const previewVisibleRides =
+    preview?.rides.flatMap((ride) => {
+      const files = ride.files.filter((file) => !previewNormalSkipPaths.has(file.relativePath));
+      return files.length > 0 ? [{ ...ride, files }] : [];
+    }) ?? [];
+  const previewVisibleUngrouped =
+    preview?.ungrouped.filter((item) => !previewNormalSkipPaths.has(item.relativePath)) ?? [];
 
   return (
     <div className="stack">
@@ -463,82 +488,95 @@ export function ImportPage() {
             Review asks the local API to identify every exact file before import. Distinct files are
             preserved even when their names and sizes match.
           </p>
-          <table className="data">
-            <thead>
-              <tr>
-                <th>File</th>
-                <th>Status</th>
-                <th style={{ textAlign: 'right' }}>Size</th>
-                <th>
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {picked.map((p) => (
-                <tr key={p.id}>
-                  <td>{p.name}</td>
-                  <td>
-                    {inventoryById.has(p.id) ? (
-                      <>
-                        <span
-                          className={`badge ${
-                            inventoryById.get(p.id)!.classification === 'recognized' ? '' : 'warn'
-                          }`}
-                        >
-                          {inventoryById.get(p.id)!.classification.replaceAll('_', ' ')}
-                        </span>
-                        {inventoryById
-                          .get(p.id)!
-                          .outcomes.filter(
-                            (outcome) =>
-                              inventoryById.get(p.id)!.classification === 'mixed' ||
-                              outcome.classification === 'invalid' ||
-                              outcome.classification === 'ambiguous' ||
-                              outcome.count > 1,
-                          )
-                          .map((outcome, index) => (
-                            <span
-                              key={`${outcome.classification}-${outcome.code ?? 'none'}-${index}`}
-                              className="muted"
-                              style={{ marginLeft: 6, fontSize: 11 }}
-                            >
-                              {outcome.count > 1 ? `${outcome.count}× ` : ''}
-                              {outcome.classification.replaceAll('_', ' ')}
-                              {outcome.code ? ` · ${outcome.code.replaceAll('_', ' ')}` : ''}
-                            </span>
-                          ))}
-                        {inventoryById.get(p.id)!.detectedType && (
-                          <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
-                            {inventoryById
-                              .get(p.id)!
-                              .detectedType!.replaceAll('_', ' ')
-                              .replaceAll(':', ' · ')}
-                          </span>
-                        )}
-                      </>
-                    ) : (
-                      <span className="muted">Awaiting review</span>
-                    )}
-                  </td>
-                  <td className="muted" style={{ textAlign: 'right' }}>
-                    {(p.size / 1024).toFixed(1)} KB
-                  </td>
-                  <td style={{ textAlign: 'right' }}>
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={() => removePickedFile(p.id)}
-                      disabled={fileOperationBusy || pathOperationBusy}
-                      aria-label={`Remove ${p.name}`}
-                    >
-                      Remove
-                    </button>
-                  </td>
+          {inventory && normalSkipSummary.total > 0 && (
+            <p className="muted" role="status" style={{ margin: '8px 0', fontSize: 12 }}>
+              <span className="badge">Normal skips</span> {normalSkipSummary.unmodelledMetric}{' '}
+              metric
+              {normalSkipSummary.unmodelledMetric === 1 ? '' : 's'} not modelled ·{' '}
+              {normalSkipSummary.nonCyclingWorkout} non-cycling workout file
+              {normalSkipSummary.nonCyclingWorkout === 1 ? '' : 's'}. These are expected and will
+              not be quarantined.
+            </p>
+          )}
+          {visiblePicked.length > 0 && (
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Status</th>
+                  <th style={{ textAlign: 'right' }}>Size</th>
+                  <th>
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {visiblePicked.map((p) => (
+                  <tr key={p.id}>
+                    <td>{p.name}</td>
+                    <td>
+                      {inventoryById.has(p.id) ? (
+                        <>
+                          <span
+                            className={`badge ${
+                              inventoryItemNeedsAttention(inventoryById.get(p.id)!) ? 'warn' : ''
+                            }`}
+                          >
+                            {inventoryById.get(p.id)!.classification.replaceAll('_', ' ')}
+                          </span>
+                          {inventoryById
+                            .get(p.id)!
+                            .outcomes.filter(
+                              (outcome) =>
+                                !isNormalImportSkipClassification(outcome.classification) &&
+                                (inventoryById.get(p.id)!.classification === 'mixed' ||
+                                  outcome.classification === 'invalid' ||
+                                  outcome.classification === 'ambiguous' ||
+                                  outcome.count > 1),
+                            )
+                            .map((outcome, index) => (
+                              <span
+                                key={`${outcome.classification}-${outcome.code ?? 'none'}-${index}`}
+                                className="muted"
+                                style={{ marginLeft: 6, fontSize: 11 }}
+                              >
+                                {outcome.count > 1 ? `${outcome.count}× ` : ''}
+                                {outcome.classification.replaceAll('_', ' ')}
+                                {outcome.code ? ` · ${outcome.code.replaceAll('_', ' ')}` : ''}
+                              </span>
+                            ))}
+                          {inventoryById.get(p.id)!.detectedType && (
+                            <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
+                              {inventoryById
+                                .get(p.id)!
+                                .detectedType!.replaceAll('_', ' ')
+                                .replaceAll(':', ' · ')}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="muted">Awaiting review</span>
+                      )}
+                    </td>
+                    <td className="muted" style={{ textAlign: 'right' }}>
+                      {(p.size / 1024).toFixed(1)} KB
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => removePickedFile(p.id)}
+                        disabled={fileOperationBusy || pathOperationBusy}
+                        aria-label={`Remove ${p.name}`}
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
           <div className="row" style={{ marginTop: 12 }}>
             {inventory ? (
               <button
@@ -634,28 +672,44 @@ export function ImportPage() {
                 <div style={{ fontWeight: 600, fontSize: 13 }}>
                   Exact file review ({preview.preflight.length})
                 </div>
-                <ul className="muted" style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12 }}>
-                  {preview.preflight.map((item, index) => (
-                    <li key={`${item.name}-${index}`}>
-                      {item.name} — {item.classification.replaceAll('_', ' ')}
-                      {item.outcomes
-                        .filter(
-                          (outcome) =>
-                            item.classification === 'mixed' ||
-                            outcome.classification === 'invalid' ||
-                            outcome.classification === 'ambiguous' ||
-                            outcome.count > 1,
-                        )
-                        .map(
-                          (outcome) =>
-                            ` · ${outcome.count > 1 ? `${outcome.count}× ` : ''}${
-                              outcome.code?.replaceAll('_', ' ') ??
-                              outcome.classification.replaceAll('_', ' ')
-                            }`,
-                        )}
-                    </li>
-                  ))}
-                </ul>
+                {previewNormalSkipSummary.total > 0 && (
+                  <p className="muted" role="status" style={{ margin: '4px 0', fontSize: 12 }}>
+                    <span className="badge">Normal skips</span>{' '}
+                    {previewNormalSkipSummary.unmodelledMetric} metric
+                    {previewNormalSkipSummary.unmodelledMetric === 1 ? '' : 's'} not modelled ·{' '}
+                    {previewNormalSkipSummary.nonCyclingWorkout} non-cycling workout file
+                    {previewNormalSkipSummary.nonCyclingWorkout === 1 ? '' : 's'}. These are
+                    expected and will not be quarantined.
+                  </p>
+                )}
+                {previewDetailedItems.length > 0 && (
+                  <ul
+                    className="muted"
+                    style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12 }}
+                  >
+                    {previewDetailedItems.map((item, index) => (
+                      <li key={`${item.name}-${index}`}>
+                        {item.name} — {item.classification.replaceAll('_', ' ')}
+                        {item.outcomes
+                          .filter(
+                            (outcome) =>
+                              !isNormalImportSkipClassification(outcome.classification) &&
+                              (item.classification === 'mixed' ||
+                                outcome.classification === 'invalid' ||
+                                outcome.classification === 'ambiguous' ||
+                                outcome.count > 1),
+                          )
+                          .map(
+                            (outcome) =>
+                              ` · ${outcome.count > 1 ? `${outcome.count}× ` : ''}${
+                                outcome.code?.replaceAll('_', ' ') ??
+                                outcome.classification.replaceAll('_', ' ')
+                              }`,
+                          )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             ) : (
               <p style={{ fontSize: 12, color: 'var(--vg-ch-hr)' }}>
@@ -663,7 +717,7 @@ export function ImportPage() {
               </p>
             )}
 
-            {preview.rides.map((r) => (
+            {previewVisibleRides.map((r) => (
               <div key={r.rideKey} style={{ margin: '8px 0' }}>
                 <div style={{ fontWeight: 600, fontSize: 13 }}>
                   {r.workoutType === 'indoor_cycling' ? 'Indoor' : 'Outdoor'} ride · {r.stampHint}
@@ -682,13 +736,13 @@ export function ImportPage() {
               </div>
             ))}
 
-            {preview.ungrouped.length > 0 && (
+            {previewVisibleUngrouped.length > 0 && (
               <div style={{ margin: '8px 0' }}>
                 <div style={{ fontWeight: 600, fontSize: 13 }}>
-                  Not part of a recognized ride ({preview.ungrouped.length})
+                  Not part of a recognized ride ({previewVisibleUngrouped.length})
                 </div>
                 <ul className="muted" style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12 }}>
-                  {preview.ungrouped.map((u) => (
+                  {previewVisibleUngrouped.map((u) => (
                     <li key={u.relativePath}>
                       {u.name} — {u.classification.replaceAll('_', ' ')}
                     </li>

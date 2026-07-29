@@ -166,6 +166,7 @@ function runImportCmd(args: string[]): number {
         `Batch ${result.batchId} committed`,
         `  imported files:     ${result.imported}`,
         `  duplicates skipped: ${result.skippedDuplicates}`,
+        `  out-of-scope skipped: ${result.skipped}`,
         `  quarantined:        ${result.quarantined}`,
         `  workouts created:   ${result.workoutsCreated}`,
       ].join('\n'),
@@ -178,6 +179,11 @@ function runImportCmd(args: string[]): number {
       left.localeCompare(right),
     )) {
       console.log(`  quarantined [${code}]: ${count}`);
+    }
+    for (const [code, count] of Object.entries(result.skippedByCode).sort(([left], [right]) =>
+      left.localeCompare(right),
+    )) {
+      if (count > 0) console.log(`  skipped [${code}]: ${count}`);
     }
     return 0;
   } finally {

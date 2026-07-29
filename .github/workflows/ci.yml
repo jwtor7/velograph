@@ -22,6 +22,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Production dependency vulnerability audit (blocking)
+        run: pnpm audit --prod --audit-level high
       - name: Third-party runtime licence and notices gate (blocking)
         run: pnpm license:check
       - name: Privacy / data-leak scan (blocking)
