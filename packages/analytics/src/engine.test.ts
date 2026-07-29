@@ -410,4 +410,32 @@ describe('deterministic analytics engine', () => {
     expect(analytics.elevation.minM).toBe(10);
     expect(analytics.elevation.maxM).toBe(30);
   });
+
+  it('reduces large route extrema without overflowing the JavaScript call stack', () => {
+    const pointCount = 200_001;
+    const points = Array.from({ length: pointCount }, (_, index) => ({
+      t: T0 + index * 1_000,
+      lat: -48.5,
+      lon: -123.5,
+      ele: index % 101,
+      speed: index === pointCount - 1 ? 12.345 : 2,
+    }));
+    const analytics = computeRideAnalytics(
+      mkInput({
+        workout: {
+          id: 8,
+          type: 'outdoor_cycling',
+          startUtc: T0,
+          endUtc: T0 + (pointCount - 1) * 1_000,
+        },
+        metrics: {},
+        route: [{ points }],
+      }),
+      settings,
+    );
+
+    expect(analytics.maxSpeedMs).toBe(12.345);
+    expect(analytics.elevation.minM).toBe(0);
+    expect(analytics.elevation.maxM).toBe(100);
+  });
 });
