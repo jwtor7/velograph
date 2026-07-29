@@ -78,6 +78,10 @@ is pre-1.0, and for the release procedure.
 - **Trend charts preserve unavailable metrics instead of inventing zero observations.** Missing
   heart rate, speed, and efficiency values render as explicit dashed `n/a` markers with a
   privacy-safe coverage note, while a genuinely recorded zero remains a distinct solid bar (#27).
+- **Ride repair reloads the complete canonical ride instead of only swapping analytics.** The
+  detail screen now keeps its repair state active while it refetches workout bounds, metrics,
+  route, analytics, and the ride library, then resets the synchronized cursor and previous-ride
+  comparison against the repaired time domain (#46).
 - **Large and partially timed routes render safely and stay synchronized.** Route bounds now use
   one bounded pass instead of spreading every coordinate into `Math.min`/`Math.max`, including
   the persisted route summary. Elevation keeps recorded segment gaps, uses the ride's full time

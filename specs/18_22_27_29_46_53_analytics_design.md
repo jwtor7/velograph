@@ -53,6 +53,6 @@
 - [x] Implement analytics-v2 bounded weighting, splits, zones, and moving-time decoupling
       (#18, #19, #29, analytics half of #53).
 - [x] Preserve unavailable trend values as gaps (#27).
-- [ ] Reload canonical detail state after repair (#46).
+- [x] Reload canonical detail state after repair (#46).
 - [x] Update formula documentation, golden output, changelog, and synthetic test coverage.
 - [ ] Run full quality, privacy, security, performance, and browser gates.

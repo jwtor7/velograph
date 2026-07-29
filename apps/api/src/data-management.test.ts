@@ -83,16 +83,58 @@ describe('DELETE /api/workouts/:id', () => {
 });
 
 describe('POST /api/workouts/:id/repair', () => {
-  it('recomputes analytics for an existing workout', async () => {
+  it('recomputes bounds and exposes canonical detail and library state', async () => {
     const list = (await (await fetch(`${base}/api/workouts`)).json()) as {
       workouts: { id: number }[];
     };
     const id = list.workouts[0]!.id;
+    const expected = db
+      .prepare(
+        `SELECT MIN(mn) AS start, MAX(mx) AS end FROM (
+           SELECT start_utc AS mn, end_utc AS mx FROM metric_series WHERE workout_id = ?
+           UNION ALL
+           SELECT MIN(rp.t_utc), MAX(rp.t_utc)
+             FROM route_points rp JOIN routes r ON r.id = rp.route_id
+             WHERE r.workout_id = ? AND rp.t_utc IS NOT NULL
+         )`,
+      )
+      .get(id, id) as { start: number; end: number };
+    db.prepare(
+      `UPDATE workouts
+       SET start_utc = ?, end_utc = ?, duration_s = ?
+       WHERE id = ?`,
+    ).run(expected.start - 600_000, expected.end + 600_000, 1, id);
+
+    const stale = (await (await fetch(`${base}/api/workouts/${id}`)).json()) as {
+      workout: { startUtc: number; endUtc: number };
+    };
+    expect(stale.workout).not.toEqual({ startUtc: expected.start, endUtc: expected.end });
+
     const res = await fetch(`${base}/api/workouts/${id}/repair`, { method: 'POST', headers });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { repaired: boolean; analytics: { workoutId: number } };
     expect(body.repaired).toBe(true);
     expect(body.analytics.workoutId).toBe(id);
+
+    const detail = (await (await fetch(`${base}/api/workouts/${id}`)).json()) as {
+      workout: { startUtc: number; endUtc: number };
+      analytics: { durationS: number };
+      metrics: Record<string, unknown[]>;
+      route: { points: unknown[] }[];
+    };
+    expect(detail.workout).toMatchObject({ startUtc: expected.start, endUtc: expected.end });
+    expect(detail.analytics.durationS).toBe(Math.round((expected.end - expected.start) / 1000));
+    expect(Object.keys(detail.metrics).length).toBeGreaterThan(0);
+    expect(detail.route.length).toBeGreaterThan(0);
+
+    const refreshedLibrary = (await (await fetch(`${base}/api/workouts`)).json()) as {
+      workouts: { id: number; startUtc: number; endUtc: number; durationS: number }[];
+    };
+    expect(refreshedLibrary.workouts.find((workout) => workout.id === id)).toMatchObject({
+      startUtc: expected.start,
+      endUtc: expected.end,
+      durationS: Math.round((expected.end - expected.start) / 1000),
+    });
   });
 
   it('404s repairing an unknown id', async () => {

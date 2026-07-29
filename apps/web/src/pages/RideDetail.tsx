@@ -5,6 +5,7 @@ import { fmtDate, fmtDuration, fmtInt, fmtKm, fmtSpeedKmh, type Pt } from '../ch
 import { TimeSeriesChart } from '../components/charts.tsx';
 import { ElevationProfile, RoutePanel, ZoneStrip } from '../components/route.tsx';
 import { ConfirmDialog, Kpi, EmptyState } from '../components/ui.tsx';
+import { findPreviousWorkout, repairAndReloadRide } from '../ride-repair.ts';
 
 const CH = {
   hr: 'var(--vg-ch-hr)',
@@ -39,9 +40,7 @@ export function RideDetail() {
     api
       .workouts()
       .then((r) => {
-        const sorted = [...r.workouts].sort((a, b) => a.startUtc - b.startUtc);
-        const idx = sorted.findIndex((w) => w.id === Number(id));
-        setPrevious(idx > 0 ? sorted[idx - 1]! : null);
+        setPrevious(findPreviousWorkout(r.workouts, Number(id)));
       })
       .catch(() => {});
     api
@@ -68,11 +67,13 @@ export function RideDetail() {
     setRepairing(true);
     setRepairMessage(null);
     try {
-      const r = await api.repairWorkout(Number(id));
-      setDetail((prev) => (prev ? { ...prev, analytics: r.analytics } : prev));
-      setRepairMessage('Repaired: association span and analytics were recomputed.');
+      const refreshed = await repairAndReloadRide(api, Number(id));
+      setDetail(refreshed.detail);
+      setPrevious(refreshed.previous);
+      setCursorT(null);
+      setRepairMessage('Repaired: canonical ride details and analytics were reloaded.');
     } catch {
-      setRepairMessage('Repair failed — the local API may be unreachable.');
+      setRepairMessage('Repair or canonical reload failed — the local API may be unreachable.');
     } finally {
       setRepairing(false);
     }
