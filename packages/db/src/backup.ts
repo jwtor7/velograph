@@ -17,10 +17,23 @@ export interface BackupResult {
  * for VELO_DATA_DIR.
  */
 export async function backupDatabase(db: Database, destPath: string): Promise<BackupResult> {
-  const resolved = resolve(destPath);
-  guardAgainstCheckout(dirname(resolved));
-  mkdirSync(dirname(resolved), { recursive: true });
-  return db.backup(resolved);
+  const canonicalTarget = guardAgainstCheckout(resolve(destPath));
+  try {
+    mkdirSync(dirname(canonicalTarget), { recursive: true });
+  } catch {
+    throw new Error('invalid_backup_destination');
+  }
+
+  // Re-check after mkdir closes the gap where a newly-created directory could
+  // have been replaced with a symlink into a checkout before the write.
+  const recheckedTarget = guardAgainstCheckout(canonicalTarget);
+  try {
+    return await db.backup(recheckedTarget);
+  } catch {
+    // better-sqlite3 and the OS may include the destination in their messages.
+    // Backups contain health data, so keep the surfaced failure path-free.
+    throw new Error('backup_failed');
+  }
 }
 
 /** True when `path` exists and looks like a Velograph database (has a `workouts` table). */

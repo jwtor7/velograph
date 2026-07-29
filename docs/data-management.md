@@ -74,8 +74,12 @@ identical bytes → the ride comes back.
 
 `packages/db/src/backup.ts`:
 
-- `backupDatabase(db, destPath)` calls `guardAgainstCheckout(dirname(destPath))` — the same guard
-  `resolveDataDir` uses for `VELO_DATA_DIR` — before writing anything, then uses
+- `backupDatabase(db, destPath)` canonicalizes the nearest existing ancestor of the full
+  destination and appends only validated missing components before calling
+  `guardAgainstCheckout` — the same guard `resolveDataDir` uses for `VELO_DATA_DIR`. It
+  re-checks the canonical destination after creating missing directories, so an outside-looking
+  symlink alias cannot redirect a backup into a checkout. Validation failures use path-free error
+  codes rather than echoing local absolute paths. The backup then uses
   `better-sqlite3`'s `Database.prototype.backup()`, which wraps SQLite's own online backup API
   (`sqlite3_backup_init`/`step`/`finish`). This is a safe, consistent snapshot of a live
   WAL-mode database; it is never a raw `fs.copyFile` of the `.sqlite3`/`-wal`/`-shm` files, which
