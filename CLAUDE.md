@@ -66,6 +66,27 @@ Data-model invariants: source files are identified by SHA-256 and re-imports are
 6. **Merge gates (once CI exists):** format/lint, typecheck, unit tests, parser contract tests, migration tests, analytics golden tests, offline e2e, accessibility smoke, privacy/data-leak scan, secret scan, dependency + licence policy, multi-arch build, and at least one independent review.
 7. **Changelog discipline.** Any PR that changes behaviour updates `CHANGELOG.md` under `## [Unreleased]` in the same commit — CI's "Changelog enforcement" job blocks a PR that touches `packages/**`, `apps/**`, or `scripts/**` without it. Genuinely non-behavioural changes (docs typos, formatting, comment/test-only edits) are exempted by adding a `Changelog-Exempt: <reason>` trailer to a commit message instead. Milestones bump the version (root `package.json` and every workspace package, in lockstep — see `docs/releasing.md`) and get a git tag. See `CHANGELOG.md` and `docs/releasing.md`.
 
+## Running the app for the maintainer (agent responsibility)
+
+When an agent starts a Velograph server during a session, **that agent owns its lifecycle.**
+The maintainer must never have to remember what is running or clean up after us.
+
+- Use the declared commands only: `pnpm app:start`, `pnpm app:stop`, `pnpm app:status`,
+  `pnpm app:restart`. Never `nohup … &`, never `pkill -f`, never a bare
+  `node apps/api/src/main.ts` left in the background.
+- **Run `pnpm app:status` before starting anything.** A server may already be running —
+  possibly one the maintainer or another agent started. Never assume the port is free.
+- **Tear down what you start.** Before ending a turn in which you started a server and the
+  maintainer is not actively using it, stop it. If you are leaving it up deliberately because
+  they asked to look at the app, say so explicitly and give them `pnpm app:stop`.
+- **Never leave a stale server serving fresh assets.** Rebuilding the web client while an
+  older API is running produces a UI calling endpoints that server does not implement. After
+  any change to `apps/api` or `apps/web`, use `pnpm app:restart`.
+- Report the URL, the data directory, and the ride count when you hand the app over, so the
+  maintainer knows what they are looking at without asking.
+- Never import synthetic fixtures into the default data directory — it may hold real rides.
+  Always point fixture imports at an explicit throwaway `VELO_DATA_DIR`.
+
 ## Multi-agent development
 
 - Claude, Codex, and Hermes — coding agents, distinct from the app's Codex insight provider — each work in their own branch and worktree. Agents never share an active worktree, never commit onto another agent's branch, and never rewrite another agent's history.
