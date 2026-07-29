@@ -90,6 +90,13 @@ auth.json
 # Claude Code local (unshared) state
 .claude/settings.local.json
 CLAUDE.local.md
+# Agent harnesses create git worktrees here — each is a FULL nested copy of
+# this repository. Never committable: a nested checkout could carry anything
+# an agent generated (including data written under a stray VELO_DATA_DIR).
+# Tooling must skip it too — see .prettierignore, eslint.config.mjs, and
+# vitest.config.mjs. The privacy scanner is unaffected: it enumerates via
+# `git ls-files`, so untracked worktrees are never scanned.
+.claude/worktrees/
 
 # --- Local container overrides (can embed absolute host paths) ---------------
 docker-compose.override.yml

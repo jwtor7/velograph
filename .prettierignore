@@ -6,3 +6,5 @@ fixtures/synthetic/
 dist/
 coverage/
 *.png
+# Nested agent worktrees (full repo copies) — see .gitignore
+.claude/
