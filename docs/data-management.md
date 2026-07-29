@@ -77,49 +77,58 @@ identical bytes → the ride comes back.
 - `backupDatabase(db, destPath)` canonicalizes each destination, captures the verified parent
   directory's device/inode identity, calls `guardAgainstCheckout` before writing anything, and
   rejects the live database, its SQLite sidecars, and filesystem aliases as destinations. An
-  in-process turn and an exclusive SQLite transaction in a private OS-temp lock registry serialize
-  the canonical destination across API/CLI processes; the `0600` lock is keyed by a SHA-256 and
-  stores no path or ride data. It creates a unique sibling with mode `0600`, writes that stage
-  through `better-sqlite3`'s
+  in-process turn and an exclusive SQLite transaction in a private OS-temp lock registry
+  conservatively serialize every backup in the same verified parent across API/CLI processes.
+  Locking by parent device/inode means case-only aliases on a default case-insensitive macOS
+  filesystem cannot acquire separate locks; the `0600` lock is keyed by a SHA-256 and stores no
+  path or ride data. Backup creates a verified mode-`0700` operation directory and a `0600` stage
+  inside it, then writes that stage through `better-sqlite3`'s
   `Database.prototype.backup()` (SQLite's `sqlite3_backup_init`/`step`/`finish`), then verifies
   canonical schema, migration history, integrity, and foreign keys. The stage is closed, sidecars
   removed, and file fsynced. Backup revalidates the original parent identity and live-database
-  conflicts after asynchronous staging and immediately before and after the same-directory atomic
-  rename; if the parent changes, rollback and cleanup refuse to follow the replacement path. The
-  parent directory is fsynced after install. The destination is never populated in place, including
-  when an existing destination is `0644`; the installed backup is always the private staged inode.
+  conflicts after asynchronous staging and immediately before and after the same-filesystem atomic
+  rename; if the parent changes, the private operation directory becomes unreachable through the
+  replacement and rollback/cleanup refuse to follow it. The parent directory is fsynced after
+  install. The destination is never populated in place, including when an existing destination is
+  `0644`; the installed backup is always the validated staged inode.
 - When replacing an existing backup, the old file is first preserved in a separate unique `0600`,
-  fsynced sibling. The cross-process destination lock remains held through rollback and cleanup, so
-  one failed request cannot restore over a later successful request. A copy or validation failure
-  leaves the original destination untouched. A post-install failure copies the preserved file to a
-  separate recovery stage, installs that copy atomically, and retains the original private snapshot
-  until the parent directory fsync succeeds. If reinstall cannot be proven, Velograph keeps the
-  independent prior snapshot rather than deleting the only known-good backup. Completed operations
-  and failures with a proven outcome clean their incomplete stages.
+  fsynced file inside the operation directory. The cross-process parent lock remains held through
+  rollback and cleanup, so one failed request cannot restore over a later successful request. A
+  copy or validation failure leaves the original destination untouched. A post-install failure
+  copies the preserved file to a separate recovery stage, installs that copy atomically, and
+  retains the original private snapshot until the parent directory fsync succeeds. If reinstall
+  cannot be proven, Velograph keeps the independent prior snapshot in its `0700` operation
+  directory rather than deleting the only known-good backup. Completed operations and failures
+  with a proven outcome remove their operation directories.
 - `restoreDatabase(liveDb, dbPath, backupPath)` opens the selected source once, read-only, then
-  backs it into a uniquely named sibling stage through SQLite's backup API. Before touching the
-  live handle, restore verifies SQLite integrity and requires the recorded migration names to be
-  an exact ordered prefix of the migrations bundled with the running version. It migrates only
-  the private stage, then compares the stage's complete `sqlite_schema` and migration list with a
-  freshly migrated canonical database and requires an empty `foreign_key_check`. A database that
-  merely contains a `workouts` table, claims a migration it does not structurally implement, has
-  an unknown/future/missing-middle/reordered migration, or contains broken references fails
-  closed.
-- Stage and rollback files are pre-created with mode `0600` before private bytes are populated.
-  Once complete, they receive the live database's ownership and permission mode, are closed and
-  fsynced, and only then become eligible for cutover. This prevents the process umask from making
-  a temporary health/location database broader than the live file and preserves restrictive
-  permissions across inode replacement.
+  binds the canonical live path, its file identity, and its parent device/inode before creating a
+  verified mode-`0700` operation directory. Restore backs the source into that directory through
+  SQLite's backup API and revalidates the original path and parent around every asynchronous
+  staging, rollback, hook, cutover, and recovery boundary. Before touching the live handle, restore
+  verifies SQLite integrity and requires the recorded migration names to be an exact ordered prefix
+  of the migrations bundled with the running version. It migrates only the protected stage, then
+  compares the stage's complete `sqlite_schema` and migration list with a freshly migrated
+  canonical database and requires an empty `foreign_key_check`. A database that merely contains a
+  `workouts` table, claims a migration it does not structurally implement, has an
+  unknown/future/missing-middle/reordered migration, or contains broken references fails closed.
+- Stage and rollback files are pre-created with mode `0600` inside the verified `0700` operation
+  directory before private bytes are populated. Once complete, the incoming stage receives the
+  live database's ownership and permission mode, while the rollback stays `0600`; both are closed
+  and fsynced before cutover. If the live parent is substituted, the random protected directory is
+  absent from the replacement path, so SQLite fails before it can create a process-default `0644`
+  health/location database there.
 - The live handle is checkpointed, but remains open while restore creates and validates a second
   rollback snapshot through SQLite's backup API. The rollback remains `0600`; it is never renamed
-  away during recovery. Only then is the handle closed. A same-directory `rename` installs the
+  away during recovery. Only then is the handle closed. A same-filesystem `rename` installs the
   complete incoming stage atomically. If any operation after close fails—including install
   durability or reopening the replacement—restore uses SQLite's backup API to make another
   independent, validated recovery-install stage from the rollback, atomically installs that copy,
   and attempts to reopen it. Recovery success removes the rollback. If reopening still cannot be
   proven, the API returns only `restore_recovery_failed`, fails closed, and retains the separate
-  canonical `0600` rollback sibling without exposing its path. Old `-wal`/`-shm`/`-journal`
-  sidecars are removed only around a proven atomic outcome.
+  canonical `0600` rollback inside its `0700` operation directory without exposing its path.
+  Replacement and recovery opens always require an existing file, the expected device/inode,
+  canonical live path, and canonical Velograph schema; they cannot create or adopt a new empty
+  database. Old `-wal`/`-shm`/`-journal` sidecars are removed only around a proven atomic outcome.
 - Backup and restore failures cross API/CLI boundaries only as stable value-free codes such as
   `destination_inside_checkout`, `destination_conflicts_with_live_database`,
   `invalid_backup_destination`,
@@ -145,11 +154,13 @@ Both directions are exercised end to end (round trip, checkout rejection, and li
 destination rejection), along with forged/incomplete/current/future migration histories, corrupt
 input, foreign-key failure, copy and migration failure, serialized atomic replacement of an
 existing permissive backup, failed-backup preservation/cleanup, independent prior-snapshot
-retention until directory durability, cross-process failure/success ordering, destination-parent
-symlink substitution, private artifact modes, original-mode preservation, failures before and after
-replacement install, replacement-open rollback, separate recovery retention when reopen cannot be
-proven, spawned-CLI corrupt-database handling, graceful WAL checkpoint/close, privacy-safe surface
-codes, and stop escalation/`ESRCH`, in
+retention until directory durability, identical-path and case-alias cross-process ordering,
+backup/restore/rollback parent substitution without writes into the replacement path, private
+operation-directory and artifact modes, original-mode preservation, failures before and after
+replacement install, expected-inode replacement-open rollback, no-create recovery after a
+post-close parent swap, separate recovery retention when reopen cannot be proven, spawned-CLI
+corrupt-database handling, graceful WAL checkpoint/close, privacy-safe surface codes, and stop
+escalation/`ESRCH`, in
 `packages/db/src/backup.test.ts`, `packages/db/src/migrate.test.ts`,
 `apps/api/src/shutdown.test.ts`, `apps/api/src/shutdown-coordinator.test.ts`,
 `apps/api/src/data-management.test.ts`, `scripts/app.test.mjs`, and
