@@ -177,6 +177,7 @@ button {
 }
 
 .main {
+  min-width: 0;
   overflow-y: auto;
   padding: 20px 24px 40px;
 }
@@ -344,6 +345,22 @@ table.data td {
 
 table.data tr:last-child td {
   border-bottom: none;
+}
+
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ride-library-scroll table.data {
+  min-width: 720px;
+}
+
+.ride-library-scroll:focus-visible {
+  outline-offset: 3px;
 }
 
 tr.row-link {

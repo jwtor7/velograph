@@ -134,7 +134,8 @@ is pre-1.0, and for the release procedure.
   no longer obscure the route. Compact sidebar links also retain their accessible names when the
   visible labels collapse to icons. The Import drop surface is now a labelled, non-interactive
   group; the native file chooser button alone owns activation and therefore retains browser-native
-  Space and Enter semantics (#56).
+  Space and Enter semantics. The ride library keeps its complete metric table in a labelled,
+  keyboard-focusable local scroller instead of overflowing and crushing columns (#56).
 - **Strict, rollback-safe restore and graceful shutdown.** Restore now rejects corrupt input,
   forged or incomplete schemas, foreign-key violations, and unknown/future/out-of-order migration
   histories. It migrates a private staged copy and compares its complete schema against a freshly

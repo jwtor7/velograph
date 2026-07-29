@@ -53,6 +53,7 @@ describe('Library timezone labels', () => {
     const deleteButton = await screen.findByRole('button', {
       name: `Delete ride from ${configuredDate}`,
     });
+    expect(screen.getByRole('region', { name: 'Ride library table' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: `Delete ride from ${utcDate}` })).toBeNull();
 
     fireEvent.click(deleteButton);
