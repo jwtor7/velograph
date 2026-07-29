@@ -112,6 +112,7 @@ function createSyntheticOciArchive({
   addWebScript = false,
   replaceWebDirectory = false,
   replaceNodeNoticeWithDirectory = false,
+  imageIndexDepth = 1,
 } = {}) {
   const directory = makeArtifactDirectory();
   const layout = join(directory, 'layout');
@@ -257,9 +258,23 @@ function createSyntheticOciArchive({
     });
   }
 
+  let rootDescriptors = descriptors;
+  for (let depth = 0; depth < imageIndexDepth; depth += 1) {
+    rootDescriptors = [
+      jsonBlob(
+        layout,
+        {
+          schemaVersion: 2,
+          mediaType: 'application/vnd.oci.image.index.v1+json',
+          manifests: rootDescriptors,
+        },
+        'application/vnd.oci.image.index.v1+json',
+      ),
+    ];
+  }
   writeFileSync(
     join(layout, 'index.json'),
-    `${JSON.stringify({ schemaVersion: 2, manifests: descriptors })}\n`,
+    `${JSON.stringify({ schemaVersion: 2, manifests: rootDescriptors })}\n`,
   );
   const archive = join(directory, 'synthetic.oci.tar');
   execFileSync('tar', ['-cf', archive, '-C', layout, 'oci-layout', 'index.json', 'blobs']);
@@ -321,9 +336,15 @@ describe('release privacy artifact audit', () => {
     await expect(auditOciArchive(createSyntheticOciArchive())).resolves.toBe(0);
   });
 
+  it('rejects OCI indexes nested beyond the supported BuildKit wrapper', async () => {
+    await expect(
+      auditOciArchive(createSyntheticOciArchive({ imageIndexDepth: 2 })),
+    ).rejects.toThrow('oci_index_invalid');
+  });
+
   it('requires provenance for each target platform', async () => {
     await expect(
-      auditOciArchive(createSyntheticOciArchive({ omitArmProvenance: true })),
+      auditOciArchive(createSyntheticOciArchive({ omitArmProvenance: true, imageIndexDepth: 0 })),
     ).rejects.toThrow('oci_linux_arm64_missing_provenance_attestation');
   });
 

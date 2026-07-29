@@ -52,6 +52,15 @@ export const REQUIRED_CONTAINER_SYSTEM_NOTICE_PATHS = [
 const WEB_ARTIFACT_PREFIX = 'app/api/dist/web/';
 const COMMAND_BUFFER_BYTES = MAX_AUDIT_ENTRY_BYTES + 1;
 const TARGET_PLATFORMS = ['linux/amd64', 'linux/arm64'];
+const MAX_OCI_DESCRIPTOR_COUNT = 128;
+const OCI_INDEX_MEDIA_TYPES = new Set([
+  'application/vnd.oci.image.index.v1+json',
+  'application/vnd.docker.distribution.manifest.list.v2+json',
+]);
+const OCI_MANIFEST_MEDIA_TYPES = new Set([
+  'application/vnd.oci.image.manifest.v1+json',
+  'application/vnd.docker.distribution.manifest.v2+json',
+]);
 const APP_ENTRYPOINTS = new Set([
   'usr/local/bin/docker-entrypoint.sh',
   'usr/local/bin/docker-proxy.mjs',
@@ -621,6 +630,47 @@ function readOciBlob(archive, archiveIndex, descriptor, code) {
   return content;
 }
 
+function resolveOciManifestDescriptors(archive, archiveIndex, descriptors, violations) {
+  if (
+    descriptors.length === 0 ||
+    descriptors.length > MAX_OCI_DESCRIPTOR_COUNT ||
+    descriptors.some((descriptor) => !descriptor || typeof descriptor !== 'object')
+  ) {
+    fail('oci_index_invalid');
+  }
+
+  const wrapperDescriptors = descriptors.filter((descriptor) =>
+    OCI_INDEX_MEDIA_TYPES.has(descriptor.mediaType),
+  );
+  if (wrapperDescriptors.length === 0) return descriptors;
+  if (descriptors.length !== 1 || wrapperDescriptors.length !== 1) {
+    fail('oci_index_shape_invalid');
+  }
+
+  const wrapper = wrapperDescriptors[0];
+  const wrapperDigest = descriptorDigest(wrapper, 'oci_index_descriptor_invalid');
+  const content = readOciBlob(archive, archiveIndex, wrapper, 'oci_index_unreadable');
+  const nestedIndex = parseJson(content, 'oci_index_invalid');
+  if (
+    nestedIndex?.schemaVersion !== 2 ||
+    !Array.isArray(nestedIndex.manifests) ||
+    nestedIndex.manifests.length === 0 ||
+    nestedIndex.manifests.length > MAX_OCI_DESCRIPTOR_COUNT ||
+    nestedIndex.manifests.some(
+      (descriptor) =>
+        !descriptor ||
+        typeof descriptor !== 'object' ||
+        OCI_INDEX_MEDIA_TYPES.has(descriptor.mediaType),
+    )
+  ) {
+    fail('oci_index_invalid');
+  }
+  violations.push(
+    ...scanContent('oci/index.json', content, opaquePath('oci-index', wrapperDigest)),
+  );
+  return nestedIndex.manifests;
+}
+
 function evidenceKind(content) {
   const statement = parseJson(content, 'oci_attestation_invalid');
   const predicateType = statement?.predicateType;
@@ -714,17 +764,28 @@ export async function auditOciArchive(archive) {
     const indexContent = readTarEntry(archive, archiveIndex, 'index.json', 'oci_index_unreadable');
     assertAuditableSize(indexContent.length, 'oci_index_exceeds_64_mib');
     const index = parseJson(indexContent, 'oci_index_invalid');
-    if (!Array.isArray(index?.manifests)) fail('oci_index_invalid');
+    if (index?.schemaVersion !== 2 || !Array.isArray(index.manifests)) {
+      fail('oci_index_invalid');
+    }
 
     const violations = [
       ...scanContent('oci/index.json', indexContent, opaquePath('oci-index', 'index.json')),
     ];
+    const manifestDescriptors = resolveOciManifestDescriptors(
+      archive,
+      archiveIndex,
+      index.manifests,
+      violations,
+    );
     const imagesByPlatform = new Map();
     const noticesByPlatform = new Map();
     const evidenceBySubject = new Map();
     let layerSequence = 0;
 
-    for (const descriptor of index.manifests) {
+    for (const descriptor of manifestDescriptors) {
+      if (!OCI_MANIFEST_MEDIA_TYPES.has(descriptor.mediaType)) {
+        fail('oci_manifest_descriptor_invalid');
+      }
       const manifestDigest = descriptorDigest(descriptor, 'oci_manifest_descriptor_invalid');
       const manifestContent = readOciBlob(
         archive,
@@ -733,7 +794,9 @@ export async function auditOciArchive(archive) {
         'oci_manifest_unreadable',
       );
       const manifest = parseJson(manifestContent, 'oci_manifest_invalid');
-      if (!Array.isArray(manifest?.layers) || !manifest?.config) fail('oci_manifest_invalid');
+      if (manifest?.schemaVersion !== 2 || !Array.isArray(manifest.layers) || !manifest.config) {
+        fail('oci_manifest_invalid');
+      }
 
       violations.push(
         ...scanContent(
