@@ -166,6 +166,11 @@ async function dev() {
   const child = spawn(process.execPath, [join(REPO_ROOT, 'apps', 'api', 'src', 'main.ts')], {
     cwd: REPO_ROOT,
     stdio: 'inherit',
+    // Lets the API process notice independently if *this* process dies
+    // without ever running the shutdown handler below — a SIGKILL, a crash,
+    // or a wrapping shell/shim that doesn't forward a signal it received.
+    // See the matching watchdog in apps/api/src/main.ts.
+    env: { ...process.env, VELO_EXIT_WITH_PARENT_PID: String(process.pid) },
   });
 
   let exited = false;
@@ -190,11 +195,15 @@ async function dev() {
     console.log(`\nReceived ${signal}, stopping Velograph…`);
     child.kill('SIGTERM');
     // Belt-and-braces: if the child ignores SIGTERM, force it so nothing is
-    // ever left holding the port.
-    const killer = setTimeout(() => {
+    // ever left holding the port. Deliberately NOT unref'd — this process
+    // is already pinned alive by `await exitPromise` below, and an unref'd
+    // timer is not what actually matters here anyway: nothing can run this
+    // code at all if this process itself is killed before the timer fires.
+    // That case is covered independently by the child's own parent-liveness
+    // watchdog (apps/api/src/main.ts), not by anything on this side.
+    setTimeout(() => {
       if (!exited) child.kill('SIGKILL');
     }, 5000);
-    killer.unref();
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
