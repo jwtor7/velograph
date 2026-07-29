@@ -111,6 +111,16 @@ is pre-1.0, and for the release procedure.
   these means — tears everything down. The background commands
   (`app:start`/`app:stop`/`app:status`/`app:restart`) are unchanged and remain the right
   choice for a server that should outlive the current shell (#51).
+- **Release governance and portable container delivery**: a loopback-only
+  Docker/Compose deployment with a local Docker-managed data volume, read-only
+  runtime filesystem, dropped capabilities, bounded temporary storage, and no
+  source-export or credential mounts. CI now verifies clean frozen-lockfile
+  installs on Node 20 and Node 26, audits worktree/Git-history/container
+  layers for privacy leaks, and performs a non-publishing `amd64`/`arm64`
+  Buildx build with SBOM and provenance attestations. Security reporting,
+  contribution rules, threat model, privacy incident response, and release
+  audit procedures are documented; selecting an open-source licence remains an
+  explicit maintainer decision (#60).
 - **Local server lifecycle commands**: `pnpm app:start`, `app:stop`, `app:status`, and
   `app:restart`. `app:start` builds the web client, refuses to start when a server already
   holds the port, and waits for the API to actually answer before reporting success.

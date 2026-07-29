@@ -141,6 +141,29 @@ held — which otherwise produces a stale API serving a freshly built web client
 goes to a log file whose path `app:start` and `app:status` print. (Process lookup uses `lsof`;
 on Windows use Task Manager to stop a stray server.)
 
+## Run with Docker Compose
+
+The supported container deployment is local-only. It publishes the app at
+`http://127.0.0.1:5123`, keeps the API loopback-only inside the container, and
+stores persistent state in Docker's local `velograph-data` volume. It never
+mounts a source export, Codex credentials, a host home directory, or a path in
+this checkout.
+
+```bash
+docker compose up --build
+```
+
+Stop it with `docker compose down`. The data volume intentionally remains so a
+normal stop does not delete rides. Removing that volume deletes the local app
+data; use Velograph's backup/delete workflow and read `docs/data-management.md`
+before doing so. Do not change the checked-in `127.0.0.1:5123:5123` port mapping
+to a wildcard or LAN address: the app has no authentication for network use.
+
+The runtime is read-only except for its data volume and a small temporary
+filesystem. For an advanced external-volume setup, create a local ignored
+Compose override and mount only a directory outside the checkout. Never mount
+an export folder or credential cache into the container.
+
 Run the test suite and the other checks CI runs:
 
 ```bash
@@ -188,6 +211,9 @@ fixtures/synthetic/   invented data used by tests and this quickstart
 - [AI insight privacy](docs/ai-privacy.md) — what would leave the machine per provider, and why AI is a stub today
 - [CI supply-chain policy](docs/ci-supply-chain.md) — pinned-SHA GitHub Actions and how to update them
 - [Third-party notices](THIRD_PARTY_NOTICES.md) — bundled dependency licences and notices
+- [Release privacy audit](docs/release-privacy-audit.md) — worktree, history, artifact, and image-layer release checks
+- [Threat model](docs/threat-model.md) — privacy/security boundaries and release evidence
+- [Security policy](SECURITY.md) and [incident response](docs/privacy-incident-response.md) — report and contain vulnerabilities or privacy leaks
 
 ## License
 

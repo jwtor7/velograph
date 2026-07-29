@@ -9,14 +9,17 @@ code without any change in this repository; a commit SHA cannot.
 
 ## Current pins
 
-| Action                     | Pinned SHA                                 | Release tag |
-| -------------------------- | ------------------------------------------ | ----------- |
-| `actions/checkout`         | `11d5960a326750d5838078e36cf38b85af677262` | v4.4.0      |
-| `pnpm/action-setup`        | `fc06bc1257f339d1d5d8b3a19a8cae5388b55320` | v4.4.0      |
-| `actions/setup-node`       | `49933ea5288caeca8642d1e84afbd3f7d6820020` | v4.4.0      |
-| `gitleaks/gitleaks-action` | `ff98106e4c7b2bc287b24eaf42907196329070c7` | v2.3.9      |
+| Action                       | Pinned SHA                                 | Release tag |
+| ---------------------------- | ------------------------------------------ | ----------- |
+| `actions/checkout`           | `11d5960a326750d5838078e36cf38b85af677262` | v4.4.0      |
+| `pnpm/action-setup`          | `fc06bc1257f339d1d5d8b3a19a8cae5388b55320` | v4.4.0      |
+| `actions/setup-node`         | `49933ea5288caeca8642d1e84afbd3f7d6820020` | v4.4.0      |
+| `gitleaks/gitleaks-action`   | `ff98106e4c7b2bc287b24eaf42907196329070c7` | v2.3.9      |
+| `docker/setup-qemu-action`   | `96fe6ef7f33517b61c61be40b68a1882f3264fb8` | v4.0.0      |
+| `docker/setup-buildx-action` | `bb05f3f5519dd87d3ba754cc423b652a5edd6d2c` | v4.0.0      |
+| `docker/build-push-action`   | `53b7df96c91f9c12dcc8a07bcb9ccacbed38856a` | v7.0.0      |
 
-Each `uses:` line in `.github/workflows/ci.yml` carries the SHA plus a
+Each `uses:` line in `.github/workflows/` carries the SHA plus a
 trailing `# vX.Y.Z` comment with the human-readable tag it corresponds to,
 e.g.:
 
@@ -50,12 +53,12 @@ runs the SHA, never the comment text.
    ```
 
    That response's `object.sha` (with `object.type: "commit"`) is the
-   value to pin. `pnpm/action-setup` uses annotated tags and needs this
-   second step; `actions/checkout`, `actions/setup-node`, and
-   `gitleaks/gitleaks-action` currently use lightweight tags that resolve
-   directly to a commit.
+   value to pin. `pnpm/action-setup` uses annotated tags and needs this second
+   step; `actions/checkout`, `actions/setup-node`, `gitleaks/gitleaks-action`,
+   and the Docker actions currently use lightweight tags that resolve directly
+   to a commit.
 
-3. **Update `.github/workflows/ci.yml`**: replace the SHA and the trailing
+3. **Update the affected `.github/workflows/` file**: replace the SHA and the trailing
    `# vX.Y.Z` comment together so they never drift out of sync. Update the
    table in this document to match.
 4. **Open a normal reviewed PR** with the diff (old SHA/tag → new SHA/tag)
@@ -68,3 +71,17 @@ Follow the same steps above for the new action, add both a table row here
 and the pinned `uses:` line with its trailing tag comment, and note in the
 PR description why the action is needed and what permissions/secrets it
 touches.
+
+## Container and runtime verification
+
+`ci.yml` retains the primary Node 22 checks and also performs separate clean,
+frozen-lockfile installs on Node 20 (the supported minimum) and Node 26. The
+release-governance workflow audits the worktree and all reachable Git blobs,
+builds a native container solely for a layer audit, then verifies one OCI image
+index for `linux/amd64` and `linux/arm64` with BuildKit SBOM and provenance
+attestations enabled. It has read-only repository permission and never logs in
+to a registry, mounts credentials, or publishes an image.
+
+The Dockerfile also pins its official Node base-image tag to a reviewed
+multi-architecture digest. Update the human-readable tag and digest together,
+then re-run the container privacy audit and SBOM build before publishing.

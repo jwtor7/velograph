@@ -35,6 +35,28 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+  node-compatibility:
+    name: Clean install and verification (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node 20 is the declared minimum. Node 26 catches assumptions about a
+        # newer supported runtime without weakening the deterministic core.
+        node-version: [20, 26]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Clean frozen-lockfile install
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Unit tests
+        run: pnpm test
+
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
