@@ -201,12 +201,15 @@ is pre-1.0, and for the release procedure.
   `timestamps_invalid`. Optional GPX times remain explicitly null (#13).
 - **Malformed outer ZIPs no longer abort valid sibling imports.** Each failed
   archive receives its own durable, value-free quarantine record while valid
-  selected files continue in the same committed batch, including through the
-  loopback API (#14).
-- **GPX closing tags must match their normalized opening tags.** Mismatched,
-  misnested, prematurely closed, and unclosed structures now fail with the
-  existing privacy-safe `malformed_xml` code while namespace tolerance and
-  parser resource limits remain intact (#15).
+  selected files continue in the same committed batch. ZIP central-directory
+  metadata is preflighted before inflation, output is hard-capped and checked
+  against declared sizes and CRCs, hidden entries are skipped before inflation,
+  and all selected archives share one decoded-byte budget (#14).
+- **GPX XML is parsed without structural recovery.** Exact qualified opening
+  and closing names must match, namespace prefixes must be declared, and
+  closing-tag attributes, multiple roots, unknown entities, trailing content,
+  mismatched, misnested, prematurely closed, and unclosed structures fail with
+  the privacy-safe `malformed_xml` code (#15).
 - **"Choose export folder" could not select a folder.** The directory input carried
   `accept=".csv,.gpx,.zip"`; since a directory matches none of those extensions, the OS
   picker greyed folders out. Because Health Auto Export writes one CSV per metric, this

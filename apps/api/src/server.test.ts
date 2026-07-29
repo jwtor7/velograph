@@ -10,15 +10,16 @@ import { sha256Hex, stableStringify } from '@velograph/shared';
 import { loadSettings } from './analytics-service.ts';
 import { createApiServer } from './server.ts';
 
-const FIXTURES = join(
+const SYNTHETIC_ROOT = join(
   dirname(fileURLToPath(import.meta.url)),
   '..',
   '..',
   '..',
   'fixtures',
   'synthetic',
-  'rides',
 );
+const FIXTURES = join(SYNTHETIC_ROOT, 'rides');
+const HARDENING_FIXTURES = join(SYNTHETIC_ROOT, 'import-hardening');
 
 let db: Database;
 let server: Server;
@@ -174,14 +175,10 @@ describe('loopback API', () => {
 
   it('returns a per-file ZIP quarantine while importing a valid sibling', async () => {
     const name = 'Outdoor Cycling-Cycling Cadence-20310902_070000.csv';
-    const csv = [
-      'Date/Time,Cadence (rpm),Source',
-      '2031-09-02T07:00:00Z,80,Synth Watch X1',
-      '2031-09-02T07:30:00Z,82,Synth Watch X1',
-    ].join('\n');
+    const csv = readFileSync(join(HARDENING_FIXTURES, name));
     const payload = JSON.stringify({
       files: [
-        { name, dataBase64: Buffer.from(csv).toString('base64') },
+        { name, dataBase64: csv.toString('base64') },
         {
           name: 'malformed-synthetic.zip',
           dataBase64: Buffer.from('not a zip').toString('base64'),

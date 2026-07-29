@@ -37,8 +37,14 @@ account data is used.
 - While one selected outer ZIP is malformed, when a mixed import runs, the
   system shall record a quarantine row for that outer ZIP and continue
   processing valid sibling inputs within the same committed batch.
+- While ZIP inputs are preflighted, hidden/system entries shall be skipped
+  before inflation; declared and actual per-entry and aggregate sizes shall be
+  bounded, and all selected archives shall share one decoded-byte budget.
 - While GPX XML is mismatched, misnested, prematurely closed, or unclosed, when
   parsing runs, the system shall reject it with `malformed_xml`.
+- While GPX uses namespaces, opening and closing qualified names shall match
+  exactly and every prefix shall be declared. Closing-tag attributes, multiple
+  roots, unknown entities, and trailing non-XML content shall fail closed.
 
 ## Architecture
 
@@ -63,18 +69,24 @@ account data is used.
   `conflict`; the importer handles every state explicitly.
 - Repository candidate lookup returns every viable candidate in deterministic
   order and never uses `LIMIT 1`.
-- ZIP expansion yields either extracted files or an outer-file quarantine item.
-  The entire import, including that quarantine record and valid siblings, still
-  commits through the existing database transaction.
-- GPX parsing compares normalized opening and closing names at every close
-  event while preserving namespace tolerance and existing resource limits.
+- ZIP expansion first reads and validates the central directory, reserves from
+  the import run's decoded-byte budget, and then inflates each selected entry
+  with a hard output cap. Declared and actual sizes and CRCs must agree.
+  Hidden entries are never inflated. Expansion yields either extracted files
+  or an outer-file quarantine item; valid siblings still commit through the
+  existing database transaction.
+- GPX parsing scans the complete XML document without recovery. It compares
+  exact qualified opening and closing names, maintains namespace scope, accepts
+  unprefixed GPX and declared GPX namespaces, and rejects content outside the
+  single document root.
 
 ### Security
 
 - Authentication/authorization: unchanged. The import API remains a same-origin
   loopback mutation protected by existing request headers and origin checks.
-- Input validation: required timestamps and numbers fail closed; ZIP and GPX
-  resource limits remain enforced; filename timestamps never establish a
+- Input validation: required timestamps and numbers fail closed; ZIP central
+  metadata, bounded inflation output, aggregate decoded bytes, and GPX
+  structure are independently enforced; filename timestamps never establish a
   workout by themselves.
 - Output filtering: responses contain sanitized base filenames and stable error
   codes only. Error messages, sample values, coordinates, and raw content are
@@ -82,8 +94,8 @@ account data is used.
 - SQL safety: candidate queries remain parameterized.
 - Rate limiting: no new endpoint or increased request surface is introduced;
   existing request-size limits remain authoritative.
-- Privacy: tests use invented inline values or files under
-  `fixtures/synthetic/`; no raw imported payload is committed.
+- Privacy: ride-shaped test inputs live only under `fixtures/synthetic/`; no raw
+  imported payload is committed.
 
 ## Error Contract
 
@@ -105,7 +117,8 @@ account data is used.
 - [x] SQL injection: all candidate lookups use bound parameters.
 - [x] XSS: filenames remain data and are base-name sanitized before storage.
 - [x] CSRF: existing `x-velograph-request` and Origin/Host checks are unchanged.
-- [x] Resource abuse: existing API, ZIP, GPX, and decompression limits remain.
+- [x] Resource abuse: ZIP preflight, bounded output, shared decoded-byte budget,
+      and GPX size/depth/point caps fail closed.
 - [x] Logging/privacy: no sample value, coordinate, source content, or path is
       added to errors or diagnostics.
 
@@ -115,6 +128,8 @@ account data is used.
 - [x] Bump importer, adapter, and GPX parser versions.
 - [x] Add discriminated association and all-candidate repository lookup.
 - [x] Convert per-outer-ZIP failures into quarantine inventory items.
-- [x] Enforce normalized GPX closing-tag equality.
+- [x] Enforce exact QName/namespace GPX closing-tag equality and one root.
+- [x] Preflight ZIP metadata and bound per-entry, per-archive, and per-run
+      decoded bytes before retaining inflated output.
 - [x] Add focused unit, repository, importer, and API regression tests.
 - [x] Run format, lint, typecheck, tests, and the all-files privacy scan.

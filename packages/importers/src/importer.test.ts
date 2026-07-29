@@ -6,21 +6,26 @@ import { zipSync } from 'fflate';
 import { openDatabase, Repository } from '@velograph/db';
 import { runImport, type ImportFile } from './importer.ts';
 
-const FIXTURES = join(
+const SYNTHETIC_ROOT = join(
   dirname(fileURLToPath(import.meta.url)),
   '..',
   '..',
   '..',
   'fixtures',
   'synthetic',
-  'rides',
 );
+const FIXTURES = join(SYNTHETIC_ROOT, 'rides');
+const HARDENING_FIXTURES = join(SYNTHETIC_ROOT, 'import-hardening');
 
 function fixtureFiles(): ImportFile[] {
   return readdirSync(FIXTURES)
     .filter((f) => /\.(csv|gpx)$/.test(f))
     .sort()
     .map((name) => ({ name, data: readFileSync(join(FIXTURES, name)) }));
+}
+
+function hardeningFixture(name: string): ImportFile {
+  return { name, data: readFileSync(join(HARDENING_FIXTURES, name)) };
 }
 
 const FIXED_NOW = Date.UTC(2031, 4, 1);
@@ -45,7 +50,7 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     ).toEqual({ importer_version: 'importer-v2' });
     expect(
       db.prepare('SELECT DISTINCT parser_version FROM source_files ORDER BY parser_version').all(),
-    ).toEqual([{ parser_version: 'gpx-v2' }, { parser_version: 'hae-csv-v2' }]);
+    ).toEqual([{ parser_version: 'gpx-v3' }, { parser_version: 'hae-csv-v2' }]);
     db.close();
   });
 
@@ -124,19 +129,9 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
   it('quarantines filename timestamps that conflict with internal sample times', () => {
     const db = openDatabase(':memory:');
     const repo = new Repository(db);
-    const hr = [
-      'Date/Time,Avg (bpm),Source',
-      '2031-06-01T08:00:00Z,120,Synth Watch X1',
-      '2031-06-01T08:30:00Z,130,Synth Watch X1',
-    ].join('\n');
-    const cad = [
-      'Date/Time,Cadence (rpm),Source',
-      '2031-06-01T08:01:00Z,85,Synth Watch X1',
-      '2031-06-01T08:29:00Z,88,Synth Watch X1',
-    ].join('\n');
     const files: ImportFile[] = [
-      { name: 'Outdoor Cycling-Heart Rate-20990101_000000.csv', data: Buffer.from(hr) },
-      { name: 'Outdoor Cycling-Cycling Cadence-20770707_070707.csv', data: Buffer.from(cad) },
+      hardeningFixture('Outdoor Cycling-Heart Rate-20990101_000000.csv'),
+      hardeningFixture('Outdoor Cycling-Cycling Cadence-20770707_070707.csv'),
     ];
     const result = runImport(db, files, { now: FIXED_NOW });
     expect(result.quarantined).toBe(2);
@@ -155,20 +150,10 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     const start = Date.UTC(2031, 5, 3, 8, 0, 0);
     repo.createWorkout('outdoor_cycling', start - 60_000, start + 31 * 60_000, 'test');
     repo.createWorkout('outdoor_cycling', start - 2 * 60_000, start + 32 * 60_000, 'test');
-    const csv = [
-      'Date/Time,Avg (bpm),Source',
-      '2031-06-03T08:00:00Z,120,Synth Watch X1',
-      '2031-06-03T08:30:00Z,130,Synth Watch X1',
-    ].join('\n');
 
     const result = runImport(
       db,
-      [
-        {
-          name: 'Outdoor Cycling-Heart Rate-20310603_080000.csv',
-          data: Buffer.from(csv),
-        },
-      ],
+      [hardeningFixture('Outdoor Cycling-Heart Rate-20310603_080000.csv')],
       { now: FIXED_NOW },
     );
 
@@ -186,19 +171,11 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
   it('quarantines a malformed outer ZIP and continues a valid sibling', () => {
     const db = openDatabase(':memory:');
     const repo = new Repository(db);
-    const csv = [
-      'Date/Time,Cadence (rpm),Source',
-      '2031-06-04T08:00:00Z,80,Synth Watch X1',
-      '2031-06-04T08:30:00Z,82,Synth Watch X1',
-    ].join('\n');
 
     const result = runImport(
       db,
       [
-        {
-          name: 'Outdoor Cycling-Cycling Cadence-20310604_080000.csv',
-          data: Buffer.from(csv),
-        },
+        hardeningFixture('Outdoor Cycling-Cycling Cadence-20310604_080000.csv'),
         { name: 'malformed-synthetic.zip', data: Buffer.from('not a zip') },
       ],
       { now: FIXED_NOW },
@@ -222,7 +199,7 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     ).toEqual({
       status: 'quarantined',
       detected_type: 'archive:zip',
-      parser_version: 'zip-v1',
+      parser_version: 'zip-v2',
       error_code: 'io_error',
     });
     expect(
@@ -231,28 +208,56 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     db.close();
   });
 
-  it('quarantines a whole CSV when a required number or timestamp is invalid', () => {
+  it('shares one decoded-byte budget across every selected outer ZIP', () => {
     const db = openDatabase(':memory:');
-    const blankValue = [
-      'Date/Time,Cadence (rpm)',
-      '2031-06-05T08:00:00Z, ',
-      '2031-06-05T08:30:00Z,82',
-    ].join('\n');
-    const impossibleDate = ['Date/Time,Cycling Distance (km)', '2031-02-29T08:00:00Z,0.4'].join(
-      '\n',
+    const first = zipSync({ 'synthetic-first.txt': Buffer.from('A'.repeat(60_000)) }, { level: 9 });
+    const second = zipSync(
+      { 'synthetic-second.txt': Buffer.from('B'.repeat(60_000)) },
+      { level: 9 },
     );
 
     const result = runImport(
       db,
       [
-        {
-          name: 'Outdoor Cycling-Cycling Cadence-20310605_080000.csv',
-          data: Buffer.from(blankValue),
+        { name: 'alpha-synthetic.zip', data: first },
+        { name: 'beta-synthetic.zip', data: second },
+      ],
+      {
+        now: FIXED_NOW,
+        zipLimits: {
+          maxEntries: 10,
+          maxEntryBytes: 80_000,
+          maxTotalBytes: 100_000,
         },
-        {
-          name: 'Outdoor Cycling-Cycling Distance-20310606_080000.csv',
-          data: Buffer.from(impossibleDate),
-        },
+      },
+    );
+
+    expect(result.imported).toBe(0);
+    expect(result.quarantinedFiles).toEqual([
+      { name: 'beta-synthetic.zip', code: 'zip_limits_exceeded' },
+      { name: 'synthetic-first.txt', code: 'unsupported_file_type' },
+    ]);
+    expect(
+      db
+        .prepare(
+          "SELECT original_name, error_code FROM source_files WHERE status = 'quarantined' ORDER BY original_name",
+        )
+        .all(),
+    ).toEqual([
+      { original_name: 'beta-synthetic.zip', error_code: 'zip_limits_exceeded' },
+      { original_name: 'synthetic-first.txt', error_code: 'unsupported_file_type' },
+    ]);
+    db.close();
+  });
+
+  it('quarantines a whole CSV when a required number or timestamp is invalid', () => {
+    const db = openDatabase(':memory:');
+
+    const result = runImport(
+      db,
+      [
+        hardeningFixture('Outdoor Cycling-Cycling Cadence-20310605_080000.csv'),
+        hardeningFixture('Outdoor Cycling-Cycling Distance-20310606_080000.csv'),
       ],
       { now: FIXED_NOW },
     );
@@ -268,28 +273,10 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
 
   it('stores mixed timed and untimed GPX points without fabricating epoch zero', () => {
     const db = openDatabase(':memory:');
-    const latA = [-48, 7].join('.');
-    const lonA = [-123, 7].join('.');
-    const latB = [-48, 71].join('.');
-    const lonB = [-123, 71].join('.');
-    const gpx = [
-      '<?xml version="1.0"?>',
-      '<gpx version="1.1"><trk><trkseg>',
-      `<trkpt lat="${latA}" lon="${lonA}"/>`,
-      `<trkpt lat="${latB}" lon="${lonB}"><time>2031-06-07T08:00:00Z</time></trkpt>`,
-      '</trkseg></trk></gpx>',
-    ].join('');
 
-    const result = runImport(
-      db,
-      [
-        {
-          name: 'Outdoor Cycling-Route-20310607_080000.gpx',
-          data: Buffer.from(gpx),
-        },
-      ],
-      { now: FIXED_NOW },
-    );
+    const result = runImport(db, [hardeningFixture('Outdoor Cycling-Route-20310607_080000.gpx')], {
+      now: FIXED_NOW,
+    });
 
     expect(result.quarantined).toBe(0);
     expect(db.prepare('SELECT t_utc FROM route_points ORDER BY seq').all()).toEqual([
@@ -302,33 +289,9 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
   it('associates offset-less metric CSV wall time with an absolute UTC route', () => {
     const db = openDatabase(':memory:');
     const repo = new Repository(db);
-    // Assemble invented coordinates at runtime so coordinate-shaped strings
-    // remain confined to fixtures/synthetic/ in the public source tree.
-    const syntheticLatA = [-48, 5].join('.');
-    const syntheticLonA = [-123, 5].join('.');
-    const syntheticLatB = [-48, 51].join('.');
-    const syntheticLonB = [-123, 51].join('.');
-    const energy = [
-      'Date/Time,Active Energy (kJ),Source',
-      '2032-07-10 11:31:00,8,Synth Watch X1',
-      '2032-07-10 11:59:00,9,Synth Watch X1',
-    ].join('\n');
-    const route = [
-      '<?xml version="1.0"?>',
-      '<gpx version="1.1"><trk><trkseg>',
-      `<trkpt lat="${syntheticLatA}" lon="${syntheticLonA}"><time>2032-07-10T15:30:00Z</time></trkpt>`,
-      `<trkpt lat="${syntheticLatB}" lon="${syntheticLonB}"><time>2032-07-10T16:00:00Z</time></trkpt>`,
-      '</trkseg></trk></gpx>',
-    ].join('');
     const files: ImportFile[] = [
-      {
-        name: 'Outdoor Cycling-Active Energy-20320710_113000.csv',
-        data: Buffer.from(energy),
-      },
-      {
-        name: 'Outdoor Cycling-Route-20320710_113000.gpx',
-        data: Buffer.from(route),
-      },
+      hardeningFixture('Outdoor Cycling-Active Energy-20320710_113000.csv'),
+      hardeningFixture('Outdoor Cycling-Route-20320710_113000.gpx'),
     ];
 
     const result = runImport(db, files, {

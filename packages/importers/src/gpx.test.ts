@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseGpx, DEFAULT_GPX_LIMITS } from './gpx.ts';
+
+const HARDENING_FIXTURES = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..',
+  'fixtures',
+  'synthetic',
+  'import-hardening',
+);
+
+const readGpxFixture = (name: string) => readFileSync(join(HARDENING_FIXTURES, name), 'utf8');
 
 const wrap = (body: string) =>
   `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="t" xmlns="http://www.topografix.com/GPX/1/1"><trk>${body}</trk></gpx>`;
@@ -26,8 +41,27 @@ describe('secure GPX parser (ROUTE-001/004/005)', () => {
   it('is namespace-tolerant', () => {
     const gpx = wrap(
       '<trkseg><trkpt lat="-48.5" lon="-123.5"><g:ele>5</g:ele></trkpt></trkseg>',
-    ).replace('<ele>', '<g:ele>');
+    ).replace(
+      'xmlns="http://www.topografix.com/GPX/1/1"',
+      'xmlns="http://www.topografix.com/GPX/1/1" xmlns:g="http://www.topografix.com/GPX/1/1"',
+    );
     expect(parseGpx(gpx).segments[0]!.points[0]!.ele).toBe(5);
+  });
+
+  it('matches exact qualified close names even when prefixes share a namespace', () => {
+    const gpx =
+      '<a:gpx xmlns:a="http://www.topografix.com/GPX/1/1" xmlns:b="http://www.topografix.com/GPX/1/1">' +
+      '<a:trk><a:trkseg><a:trkpt lat="-48.5" lon="-123.5"></b:trkpt></a:trkseg></a:trk></a:gpx>';
+    expect(() => parseGpx(gpx)).toThrowError(expect.objectContaining({ code: 'malformed_xml' }));
+  });
+
+  it('rejects undeclared prefixes and non-GPX root namespaces', () => {
+    expect(() => parseGpx('<g:gpx/>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+    expect(() => parseGpx('<g:gpx xmlns:g="urn:synthetic:not-gpx"/>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
   });
 
   it('rejects DOCTYPE / external entity declarations', () => {
@@ -66,14 +100,12 @@ describe('secure GPX parser (ROUTE-001/004/005)', () => {
   });
 
   it('preserves a genuinely missing time as explicit null', () => {
-    const gpx = wrap('<trkseg><trkpt lat="-48.5" lon="-123.5"/></trkseg>');
+    const gpx = readGpxFixture('Outdoor Cycling-Route-20310607_080000.gpx');
     expect(parseGpx(gpx).segments[0]!.points[0]).toMatchObject({ t: null });
   });
 
   it('rejects a present but malformed track-point time', () => {
-    const gpx = wrap(
-      '<trkseg><trkpt lat="-48.5" lon="-123.5"><time>2031-02-29T07:30:00Z</time></trkpt></trkseg>',
-    );
+    const gpx = readGpxFixture('Outdoor Cycling-Route-20310608_080000-invalid-time.gpx');
     expect(() => parseGpx(gpx)).toThrowError(
       expect.objectContaining({ code: 'timestamps_invalid' }),
     );
@@ -97,10 +129,27 @@ describe('secure GPX parser (ROUTE-001/004/005)', () => {
     );
   });
 
-  it('never resolves entities beyond the predefined five', () => {
+  it('rejects closing-tag attributes, multiple roots, and trailing content', () => {
+    expect(() => parseGpx('<gpx></gpx bogus>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+    expect(() => parseGpx('<gpx/><gpx/>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+    expect(() => parseGpx('<gpx/>synthetic trailing content')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+  });
+
+  it('rejects undeclared entities while accepting predefined and numeric references', () => {
     const gpx = wrap(
       '<trkseg><trkpt lat="-48.5" lon="-123.5"><time>2031-04-02T07:30:00Z</time></trkpt></trkseg>',
     );
-    expect(() => parseGpx(gpx.replace('creator="t"', 'creator="&custom;"'))).not.toThrow();
+    expect(() => parseGpx(gpx.replace('creator="t"', 'creator="&custom;"'))).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+    expect(() =>
+      parseGpx(gpx.replace('creator="t"', 'creator="synthetic &amp; &#x58;1"')),
+    ).not.toThrow();
   });
 });
