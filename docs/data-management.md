@@ -171,9 +171,10 @@ identical bytes → the ride comes back.
   included. Restore verifies those checksums before staging and returns an integrity report covering
   manifest, checksums, SQLite integrity, foreign keys, and applied compatibility migrations.
 - `schema_migrations` records the SHA-256 digest of each migration as well as its ordered filename.
-  A database released before checksum tracking is adopted once during upgrade; after adoption,
-  changing the contents of an applied migration fails closed with `migration_checksum_mismatch`.
-  This trust-on-first-upgrade is the only legacy exception.
+  The filename-only `0001_init.sql` history released in v0.1.0 is adopted only when the bundled
+  migration still matches its immutable published digest. Missing checksums for any other migration
+  fail closed, as do duplicate sequence numbers, skipped/reordered history, and changed applied
+  migration contents. After the compatibility upgrade, every migration is cryptographically pinned.
 
 Both directions are exercised end to end (round trip, checkout rejection, and live-database
 destination rejection), along with forged/incomplete/current/future migration histories, corrupt

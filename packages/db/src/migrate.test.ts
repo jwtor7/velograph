@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseConstructor from 'better-sqlite3';
@@ -9,7 +9,7 @@ import {
   listMigrations,
   readAppliedMigrations,
 } from './migrate.ts';
-import { openDatabase } from './database.ts';
+import { MIGRATIONS_DIR, openDatabase } from './database.ts';
 
 describe('ordered migrations', () => {
   it('applies the bundled schema and is idempotent', () => {
@@ -73,27 +73,94 @@ describe('ordered migrations', () => {
     db.close();
   });
 
-  it('adopts a legacy filename-only history once and then verifies its checksum', () => {
+  it('upgrades the released filename-only schema, preserves data, and pins every checksum', () => {
+    const db = new DatabaseConstructor(':memory:');
+    db.exec(readFileSync(join(MIGRATIONS_DIR, '0001_init.sql'), 'utf8'));
+    db.exec(`
+      CREATE TABLE schema_migrations (
+        name TEXT PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      );
+      INSERT INTO schema_migrations (name, applied_at) VALUES ('0001_init.sql', 1000);
+    `);
+    db.prepare('INSERT INTO user_settings (key, value_json) VALUES (?, ?)').run(
+      'synthetic-setting',
+      '"preserved"',
+    );
+
+    const available = listMigrations(MIGRATIONS_DIR);
+    expect(applyMigrations(db, MIGRATIONS_DIR)).toEqual(
+      available.slice(1).map((migration) => migration.name),
+    );
+    expect(readAppliedMigrations(db)).toEqual(
+      available.map((migration, index) => ({
+        ...migration,
+        appliedAt: index === 0 ? 1000 : expect.any(Number),
+      })),
+    );
+    expect(
+      db.prepare("SELECT value_json FROM user_settings WHERE key = 'synthetic-setting'").get(),
+    ).toEqual({ value_json: '"preserved"' });
+    expect(applyMigrations(db, MIGRATIONS_DIR)).toEqual([]);
+    db.close();
+  });
+
+  it('rejects a changed released migration before adopting its filename-only history', () => {
     const dir = mkdtempSync(join(tmpdir(), 'velo-mig-'));
-    writeFileSync(join(dir, '0001_a.sql'), 'CREATE TABLE a (id INTEGER PRIMARY KEY);');
+    for (const migration of listMigrations(MIGRATIONS_DIR)) {
+      const content = readFileSync(join(MIGRATIONS_DIR, migration.name), 'utf8');
+      writeFileSync(
+        join(dir, migration.name),
+        migration.name === '0001_init.sql' ? `${content}\n-- altered after release\n` : content,
+      );
+    }
+    const db = new DatabaseConstructor(':memory:');
+    db.exec(readFileSync(join(MIGRATIONS_DIR, '0001_init.sql'), 'utf8'));
+    db.exec(`
+      CREATE TABLE schema_migrations (
+        name TEXT PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      );
+      INSERT INTO schema_migrations (name, applied_at) VALUES ('0001_init.sql', 1000);
+    `);
+
+    expect(() => applyMigrations(db, dir)).toThrow('migration_checksum_mismatch');
+    expect(
+      (
+        db.prepare('PRAGMA table_info(schema_migrations)').all() as {
+          name: string;
+        }[]
+      ).map((column) => column.name),
+    ).not.toContain('checksum');
+    expect(
+      db
+        .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'backup_manifests'")
+        .get(),
+    ).toBeUndefined();
+    db.close();
+  });
+
+  it('rejects a missing checksum outside the published legacy baseline', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'velo-mig-'));
+    writeFileSync(join(dir, '0001_unreleased.sql'), 'CREATE TABLE unreleased (id INTEGER);');
     const db = new DatabaseConstructor(':memory:');
     db.exec(`
       CREATE TABLE schema_migrations (
         name TEXT PRIMARY KEY,
         applied_at INTEGER NOT NULL
       );
-      CREATE TABLE a (id INTEGER PRIMARY KEY);
-      INSERT INTO schema_migrations (name, applied_at) VALUES ('0001_a.sql', 1000);
+      CREATE TABLE unreleased (id INTEGER);
+      INSERT INTO schema_migrations (name, applied_at) VALUES ('0001_unreleased.sql', 1000);
     `);
 
-    expect(applyMigrations(db, dir)).toEqual([]);
-    expect(readAppliedMigrations(db)).toEqual([
-      {
-        name: '0001_a.sql',
-        appliedAt: 1000,
-        checksum: listMigrations(dir)[0]!.checksum,
-      },
-    ]);
+    expect(() => applyMigrations(db, dir)).toThrow('migration_checksum_missing');
+    expect(
+      (
+        db.prepare('PRAGMA table_info(schema_migrations)').all() as {
+          name: string;
+        }[]
+      ).map((column) => column.name),
+    ).not.toContain('checksum');
     db.close();
   });
 
@@ -119,7 +186,7 @@ describe('ordered migrations', () => {
     db.close();
   });
 
-  it('rolls back checksum adoption when a pinned legacy history is invalid', () => {
+  it('rolls back checksum preparation when a pinned history is invalid', () => {
     const dir = mkdtempSync(join(tmpdir(), 'velo-mig-'));
     writeFileSync(join(dir, '0001_a.sql'), 'CREATE TABLE a (id INTEGER PRIMARY KEY);');
     writeFileSync(join(dir, '0002_b.sql'), 'CREATE TABLE b (id INTEGER PRIMARY KEY);');
@@ -132,14 +199,14 @@ describe('ordered migrations', () => {
       );
       INSERT INTO schema_migrations (name, applied_at, checksum)
         VALUES
-          ('0001_a.sql', 1000, NULL),
+          ('0001_a.sql', 1000, '${listMigrations(dir)[0]!.checksum}'),
           ('0002_b.sql', 2000, '${'0'.repeat(64)}');
     `);
 
     expect(() => applyMigrations(db, dir)).toThrow('migration_checksum_mismatch');
     expect(db.prepare('SELECT name, checksum FROM schema_migrations ORDER BY rowid').all()).toEqual(
       [
-        { name: '0001_a.sql', checksum: null },
+        { name: '0001_a.sql', checksum: listMigrations(dir)[0]!.checksum },
         { name: '0002_b.sql', checksum: '0'.repeat(64) },
       ],
     );
@@ -164,5 +231,13 @@ describe('ordered migrations', () => {
     expect(isOrderedMigrationPrefix(['0002_b.sql', '0001_a.sql'], available)).toBe(false);
     expect(isOrderedMigrationPrefix(['0001_a.sql', '0003_c.sql'], available)).toBe(false);
     expect(isOrderedMigrationPrefix([...available, '9999_future.sql'], available)).toBe(false);
+  });
+
+  it('rejects duplicate migration sequence numbers', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'velo-mig-'));
+    writeFileSync(join(dir, '0001_a.sql'), 'CREATE TABLE a (id INTEGER PRIMARY KEY);');
+    writeFileSync(join(dir, '0001_b.sql'), 'CREATE TABLE b (id INTEGER PRIMARY KEY);');
+
+    expect(() => listMigrations(dir)).toThrow('migration_files_invalid');
   });
 });

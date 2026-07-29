@@ -3,6 +3,17 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { sha256Hex } from '@velograph/shared';
 
+/**
+ * Immutable digests for migrations released before `schema_migrations`
+ * recorded checksums. These values are release metadata, not generated
+ * defaults: never update one to make a changed historical migration pass.
+ *
+ * v0.1.0 recorded only `0001_init.sql` by filename.
+ */
+const LEGACY_FILENAME_ONLY_CHECKSUMS: Readonly<Record<string, string>> = {
+  '0001_init.sql': '788d5ec37f21e6963c8c8e8241d6984400e7249433dbd1919242d7fe4931f242',
+};
+
 export interface MigrationDescriptor {
   name: string;
   checksum: string;
@@ -13,9 +24,18 @@ export interface AppliedMigration extends MigrationDescriptor {
 }
 
 export function listMigrationFiles(dir: string): string[] {
-  return readdirSync(dir)
+  const files = readdirSync(dir)
     .filter((file) => /^\d{4}_.+\.sql$/.test(file))
     .sort();
+  const sequenceIds = new Set<string>();
+  for (const file of files) {
+    const sequenceId = file.slice(0, 4);
+    if (sequenceIds.has(sequenceId)) {
+      throw new Error('migration_files_invalid');
+    }
+    sequenceIds.add(sequenceId);
+  }
+  return files;
 }
 
 export function listMigrations(dir: string): MigrationDescriptor[] {
@@ -71,11 +91,24 @@ export function applyMigrations(db: Database, dir: string): string[] {
       throw new Error('migration_history_invalid');
     }
 
-    // Verify every pinned identity before adopting any legacy row. The
-    // transaction also rolls back the checksum column itself on failure.
+    // Verify every pinned identity before adopting any legacy row. A missing
+    // checksum is accepted only for the exact migration digest published
+    // before checksum tracking shipped. This prevents a filename-only row from
+    // silently pinning whatever SQL happens to be present during an upgrade.
+    // The transaction also rolls back the checksum column itself on failure.
     for (const [index, row] of applied.entries()) {
       const expected = migrations[index]!;
-      if (row.checksum !== null && row.checksum !== expected.checksum) {
+      if (row.checksum !== null) {
+        if (row.checksum !== expected.checksum) {
+          throw new Error('migration_checksum_mismatch');
+        }
+        continue;
+      }
+      const releasedChecksum = LEGACY_FILENAME_ONLY_CHECKSUMS[row.name];
+      if (releasedChecksum === undefined) {
+        throw new Error('migration_checksum_missing');
+      }
+      if (expected.checksum !== releasedChecksum) {
         throw new Error('migration_checksum_mismatch');
       }
     }
