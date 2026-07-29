@@ -20,6 +20,7 @@ import {
   openDatabase,
   Repository,
   resolveDataDir,
+  RestoreDatabaseError,
   restoreDatabase,
 } from '@velograph/db';
 import { repairWorkout } from '@velograph/api';
@@ -175,7 +176,19 @@ async function runRestoreCmd(args: string[]): Promise<number> {
     console.log('Database restored from backup');
     return 0;
   } catch (err) {
-    console.error(`Restore failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    if (err instanceof RestoreDatabaseError && err.recoveredDatabase?.open) {
+      err.recoveredDatabase.close();
+    } else if (db.open) {
+      db.close();
+    }
+    const code =
+      err instanceof RestoreDatabaseError
+        ? err.code
+        : err instanceof Error &&
+            (err.message === 'invalid_backup_file' || err.message === 'invalid_backup_integrity')
+          ? err.message
+          : 'restore_failed';
+    console.error(`Restore failed: ${code}`);
     return 1;
   }
 }

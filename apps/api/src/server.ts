@@ -2,7 +2,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import type { Database } from '@velograph/db';
-import { Repository, backupDatabase, loadWorkoutData, restoreDatabase } from '@velograph/db';
+import {
+  Repository,
+  RestoreDatabaseError,
+  backupDatabase,
+  loadWorkoutData,
+  restoreDatabase,
+} from '@velograph/db';
 import { inventoryFiles, runImport, type ImportFile } from '@velograph/importers';
 import {
   getOrComputeAnalytics,
@@ -40,19 +46,93 @@ export interface ApiOptions {
   /** Directory of built web assets to serve statically (optional). */
   staticDir?: string;
   now?: () => number;
+  /** @internal Deterministic seam for restore/shutdown integration tests. */
+  restoreDatabaseFn?: typeof restoreDatabase;
 }
 
-export function createApiServer(opts: ApiOptions): Server {
+interface ApiRuntimeState {
+  activeRequests: number;
+  databaseAvailable: boolean;
+  restoreInProgress: boolean;
+  exclusiveWaiters: Set<() => void>;
+  idleWaiters: Set<() => void>;
+}
+
+export interface VelographApiServer extends Server {
+  /** Always returns the current handle, including after a successful restore. */
+  getDatabase(): Database;
+  isRestoreInProgress(): boolean;
+  /** Resolves after all accepted request work has settled, even if a client disconnected. */
+  waitForRequests(): Promise<void>;
+}
+
+function notifyRequestWaiters(state: ApiRuntimeState): void {
+  if (state.activeRequests <= 1) {
+    for (const resolve of state.exclusiveWaiters) resolve();
+    state.exclusiveWaiters.clear();
+  }
+  if (state.activeRequests === 0) {
+    for (const resolve of state.idleWaiters) resolve();
+    state.idleWaiters.clear();
+  }
+}
+
+function waitForExclusiveRequest(state: ApiRuntimeState): Promise<void> {
+  if (state.activeRequests <= 1) return Promise.resolve();
+  return new Promise((resolve) => state.exclusiveWaiters.add(resolve));
+}
+
+function waitForRequests(state: ApiRuntimeState): Promise<void> {
+  if (state.activeRequests === 0) return Promise.resolve();
+  return new Promise((resolve) => state.idleWaiters.add(resolve));
+}
+
+export function createApiServer(opts: ApiOptions): VelographApiServer {
   const now = opts.now ?? Date.now;
+  const state: ApiRuntimeState = {
+    activeRequests: 0,
+    databaseAvailable: true,
+    restoreInProgress: false,
+    exclusiveWaiters: new Set(),
+    idleWaiters: new Set(),
+  };
 
   const server = createServer((req, res) => {
+    state.activeRequests += 1;
+    let finished = false;
+    let operationPending = false;
+    const finishRequest = () => {
+      if (finished) return;
+      finished = true;
+      state.activeRequests -= 1;
+      notifyRequestWaiters(state);
+    };
+    const finishResponse = () => {
+      if (!operationPending) finishRequest();
+    };
+    res.once('finish', finishResponse);
+    res.once('close', finishResponse);
+
     try {
-      handle(req, res, opts, now, server);
+      const operation = handle(req, res, opts, now, server, state);
+      if (operation) {
+        operationPending = true;
+        void operation
+          .catch(() => send(res, 500, { error: 'internal_error' }))
+          .finally(() => {
+            operationPending = false;
+            finishRequest();
+          });
+      }
     } catch {
       send(res, 500, { error: 'internal_error' });
     }
   });
-  return server;
+  return Object.assign(server, {
+    getDatabase: () => opts.db,
+    isRestoreInProgress: () => state.restoreInProgress,
+    waitForRequests: () => waitForRequests(state),
+  });
 }
 
 function expectedPort(server: Server): number | null {
@@ -107,6 +187,7 @@ function securityHeaders(res: ServerResponse): void {
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {
+  if (res.destroyed || res.writableEnded) return;
   securityHeaders(res);
   const json = JSON.stringify(body);
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -119,7 +200,8 @@ function handle(
   opts: ApiOptions,
   now: () => number,
   server: Server,
-): void {
+  state: ApiRuntimeState,
+): void | Promise<void> {
   const port = expectedPort(server);
   if (!hostAllowed(req.headers.host, port)) {
     send(res, 403, { error: 'host_not_allowed' });
@@ -140,9 +222,17 @@ function handle(
     }
   }
 
-  if (path.startsWith('/api/')) {
-    route(req, res, opts, url, method, now);
+  if (!state.databaseAvailable) {
+    send(res, 503, { error: 'database_unavailable' });
     return;
+  }
+  if (state.restoreInProgress && path !== '/api/health') {
+    send(res, 503, { error: 'restore_in_progress' });
+    return;
+  }
+
+  if (path.startsWith('/api/')) {
+    return route(req, res, opts, url, method, now, state);
   }
   serveStatic(res, opts.staticDir, path);
 }
@@ -154,7 +244,8 @@ function route(
   url: URL,
   method: string,
   now: () => number,
-): void {
+  state: ApiRuntimeState,
+): void | Promise<void> {
   const db = opts.db;
   const path = url.pathname;
 
@@ -240,7 +331,7 @@ function route(
   }
 
   if (method === 'PUT' && path === '/api/settings') {
-    readJsonBody(req, 1024 * 1024)
+    return readJsonBody(req, 1024 * 1024)
       .then((body) => {
         const s = (body as { settings?: unknown }).settings;
         if (!s || typeof s !== 'object') {
@@ -255,7 +346,7 @@ function route(
   }
 
   if (method === 'POST' && path === '/api/import/inventory') {
-    readJsonBody(req, MAX_IMPORT_BODY_BYTES)
+    return readJsonBody(req, MAX_IMPORT_BODY_BYTES)
       .then((body) => {
         const files = decodeFiles(body);
         send(res, 200, { inventory: inventoryFiles(files) });
@@ -265,7 +356,7 @@ function route(
   }
 
   if (method === 'POST' && path === '/api/import') {
-    readJsonBody(req, MAX_IMPORT_BODY_BYTES)
+    return readJsonBody(req, MAX_IMPORT_BODY_BYTES)
       .then((body) => {
         const files = decodeFiles(body);
         if (files.length === 0) {
@@ -284,7 +375,7 @@ function route(
   // resolve inside a git checkout — enforced by guardAgainstCheckout inside
   // backupDatabase — because backups carry real health data.
   if (method === 'POST' && path === '/api/backup') {
-    readJsonBody(req, MAX_PATH_BODY_BYTES)
+    return readJsonBody(req, MAX_PATH_BODY_BYTES)
       .then(async (body) => {
         const dest = readPathField(body);
         if (!dest) {
@@ -313,19 +404,50 @@ function route(
       send(res, 400, { error: 'restore_unsupported' });
       return;
     }
-    readJsonBody(req, MAX_PATH_BODY_BYTES)
+    return readJsonBody(req, MAX_PATH_BODY_BYTES)
       .then(async (body) => {
         const source = readPathField(body);
         if (!source) {
           send(res, 400, { error: 'invalid_path' });
           return;
         }
+        if (state.restoreInProgress) {
+          send(res, 409, { error: 'restore_in_progress' });
+          return;
+        }
+        state.restoreInProgress = true;
         try {
-          const restored = await restoreDatabase(opts.db, opts.dbPath!, source);
+          // Stop admitting new work and wait for every request that began
+          // before this restore to finish before the live handle is
+          // checkpointed and swapped.
+          await waitForExclusiveRequest(state);
+          const restored = await (opts.restoreDatabaseFn ?? restoreDatabase)(
+            opts.db,
+            opts.dbPath!,
+            source,
+          );
           opts.db = restored;
           send(res, 200, { ok: true });
-        } catch {
-          send(res, 400, { error: 'restore_failed' });
+        } catch (error) {
+          let status = 400;
+          let code = 'restore_failed';
+          if (error instanceof RestoreDatabaseError) {
+            status = 500;
+            if (error.recoveredDatabase) {
+              opts.db = error.recoveredDatabase;
+            } else {
+              state.databaseAvailable = false;
+              code = 'database_unavailable';
+            }
+          }
+          if (!opts.db.open) {
+            state.databaseAvailable = false;
+            status = 500;
+            code = 'database_unavailable';
+          }
+          send(res, status, { error: code });
+        } finally {
+          state.restoreInProgress = false;
         }
       })
       .catch(() => send(res, 400, { error: 'invalid_body' }));
@@ -402,23 +524,35 @@ function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> 
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let settled = false;
+    const rejectOnce = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
     req.on('data', (c: Buffer) => {
       size += c.length;
       if (size > maxBytes) {
-        reject(new Error('body_too_large'));
+        rejectOnce(new Error('body_too_large'));
         req.destroy();
         return;
       }
       chunks.push(c);
     });
     req.on('end', () => {
+      if (settled) return;
       try {
+        settled = true;
         resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       } catch (e) {
         reject(e);
       }
     });
-    req.on('error', reject);
+    req.on('aborted', () => rejectOnce(new Error('request_aborted')));
+    req.on('close', () => {
+      if (!req.complete) rejectOnce(new Error('request_closed'));
+    });
+    req.on('error', (error) => rejectOnce(error));
   });
 }
 
