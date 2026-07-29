@@ -48,12 +48,26 @@ export interface FolderWalkOptions {
   maxDepth?: number;
 }
 
+/**
+ * Deterministic test seam for filesystem swaps at the directory lstat-to-open
+ * boundary. Production callers must leave this unset.
+ */
+export interface FolderWalkTestHooks {
+  beforeDirectoryOpen?: (relativePath: string) => void;
+}
+
 interface EntryIdentity {
   device: number;
   inode: number;
   sizeBytes: number;
   modifiedMs: number;
   changedMs: number;
+}
+
+interface DirectoryExpectation {
+  canonicalPath: string;
+  identity: EntryIdentity;
+  followSymbolicPath: boolean;
 }
 
 interface TraversalManifestEntry extends EntryIdentity {
@@ -180,7 +194,11 @@ function isPlannedEntryChange(error: unknown): boolean {
  * toward explicit traversal bounds and contributes metadata to the private
  * confirmation manifest. No source contents are read.
  */
-export function walkImportFolder(rootPath: string, opts: FolderWalkOptions = {}): FolderWalkResult {
+export function walkImportFolder(
+  rootPath: string,
+  opts: FolderWalkOptions = {},
+  testHooks: FolderWalkTestHooks = {},
+): FolderWalkResult {
   const maxFiles = opts.maxFiles ?? DEFAULT_MAX_FILES;
   const maxTotalBytes = opts.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
   const maxVisitedEntries = opts.maxVisitedEntries ?? DEFAULT_MAX_VISITED_ENTRIES;
@@ -208,6 +226,11 @@ export function walkImportFolder(rootPath: string, opts: FolderWalkOptions = {})
   checkNotInsideCheckout(canonicalRoot);
 
   const rootIdentity = identityOf(rootStats);
+  const rootExpectation: DirectoryExpectation = {
+    canonicalPath: canonicalRoot,
+    identity: rootIdentity,
+    followSymbolicPath: true,
+  };
   const manifestEntries: TraversalManifestEntry[] = [];
   const files: WalkedFile[] = [];
   const skipped: FolderSkip[] = [];
@@ -218,6 +241,50 @@ export function walkImportFolder(rootPath: string, opts: FolderWalkOptions = {})
   let traversalStopped = false;
 
   const relativeToRoot = (path: string) => toPosix(relative(root, path)) || '.';
+
+  const directoryChanged = (): FolderImportError =>
+    new FolderImportError('path_changed', 'folder changed during traversal');
+
+  function readDirectoryState(dirPath: string, followSymbolicPath: boolean): DirectoryExpectation {
+    try {
+      const canonicalBefore = realpathSync(dirPath);
+      const stats = followSymbolicPath ? statSync(dirPath) : lstatSync(dirPath);
+      const canonicalAfter = realpathSync(dirPath);
+      if (
+        canonicalBefore !== canonicalAfter ||
+        !stats.isDirectory() ||
+        !insideCanonicalRoot(canonicalRoot, canonicalAfter)
+      ) {
+        throw directoryChanged();
+      }
+      return {
+        canonicalPath: canonicalAfter,
+        identity: identityOf(stats),
+        followSymbolicPath,
+      };
+    } catch (err) {
+      if (err instanceof FolderImportError) throw err;
+      throw directoryChanged();
+    }
+  }
+
+  function revalidateDirectory(dirPath: string, expected: DirectoryExpectation): void {
+    const actual = readDirectoryState(dirPath, expected.followSymbolicPath);
+    if (
+      actual.canonicalPath !== expected.canonicalPath ||
+      !sameIdentity(expected.identity, actual.identity, false)
+    ) {
+      throw directoryChanged();
+    }
+  }
+
+  function captureNestedDirectory(dirPath: string, entryStats: Stats): DirectoryExpectation {
+    const captured = readDirectoryState(dirPath, false);
+    if (!sameIdentity(identityOf(entryStats), captured.identity, false)) {
+      throw directoryChanged();
+    }
+    return captured;
+  }
 
   function addManifestEntry(
     fullPath: string,
@@ -286,7 +353,7 @@ export function walkImportFolder(rootPath: string, opts: FolderWalkOptions = {})
     traversalStopped = true;
   }
 
-  function walk(dirPath: string, depth: number): void {
+  function walk(dirPath: string, depth: number, expected: DirectoryExpectation): void {
     if (traversalStopped) return;
     if (depth > maxDepth) {
       skipped.push({ relativePath: relativeToRoot(dirPath), reason: 'max_depth_exceeded' });
@@ -302,11 +369,16 @@ export function walkImportFolder(rootPath: string, opts: FolderWalkOptions = {})
       return;
     }
 
+    revalidateDirectory(dirPath, expected);
+    testHooks.beforeDirectoryOpen?.(relativeToRoot(dirPath));
+    revalidateDirectory(dirPath, expected);
+
     let dir;
     try {
       dir = opendirSync(dirPath);
       visitedDirectories++;
-    } catch {
+    } catch (err) {
+      if (isPlannedEntryChange(err)) throw directoryChanged();
       skipped.push({ relativePath: relativeToRoot(dirPath), reason: 'unreadable' });
       return;
     }
@@ -375,8 +447,9 @@ export function walkImportFolder(rootPath: string, opts: FolderWalkOptions = {})
         }
 
         if (entryStats.isDirectory()) {
+          const childExpectation = captureNestedDirectory(fullPath, entryStats);
           addManifestEntry(fullPath, 'directory', entryStats);
-          walk(fullPath, depth + 1);
+          walk(fullPath, depth + 1, childExpectation);
           if (traversalStopped) return;
           continue;
         }
@@ -403,10 +476,11 @@ export function walkImportFolder(rootPath: string, opts: FolderWalkOptions = {})
       } catch {
         // Closing a read-only traversal handle cannot change the manifest.
       }
+      revalidateDirectory(dirPath, expected);
     }
   }
 
-  walk(root, 0);
+  walk(root, 0, rootExpectation);
   files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   manifestEntries.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   skipped.sort(
