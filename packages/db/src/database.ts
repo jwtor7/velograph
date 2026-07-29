@@ -20,3 +20,17 @@ export function openDatabase(path: string): Database {
   applyMigrations(db, MIGRATIONS_DIR);
   return db;
 }
+
+/**
+ * Flush every committed WAL frame and truncate the sidecar. SQLite reports a
+ * busy result instead of throwing when another connection prevents a complete
+ * checkpoint, so callers must reject that state before shutdown or restore.
+ */
+export function checkpointDatabase(db: Database): void {
+  const rows = db.pragma('wal_checkpoint(TRUNCATE)') as {
+    busy?: number;
+  }[];
+  if (rows[0]?.busy !== 0) {
+    throw new Error('wal_checkpoint_busy');
+  }
+}

@@ -15,13 +15,16 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, openSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { homedir, platform, tmpdir } from 'node:os';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env['VELO_PORT'] ?? 5123);
 const HOST = '127.0.0.1';
 const LOG_PATH = join(tmpdir(), `velograph-server-${PORT}.log`);
+const STOP_GRACE_MS = 12_000;
+const STOP_POLL_MS = 200;
+const API_ENTRYPOINT = join(REPO_ROOT, 'apps', 'api', 'src', 'main.ts');
 
 /** Resolve the data directory the same way packages/db does, without importing it. */
 function resolveDataDir() {
@@ -48,6 +51,45 @@ function listenerPid() {
   } catch {
     return null; // lsof exits non-zero when nothing matches
   }
+}
+
+/** Stable start-time token for a PID, or null once that exact process is gone. */
+function processIdentity(pid) {
+  if (platform() === 'win32') return null;
+  try {
+    const started = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return started ? `${pid}:${started}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function processCommand(pid) {
+  if (platform() === 'win32') return null;
+  try {
+    return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function isVelographCommand(command, entrypoint = API_ENTRYPOINT) {
+  if (!command) return false;
+  const normalizedCommand = command.replaceAll('\\', '/');
+  const normalizedEntrypoint = entrypoint.replaceAll('\\', '/');
+  return new RegExp(`(?:^|[\\s"'])${escapeRegExp(normalizedEntrypoint)}(?=$|[\\s"'])`).test(
+    normalizedCommand,
+  );
 }
 
 async function fetchJson(path) {
@@ -122,31 +164,117 @@ async function start() {
   return 1;
 }
 
+export async function stopProcess(
+  pid,
+  {
+    getListenerPid = listenerPid,
+    getProcessIdentity = processIdentity,
+    getProcessCommand = processCommand,
+    expectedCommand,
+    kill = (target, signal) => process.kill(target, signal),
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    graceMs = STOP_GRACE_MS,
+    pollMs = STOP_POLL_MS,
+    forceWaitMs = 2_000,
+  } = {},
+) {
+  const identity = getProcessIdentity(pid);
+  if (!identity) {
+    if (getListenerPid() !== pid) {
+      console.log(`Stopped Velograph (pid ${pid}).`);
+      return 0;
+    }
+    console.error(
+      `Cannot verify Velograph process identity for pid ${pid}; refusing to signal it.`,
+    );
+    return 1;
+  }
+  if (
+    expectedCommand !== undefined &&
+    (getListenerPid() !== pid ||
+      getProcessCommand(pid) !== expectedCommand ||
+      !isVelographCommand(expectedCommand) ||
+      getProcessIdentity(pid) !== identity)
+  ) {
+    console.error(`Velograph process identity changed before pid ${pid} could be signalled.`);
+    return 1;
+  }
+
+  try {
+    kill(pid, 'SIGTERM');
+  } catch (error) {
+    if (error?.code === 'ESRCH') {
+      console.log(`Stopped Velograph (pid ${pid}).`);
+      return 0;
+    }
+    throw error;
+  }
+
+  const attempts = Math.max(1, Math.ceil(graceMs / pollMs));
+  for (let i = 0; i < attempts; i++) {
+    await sleep(pollMs);
+    if (getProcessIdentity(pid) !== identity) {
+      console.log(`Stopped Velograph (pid ${pid}).`);
+      return 0;
+    }
+  }
+
+  console.error(`Velograph did not finish graceful shutdown within ${graceMs}ms; sending SIGKILL.`);
+  // Recheck stable identity immediately before escalation so PID reuse can
+  // never target an unrelated replacement process.
+  if (getProcessIdentity(pid) !== identity) {
+    console.log(`Stopped Velograph (pid ${pid}).`);
+    return 0;
+  }
+  if (
+    expectedCommand !== undefined &&
+    (getProcessCommand(pid) !== expectedCommand || !isVelographCommand(expectedCommand))
+  ) {
+    console.error(`Velograph process identity changed before pid ${pid} could be force-stopped.`);
+    return 1;
+  }
+  kill(pid, 'SIGKILL');
+
+  const forceAttempts = Math.max(1, Math.ceil(forceWaitMs / pollMs));
+  for (let i = 0; i < forceAttempts; i++) {
+    await sleep(pollMs);
+    if (getProcessIdentity(pid) !== identity) {
+      console.log(`Force-stopped Velograph (pid ${pid}).`);
+      return 0;
+    }
+  }
+  console.error(`SIGKILL was sent to Velograph pid ${pid}, but process exit was not confirmed.`);
+  return 1;
+}
+
 async function stop() {
   const pid = listenerPid();
   if (!pid) {
     console.log(`Velograph is not running (port ${PORT} is free). Nothing to stop.`);
     return 0;
   }
-  process.kill(pid, 'SIGTERM');
-  for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 200));
-    if (!listenerPid()) {
-      console.log(`Stopped Velograph (pid ${pid}).`);
-      return 0;
-    }
+  const command = processCommand(pid);
+  if (!isVelographCommand(command)) {
+    console.error(
+      `Refusing to stop pid ${pid}: the listener on port ${PORT} is not a verified Velograph API process.`,
+    );
+    return 1;
   }
-  process.kill(pid, 'SIGKILL');
-  console.log(`Force-stopped Velograph (pid ${pid}).`);
-  return 0;
+  return stopProcess(pid, { expectedCommand: command });
 }
 
 const COMMANDS = { start, stop, status, restart: async () => (await stop()) || start() };
 
-const cmd = process.argv[2] ?? 'status';
-const fn = COMMANDS[cmd];
-if (!fn) {
-  console.error(`Unknown command "${cmd}". Use: ${Object.keys(COMMANDS).join(' | ')}`);
-  process.exit(2);
+export async function main(argv = process.argv.slice(2)) {
+  const cmd = argv[0] ?? 'status';
+  const fn = COMMANDS[cmd];
+  if (!fn) {
+    console.error(`Unknown command "${cmd}". Use: ${Object.keys(COMMANDS).join(' | ')}`);
+    return 2;
+  }
+  return fn();
 }
-process.exit(await fn());
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exit(await main());
+}

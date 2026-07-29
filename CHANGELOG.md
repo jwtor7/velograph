@@ -21,6 +21,15 @@ is pre-1.0, and for the release procedure.
 
 ### Fixed
 
+- **Crash-safe restore and graceful shutdown.** Restore now builds, migrates, integrity-checks,
+  checkpoints, and fsyncs a sibling temporary database while the live database remains usable,
+  then commits the complete replacement with a same-directory atomic rename. It never deletes
+  sidecars or overwrites the live database in place, and it rejects incomplete WAL checkpoints.
+  The API rejects concurrent work during the final restore barrier, tracks asynchronous work even
+  after a client disconnects, and enters a fail-closed state if a cutover cannot recover a usable
+  handle. SIGINT/SIGTERM now stop new connections, drain in-flight work (including restore),
+  checkpoint the WAL, and close the current database handle. `app:stop` waits for the verified
+  process exit, gives that path 12 seconds, and reports any SIGKILL escalation (#55).
 - **"Choose export folder" could not select a folder.** The directory input carried
   `accept=".csv,.gpx,.zip"`; since a directory matches none of those extensions, the OS
   picker greyed folders out. Because Health Auto Export writes one CSV per metric, this

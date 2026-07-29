@@ -80,17 +80,31 @@ identical bytes → the ride comes back.
   (`sqlite3_backup_init`/`step`/`finish`). This is a safe, consistent snapshot of a live
   WAL-mode database; it is never a raw `fs.copyFile` of the `.sqlite3`/`-wal`/`-shm` files, which
   could copy a torn, mid-write state.
-- `restoreDatabase(liveDb, dbPath, backupPath)` validates the source file first
-  (`isVelographBackup`: openable read-only and has a `workouts` table), then checkpoints and
-  closes `liveDb` (`PRAGMA wal_checkpoint(TRUNCATE)` so nothing is left un-flushed), clears any
-  leftover `-wal`/`-shm` sidecars next to `dbPath` (so a stale WAL can never be replayed against
-  freshly-restored pages), backs the validated source into `dbPath` via the same SQLite backup
-  API, and reopens `dbPath` — which also brings a backup taken by an older Velograph version
-  forward through any pending migrations. It returns the fresh `Database` handle; callers own
-  swapping out their old reference (`apps/api/src/server.ts` reassigns `opts.db`).
+- `restoreDatabase(liveDb, dbPath, backupPath)` first backs the source into a uniquely named
+  sibling temporary file. That staged copy is opened through the normal database boundary,
+  migrated, integrity-checked, checkpointed, closed, and fsynced while `liveDb` remains usable.
+  Only then is the live handle checkpointed and closed. A same-directory `rename` is the atomic
+  commit point: a crash before it leaves the original path untouched, while a crash after it
+  leaves the complete staged database at the live path. Old `-wal`/`-shm` sidecars are removed
+  only after the rename commits. The replacement is reopened and returned; if a cutover error
+  occurs after the old handle closes, the error carries a recovered handle for whichever
+  complete database still owns the live path.
+- The API places restore behind an exclusive request barrier. New non-health requests receive a
+  privacy-safe `restore_in_progress` response while every earlier request drains. Async operations
+  remain leased after a client disconnects, so SIGINT/SIGTERM stop new connections and wait for
+  that work to settle before checkpointing the current WAL and closing the current (possibly
+  replaced) handle. A busy/incomplete WAL checkpoint fails closed. `pnpm app:stop` waits for the
+  verified process to exit—not merely for its listening socket to close—then reports any SIGKILL
+  escalation after the 12-second grace period.
+- Velograph currently supports one database-owning process at a time. Stop the API with
+  `pnpm app:stop` before running `velograph restore`; do not run API and CLI restore concurrently
+  against the same data directory.
 
 Both directions are exercised end to end (round trip, and rejecting a backup path inside a git
-checkout) in `packages/db/src/backup.test.ts`, `apps/api/src/data-management.test.ts`, and
+checkout), along with interruption-before-swap, graceful WAL checkpoint/close, and stop
+escalation, in `packages/db/src/backup.test.ts`, `apps/api/src/shutdown.test.ts`,
+`apps/api/src/shutdown-coordinator.test.ts`, `apps/api/src/data-management.test.ts`,
+`scripts/app.test.mjs`, and
 `apps/cli/src/index.test.ts`.
 
 ## Repair
