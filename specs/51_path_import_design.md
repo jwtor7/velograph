@@ -46,8 +46,9 @@
   `runImport` API delegates to one group, preserving loose-file and CLI behavior.
 - ZIP extraction parses the central directory and matching local headers before inflation,
   enforcing entry names/counts and declared per-entry/aggregate sizes. Hidden/resource entries are
-  excluded before inflation. Included entries are inflated from bounded compressed-input chunks
-  while actual per-entry and aggregate bytes are counted, with declared/actual mismatches rejected.
+  excluded before inflation. Included entries are decoded with a maximum output length configured
+  before inflation starts, bounded by the remaining per-entry and aggregate allowance, with
+  declared/actual mismatches rejected.
 - `openBrowser` attaches an `error` listener to the spawned launcher before detaching it. Browser
   launch remains best-effort and cannot terminate the foreground owner.
 
@@ -60,7 +61,7 @@
   checks, and two-phase ZIP validation all fail closed.
 - Output: API responses remain allow-listed metadata and stable error codes. No source bytes or
   absolute planned-file paths or identity values are returned; the digest is opaque.
-- Rate limiting: incremental traversal bounds, ZIP preflight/stream limits, and request-body limits
+- Rate limiting: incremental traversal bounds, ZIP preflight/output limits, and request-body limits
   are the applicable resource controls; the endpoint is loopback-only and has no network exposure.
 - Logging: no filesystem path or source value is added to logs. Launcher fallback prints only the
   fixed loopback URL supplied by the lifecycle command.
@@ -75,7 +76,7 @@
 - [x] Add deterministic metadata grouping and lazy, identity-checked group reads.
 - [x] Bind confirmation to the exact bounded preview manifest and reject truncated previews.
 - [x] Replace recursive directory materialization with bounded incremental iteration.
-- [x] Replace eager ZIP inflation with preflight plus actual-byte-counted streaming extraction.
+- [x] Replace eager ZIP inflation with preflight plus a decoder-enforced maximum output length.
 - [x] Add grouped importer consumption while preserving one atomic batch.
 - [x] Switch the path endpoint to the lazy grouped pipeline.
 - [x] Handle asynchronous browser-launch failure before `unref`.
@@ -99,7 +100,7 @@
 
 - `pnpm test`: 32 test files and 228 tests pass, including synthetic traversal bounds,
   exact-manifest confirmation, mutation/addition/replacement rejection with no writes, ZIP
-  preflight/stream limits, complete metric/route coverage, transaction rollback, and
+  preflight/decoder limits, complete metric/route coverage, transaction rollback, and
   browser-launch lifecycle cases.
 - `pnpm typecheck`, `pnpm lint`, `pnpm format`, and the web production build: pass.
 - `node scripts/privacy-scan.mjs --all`, `--staged`, and changed-file `--files` scans: pass.

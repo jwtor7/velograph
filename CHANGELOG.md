@@ -26,8 +26,9 @@ is pre-1.0, and for the release procedure.
   canonical root/file identity and reads one bounded association group at a time inside one
   atomic import transaction, so a large accepted folder is never retained as one giant
   buffer. ZIP groups preflight central-directory and local-header names, counts, and declared
-  sizes without extraction, skip hidden/resource entries before inflation, then stream
-  compressed input while enforcing actual per-entry and aggregate output limits. Declared,
+  sizes without extraction and skip hidden/resource entries before inflation. Included entries
+  are decoded with a maximum output length configured before inflation begins, so forged declared
+  sizes cannot materialize output beyond the remaining per-entry or aggregate limit. Declared,
   local-header, and actual-size mismatches fail closed. A group over the resident-byte cap is
   reported and excluded in full rather than importing a partial ride. A symlinked directory
   is never followed, and a symlinked file is only followed when its target stays inside the
