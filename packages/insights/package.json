@@ -1,0 +1,21 @@
+{
+  "name": "@velograph/insights",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AI insight provider interface, minimized payload, schema, and evidence/numeric validation (stub phase — no network, process, or LLM calls)",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@velograph/analytics": "workspace:*",
+    "@velograph/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.2"
+  }
+}
