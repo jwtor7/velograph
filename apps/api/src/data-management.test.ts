@@ -117,6 +117,19 @@ describe('POST /api/backup and /api/restore', () => {
     expect(body.error).toBe('destination_inside_checkout');
   });
 
+  it('rejects the live database as a backup destination without disrupting service', async () => {
+    const res = await fetch(`${base}/api/backup`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ path: databasePath(workDir) }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'destination_conflicts_with_live_database',
+    });
+    expect((await fetch(`${base}/api/health`)).status).toBe(200);
+  });
+
   it('backs up, mutates, and restores back to the snapshot', async () => {
     const backupPath = join(workDir, 'export.sqlite3');
     const backup = await fetch(`${base}/api/backup`, {

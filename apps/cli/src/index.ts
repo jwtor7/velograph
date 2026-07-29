@@ -15,6 +15,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
+  BackupValidationError,
   backupDatabase,
   databasePath,
   openDatabase,
@@ -23,6 +24,7 @@ import {
   RestoreDatabaseError,
   RestoreValidationError,
   restoreDatabase,
+  type Database,
 } from '@velograph/db';
 import { repairWorkout } from '@velograph/api';
 import { runImport, type ImportFile } from '@velograph/importers';
@@ -142,23 +144,38 @@ function runRepairCmd(args: string[]): number {
   }
 }
 
+function closeDatabaseWithoutThrow(db: Database | undefined): boolean {
+  if (!db?.open) return true;
+  try {
+    db.close();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function runBackupCmd(args: string[]): Promise<number> {
   const dest = args[0];
   if (!dest) {
     console.log(USAGE);
     return 2;
   }
-  const dataDir = resolveDataDir();
-  const db = openDatabase(databasePath(dataDir));
+  let db: Database | undefined;
   try {
+    const dataDir = resolveDataDir();
+    db = openDatabase(databasePath(dataDir));
     const result = await backupDatabase(db, dest);
+    if (!closeDatabaseWithoutThrow(db)) {
+      console.error('Backup failed: backup_failed');
+      return 1;
+    }
     console.log(`Backup written (${result.totalPages} page(s))`);
     return 0;
   } catch (err) {
-    console.error(`Backup failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    closeDatabaseWithoutThrow(db);
+    const code = err instanceof BackupValidationError ? err.code : 'backup_failed';
+    console.error(`Backup failed: ${code}`);
     return 1;
-  } finally {
-    db.close();
   }
 }
 
@@ -168,19 +185,23 @@ async function runRestoreCmd(args: string[]): Promise<number> {
     console.log(USAGE);
     return 2;
   }
-  const dataDir = resolveDataDir();
-  const dbPath = databasePath(dataDir);
-  const db = openDatabase(dbPath);
+  let db: Database | undefined;
   try {
+    const dataDir = resolveDataDir();
+    const dbPath = databasePath(dataDir);
+    db = openDatabase(dbPath);
     const restored = await restoreDatabase(db, dbPath, source);
-    restored.close();
+    if (!closeDatabaseWithoutThrow(restored)) {
+      console.error('Restore failed: restore_failed');
+      return 1;
+    }
     console.log('Database restored from backup');
     return 0;
   } catch (err) {
     if (err instanceof RestoreDatabaseError && err.recoveredDatabase?.open) {
-      err.recoveredDatabase.close();
-    } else if (db.open) {
-      db.close();
+      closeDatabaseWithoutThrow(err.recoveredDatabase);
+    } else {
+      closeDatabaseWithoutThrow(db);
     }
     const code =
       err instanceof RestoreDatabaseError
@@ -193,31 +214,61 @@ async function runRestoreCmd(args: string[]): Promise<number> {
   }
 }
 
+function commandFailureMessage(command: string | undefined): string {
+  switch (command) {
+    case 'import':
+      return 'Import failed: import_failed';
+    case 'delete':
+      return 'Delete failed: delete_failed';
+    case 'repair':
+      return 'Repair failed: repair_failed';
+    case 'backup':
+      return 'Backup failed: backup_failed';
+    case 'restore':
+      return 'Restore failed: restore_failed';
+    default:
+      return 'Command failed: command_failed';
+  }
+}
+
 export async function main(argv: string[]): Promise<number> {
   const args = [...argv];
   const cmd = args.shift();
-  const { rest, dataDir } = extractDataDirOverride(args);
-  if (dataDir) process.env['VELO_DATA_DIR'] = dataDir;
+  try {
+    const { rest, dataDir } = extractDataDirOverride(args);
+    if (dataDir) process.env['VELO_DATA_DIR'] = dataDir;
 
-  switch (cmd) {
-    case 'import':
-      return runImportCmd(rest);
-    case 'delete':
-      return runDeleteCmd(rest);
-    case 'repair':
-      return runRepairCmd(rest);
-    case 'backup':
-      return runBackupCmd(rest);
-    case 'restore':
-      return runRestoreCmd(rest);
-    default:
-      console.log(USAGE);
-      return 2;
+    switch (cmd) {
+      case 'import':
+        return runImportCmd(rest);
+      case 'delete':
+        return runDeleteCmd(rest);
+      case 'repair':
+        return runRepairCmd(rest);
+      case 'backup':
+        return runBackupCmd(rest);
+      case 'restore':
+        return runRestoreCmd(rest);
+      default:
+        console.log(USAGE);
+        return 2;
+    }
+  } catch {
+    console.error(commandFailureMessage(cmd));
+    return 1;
   }
 }
 
 // Only run as a side effect when invoked directly (`node index.ts ...`), not
 // when imported — e.g. by tests exercising `main()` in-process.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main(process.argv.slice(2)).then((code) => process.exit(code));
+  void main(process.argv.slice(2)).then(
+    (code) => {
+      process.exitCode = code;
+    },
+    () => {
+      console.error('Command failed: command_failed');
+      process.exitCode = 1;
+    },
+  );
 }

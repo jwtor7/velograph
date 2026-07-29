@@ -20,6 +20,14 @@
   in place.
 - While an older backup exists, when creating its replacement fails before or after install, the
   system shall preserve the older backup and clean the incomplete stage.
+- While backup requests in one or more processes target the same canonical path, when they
+  overlap, the system shall serialize them through cleanup so a failed earlier request cannot
+  delete or restore over a later success.
+- While the live database is open, when a backup destination names or aliases its main file,
+  `-wal`, `-shm`, or `-journal` sidecar, the system shall reject it before creating a stage.
+- While asynchronous backup staging is in progress, when the verified destination parent is
+  renamed or replaced with a symlink, the system shall reject the operation before final install
+  and shall not follow the replacement path during rollback or cleanup.
 - While an error crosses the database/API/CLI boundary, when it is reported, the system shall
   expose only a stable value-free code and shall not expose paths, SQL, or stored values.
 - While `app:stop` escalates to `SIGKILL`, when the process exits between the final identity check
@@ -55,14 +63,21 @@
 
 ### Backup replacement
 
-1. If a destination already exists, copy it to a unique `0600`, fsynced prior-snapshot artifact.
-2. Create a different unique sibling with mode `0600`; SQLite's backup API writes only to that
+1. Canonicalize the destination, capture its parent-directory device/inode identity, reject
+   live-database/sidecar conflicts, and acquire both the in-process operation turn and a
+   cross-process SQLite lock keyed by the canonical destination.
+2. If a destination already exists, copy it to a unique `0600`, fsynced prior-snapshot artifact.
+3. Create a different unique sibling with mode `0600`; SQLite's backup API writes only to that
    stage.
-3. Open the stage read-only, require canonical schema/integrity/migrations/foreign keys, close it,
+4. Open the stage read-only, require canonical schema/integrity/migrations/foreign keys, close it,
    remove sidecars, and fsync it.
-4. Atomically rename the validated stage over the destination and fsync the parent directory.
-5. If any post-install step fails, atomically reinstall the prior snapshot. If reinstall cannot be
-   proven, retain the private prior snapshot; never delete the only known-good older backup.
+5. Revalidate the canonical parent identity and live-database conflicts immediately before and
+   after atomically renaming the validated stage over the destination, then fsync the parent
+   directory.
+6. If any post-install step fails, copy the independent prior snapshot into a second private
+   install stage and atomically install that copy. Do not consume the original prior snapshot until
+   the rollback rename and parent-directory fsync are proven. If reinstall cannot be proven, retain
+   the private prior snapshot; never delete the only known-good older backup.
 
 ### Security
 
@@ -74,8 +89,21 @@
 - Stage and rollback files are never populated with process-default public permissions.
 - Existing permissive backup destinations cannot transfer their mode to new snapshots; every
   installed backup comes from a `0600` stage.
+- Live database and sidecar identities are not valid backup destinations.
+- Same-process requests for one canonical destination use an in-memory turn. Separate processes
+  additionally hold an exclusive transaction in a `0600` SQLite lock file, keyed by a SHA-256 of
+  the canonical destination inside a private `0700` OS-temp registry. SQLite releases that lock
+  when a process exits or crashes, and the lock contains no path, health data, or location data.
+- Backup staging rechecks the originally captured parent directory identity after every
+  asynchronous boundary and immediately around final install. Node/macOS does not expose
+  `renameat(2)` through the standard filesystem API, so the synchronous pre/post checks close
+  observable directory/symlink substitutions without adding a native dependency. Cleanup refuses
+  to follow a parent whose identity changed.
+- An installed-inode check remains defense in depth against a non-cooperating writer replacing the
+  destination after install.
 - API and CLI surfaces map all failures to stable codes; native filesystem and SQLite messages do
-  not cross the boundary.
+  not cross the boundary, including data-directory resolution, live-database open, and close
+  failures.
 - Restore remains protected by the loopback Host/Origin/CSRF controls and exclusive request barrier.
 
 ## Failure model
@@ -101,6 +129,15 @@
 - New and existing backup destinations, including an existing `0644` file, install only from a
   validated `0600` stage.
 - Injected backup-copy and post-install failures preserve the older backup and clean the stage.
+- Concurrent same-destination failure/success leaves the later success installed.
+- A separate-process failure/success barrier proves the second writer does not begin staging until
+  the first writer has completed rollback and cleanup.
+- Live database, sidecars, and hard-link aliases are rejected without disrupting the live handle.
+- Replacing the verified destination parent with a symlink during staging rejects before install
+  and leaves later live-handle writes present after reopen.
+- Failed rollback directory fsync leaves an independent private prior snapshot available.
+- A spawned CLI process facing a corrupt current database returns exactly a stable value-free code
+  without a native exception, stack, SQL, or path.
 - Failed original reopen leaves a separate canonical `0600` recovery snapshot and returns only
   `restore_recovery_failed`.
 - `SIGKILL` `ESRCH` race returns success without an uncaught error.

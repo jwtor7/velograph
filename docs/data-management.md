@@ -74,19 +74,28 @@ identical bytes → the ride comes back.
 
 `packages/db/src/backup.ts`:
 
-- `backupDatabase(db, destPath)` calls `guardAgainstCheckout(dirname(destPath))` — the same guard
-  `resolveDataDir` uses for `VELO_DATA_DIR` — before writing anything. It creates a unique sibling
-  with mode `0600`, writes that stage through `better-sqlite3`'s
+- `backupDatabase(db, destPath)` canonicalizes each destination, captures the verified parent
+  directory's device/inode identity, calls `guardAgainstCheckout` before writing anything, and
+  rejects the live database, its SQLite sidecars, and filesystem aliases as destinations. An
+  in-process turn and an exclusive SQLite transaction in a private OS-temp lock registry serialize
+  the canonical destination across API/CLI processes; the `0600` lock is keyed by a SHA-256 and
+  stores no path or ride data. It creates a unique sibling with mode `0600`, writes that stage
+  through `better-sqlite3`'s
   `Database.prototype.backup()` (SQLite's `sqlite3_backup_init`/`step`/`finish`), then verifies
   canonical schema, migration history, integrity, and foreign keys. The stage is closed, sidecars
-  removed, and file fsynced before one same-directory atomic rename installs it and the parent
-  directory is fsynced. The destination is never populated in place, including when an existing
-  destination is `0644`; the installed backup is always the private staged inode.
+  removed, and file fsynced. Backup revalidates the original parent identity and live-database
+  conflicts after asynchronous staging and immediately before and after the same-directory atomic
+  rename; if the parent changes, rollback and cleanup refuse to follow the replacement path. The
+  parent directory is fsynced after install. The destination is never populated in place, including
+  when an existing destination is `0644`; the installed backup is always the private staged inode.
 - When replacing an existing backup, the old file is first preserved in a separate unique `0600`,
-  fsynced sibling. A copy or validation failure leaves the original destination untouched. A
-  post-install failure reinstalls the preserved file atomically. If that reinstall itself cannot
-  be proven, Velograph retains the private prior snapshot rather than deleting the only known-good
-  backup. Completed and failed operations clean incomplete backup stages.
+  fsynced sibling. The cross-process destination lock remains held through rollback and cleanup, so
+  one failed request cannot restore over a later successful request. A copy or validation failure
+  leaves the original destination untouched. A post-install failure copies the preserved file to a
+  separate recovery stage, installs that copy atomically, and retains the original private snapshot
+  until the parent directory fsync succeeds. If reinstall cannot be proven, Velograph keeps the
+  independent prior snapshot rather than deleting the only known-good backup. Completed operations
+  and failures with a proven outcome clean their incomplete stages.
 - `restoreDatabase(liveDb, dbPath, backupPath)` opens the selected source once, read-only, then
   backs it into a uniquely named sibling stage through SQLite's backup API. Before touching the
   live handle, restore verifies SQLite integrity and requires the recorded migration names to be
@@ -111,10 +120,14 @@ identical bytes → the ride comes back.
   proven, the API returns only `restore_recovery_failed`, fails closed, and retains the separate
   canonical `0600` rollback sibling without exposing its path. Old `-wal`/`-shm`/`-journal`
   sidecars are removed only around a proven atomic outcome.
-- Restore failures cross API/CLI boundaries only as stable value-free codes such as
+- Backup and restore failures cross API/CLI boundaries only as stable value-free codes such as
+  `destination_inside_checkout`, `destination_conflicts_with_live_database`,
+  `invalid_backup_destination`,
   `invalid_backup_schema`, `invalid_backup_migrations`, `invalid_backup_foreign_keys`,
   `restore_cutover_failed`, `restore_reopen_failed`, or `restore_recovery_failed`; native
-  SQLite/filesystem messages, paths, SQL, and stored values are not returned.
+  SQLite/filesystem messages, paths, SQL, stored values, and stacks are not returned. The CLI's
+  final command boundary also covers data-directory resolution plus live-database open and close
+  failures.
 - The API places restore behind an exclusive request barrier. New non-health requests receive a
   privacy-safe `restore_in_progress` response while every earlier request drains. Async operations
   remain leased after a client disconnects, so SIGINT/SIGTERM stop new connections and wait for
@@ -128,13 +141,15 @@ identical bytes → the ride comes back.
   `pnpm app:stop` before running `velograph restore`; do not run API and CLI restore concurrently
   against the same data directory.
 
-Both directions are exercised end to end (round trip, and rejecting a backup path inside a git
-checkout), along with forged/incomplete/current/future migration histories, corrupt input,
-foreign-key failure, copy and migration failure, atomic replacement of an existing permissive
-backup, failed-backup preservation/cleanup, private artifact modes, original-mode preservation,
-failures before and after replacement install, replacement-open rollback, separate recovery
-retention when reopen cannot be proven, graceful WAL checkpoint/close, privacy-safe surface codes,
-and stop escalation/`ESRCH`, in
+Both directions are exercised end to end (round trip, checkout rejection, and live-database
+destination rejection), along with forged/incomplete/current/future migration histories, corrupt
+input, foreign-key failure, copy and migration failure, serialized atomic replacement of an
+existing permissive backup, failed-backup preservation/cleanup, independent prior-snapshot
+retention until directory durability, cross-process failure/success ordering, destination-parent
+symlink substitution, private artifact modes, original-mode preservation, failures before and after
+replacement install, replacement-open rollback, separate recovery retention when reopen cannot be
+proven, spawned-CLI corrupt-database handling, graceful WAL checkpoint/close, privacy-safe surface
+codes, and stop escalation/`ESRCH`, in
 `packages/db/src/backup.test.ts`, `packages/db/src/migrate.test.ts`,
 `apps/api/src/shutdown.test.ts`, `apps/api/src/shutdown-coordinator.test.ts`,
 `apps/api/src/data-management.test.ts`, `scripts/app.test.mjs`, and
