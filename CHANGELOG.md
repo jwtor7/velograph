@@ -15,7 +15,15 @@ is pre-1.0, and for the release procedure.
   `packages/**`, `apps/**`, or `scripts/**` to also update this file (with a documented
   escape hatch), and a corrected README quickstart (#39).
 
-## [0.1.0] - 2026-07-29
+### Fixed
+
+- README quickstart no longer walks a reader into importing synthetic fixtures into their
+  real `VELO_DATA_DIR`. The fixture-import step now sends data to an explicit throwaway
+  directory (`VELO_DATA_DIR=$(mktemp -d)`) and starts the API against that same directory,
+  with a warning that this matters because ride deletion isn't implemented yet (#38) — the
+  only way to undo an accidental import today is deleting the whole database (#39).
+
+## [0.1.0] - 2026-07-28
 
 Initial MVP: import a Health Auto Export CSV/GPX/ZIP, compute deterministic ride and
 conditioning metrics, browse rides and trends in a local web client, and generate AI

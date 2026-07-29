@@ -28,34 +28,40 @@ pnpm install                            # install workspace dependencies
 pnpm --filter @velograph/web build      # build the web client (required before the API can serve it)
 ```
 
-### Where your data lives
+### Try it with the synthetic fixtures
 
-All persistent state — the SQLite database, quarantined import files — lives in
-`VELO_DATA_DIR`, never inside this checkout. It's optional: left unset, Velograph picks an
-OS-appropriate application-data directory (e.g. `~/Library/Application Support/velograph` on
-macOS, `%APPDATA%\velograph` on Windows, `$XDG_DATA_HOME/velograph` on Linux). Either way, a
-`VELO_DATA_DIR` that resolves inside a git checkout is refused at startup — set one
-explicitly if you'd rather choose the location yourself:
+**Do not import the synthetic fixtures into a data directory that holds real rides.**
+There is no way to remove a ride yet (deletion is unimplemented, tracked in issue #38) — the
+only way to undo an accidental import today is deleting the whole database. Point this
+walkthrough at an explicit throwaway directory instead, so it can't touch real data:
 
 ```bash
-export VELO_DATA_DIR=~/velograph-data   # anywhere outside this repo; optional
-```
-
-Import some rides. Use the committed synthetic fixtures to try it without any real data, or
-point at a real [Health Auto Export](https://www.healthyapps.dev/) folder/ZIP:
-
-```bash
+export VELO_DATA_DIR=$(mktemp -d)                        # throwaway directory for this demo
 node apps/cli/src/index.ts import fixtures/synthetic/rides
-```
-
-Start the API — it binds `127.0.0.1:5123` by default and serves the built web client from
-that same origin:
-
-```bash
 node apps/api/src/main.ts
 ```
 
-Then open `http://127.0.0.1:5123` in your browser.
+Then open `http://127.0.0.1:5123` in your browser. `VELO_DATA_DIR` stays set for the rest of
+this shell session, so the API command above serves the same fixture rides you just
+imported. Close the shell (or `unset VELO_DATA_DIR`) when you're done, and delete the
+temporary directory if you want to reclaim the space.
+
+### Import your own data
+
+When you're ready to use a real [Health Auto Export](https://www.healthyapps.dev/) export,
+start a fresh shell (so the throwaway `VELO_DATA_DIR` above is gone) and either set
+`VELO_DATA_DIR` explicitly to where your real database should live, or leave it unset —
+Velograph then picks an OS-appropriate application-data directory: `~/Library/Application
+Support/velograph` on macOS, `%APPDATA%\velograph` on Windows, or
+`$XDG_DATA_HOME/velograph` (falling back to `~/.local/share/velograph`) on Linux. Either way,
+all persistent state — the SQLite database, quarantined import files — lives there, never
+inside this checkout; a `VELO_DATA_DIR` that resolves inside a git checkout is refused at
+startup.
+
+```bash
+node apps/cli/src/index.ts import /path/to/your/health-auto-export
+node apps/api/src/main.ts
+```
 
 Run the test suite and the other checks CI runs:
 
