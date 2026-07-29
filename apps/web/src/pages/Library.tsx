@@ -169,7 +169,7 @@ export function Library() {
                     <button
                       className="btn"
                       style={{ padding: '4px 10px', fontSize: 12 }}
-                      aria-label={`Delete ride from ${fmtDate(w.startUtc)}`}
+                      aria-label={`Delete ride from ${fmtDate(w.startUtc, timeZone)}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         setPendingDelete(w);
@@ -196,8 +196,9 @@ export function Library() {
           body={
             <>
               <p style={{ margin: 0 }}>
-                This permanently removes the ride from {fmtDate(pendingDelete.startUtc)} — metric
-                samples, route, and analytics — from your local database.
+                This permanently removes the ride from{' '}
+                {fmtDate(pendingDelete.startUtc, timeZone)} — metric samples, route, and analytics
+                — from your local database.
               </p>
               <p style={{ margin: '8px 0 0', fontWeight: 600 }}>
                 This is irreversible unless you have a backup.

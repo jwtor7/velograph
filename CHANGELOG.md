@@ -15,10 +15,11 @@ is pre-1.0, and for the release procedure.
   the Velograph app version, current schema migration, included/excluded categories, and
   deterministic SHA-256 table checksums. Restore verifies the manifest, checksums, SQLite
   integrity, foreign keys, migration ordering, and migration content hashes before cutover, then
-  returns a value-free integrity report. Released filename-only migration histories are adopted
-  once and cryptographically pinned thereafter; altered applied migrations fail closed. The API
-  and CLI require explicit replacement confirmation, while known older backups remain restorable
-  through a reported compatibility migration (PRD §13).
+  returns a value-free integrity report. The filename-only v0.1.0 migration is adopted only while
+  its bundled SQL matches the immutable published digest; all other missing checksums, duplicate
+  sequence numbers, and altered applied migrations fail closed. The API and CLI require explicit
+  replacement confirmation, while known older backups remain restorable through a reported
+  compatibility migration (PRD §13).
 - **Interactive offline route maps** replace the static route image with a keyboard-, pointer-,
   and touch-operable geographic viewport with fit, scale, markers, preserved gaps, and the
   synchronized chart cursor. An optional, validated raster MBTiles package can be loaded only
@@ -39,6 +40,9 @@ is pre-1.0, and for the release procedure.
 
 ### Fixed
 
+- **Ride deletion now uses the configured timezone everywhere.** The visible ride date, delete
+  button accessible name, and irreversible-action confirmation no longer disagree when the
+  browser timezone differs from the Velograph display timezone.
 - **Keyboard and low-vision access no longer stops at core ride controls.** Confirmation dialogs
   now place and trap focus, close on Escape only when safe, and restore focus to their trigger.
   Synchronized time-series cursors expose slider semantics plus fine, page, and boundary keyboard
