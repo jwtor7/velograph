@@ -89,6 +89,51 @@ describe('pure chart specs (§9.3 determinism contract)', () => {
     }
   });
 
+  it('adds deterministic direction, distance, and scale context (ROUTE-003)', () => {
+    const spec = buildRouteSpec(
+      [
+        {
+          points: [
+            { lat: -48.5, lon: -123.5 },
+            { lat: -48.5, lon: -123.45 },
+            { lat: -48.48, lon: -123.4 },
+          ],
+        },
+      ],
+      560,
+      320,
+      24,
+    )!;
+    expect(spec.totalDistanceM).toBeGreaterThan(5_000);
+    expect(spec.directionMarkers).toHaveLength(3);
+    expect(spec.distanceMarkers.length).toBeGreaterThan(0);
+    expect(spec.distanceMarkers.every((marker) => marker.label.endsWith('km'))).toBe(true);
+    expect(spec.scaleBar.widthPx).toBeGreaterThan(0);
+    expect(spec.scaleBar.label.length).toBeGreaterThan(0);
+  });
+
+  it('does not count a preserved segment gap as route distance', () => {
+    const withGap = buildRouteSpec(
+      [
+        {
+          points: [
+            { lat: -48.5, lon: -123.5 },
+            { lat: -48.5, lon: -123.49 },
+          ],
+        },
+        {
+          points: [
+            { lat: -48.5, lon: -123.0 },
+            { lat: -48.5, lon: -122.99 },
+          ],
+        },
+      ],
+      560,
+      320,
+    )!;
+    expect(withGap.totalDistanceM).toBeLessThan(2_000);
+  });
+
   it('cursor mapping: timeAtX and valueAt interpolate', () => {
     expect(timeAtX(150, 300, 0, 1000)).toBe(500);
     const v = valueAt(

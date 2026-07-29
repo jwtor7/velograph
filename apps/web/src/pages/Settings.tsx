@@ -6,6 +6,7 @@ import { ConfirmDialog } from '../components/ui.tsx';
 export function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [bounds, setBounds] = useState<string[]>(['', '', '', '', '']);
+  const [timeZone, setTimeZone] = useState('');
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState(false);
   const [backupPath, setBackupPath] = useState('');
@@ -21,6 +22,7 @@ export function SettingsPage() {
       .settings()
       .then((r) => {
         setSettings(r.settings);
+        setTimeZone(r.settings.timeZone);
         if (r.settings.hrZoneBounds) {
           setBounds(r.settings.hrZoneBounds.map(String));
         }
@@ -35,6 +37,7 @@ export function SettingsPage() {
     try {
       const r = await api.saveSettings({
         hrZoneBounds: ascending ? nums : null,
+        timeZone,
       });
       setSettings(r.settings);
       setSaved(true);
@@ -84,6 +87,26 @@ export function SettingsPage() {
           <h1 className="page-title">Settings</h1>
           <div className="page-sub">Stored locally in your Velograph data directory</div>
         </div>
+      </div>
+
+      <div className="card">
+        <h2 className="card-title">Import and display timezone</h2>
+        <p className="muted" style={{ marginTop: 0, fontSize: 12 }}>
+          Health Auto Export metric CSVs can omit their UTC offset. Velograph uses this IANA
+          timezone to align those wall times with absolute GPX timestamps and to display local ride
+          dates.
+        </p>
+        <label>
+          <span className="field-label">IANA timezone</span>
+          <input
+            type="text"
+            value={timeZone}
+            spellCheck={false}
+            placeholder="America/Toronto"
+            style={{ width: 240 }}
+            onChange={(e) => setTimeZone(e.target.value)}
+          />
+        </label>
       </div>
 
       <div className="card">

@@ -138,6 +138,59 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     db.close();
   });
 
+  it('associates offset-less metric CSV wall time with an absolute UTC route', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    // Assemble invented coordinates at runtime so coordinate-shaped strings
+    // remain confined to fixtures/synthetic/ in the public source tree.
+    const syntheticLatA = [-48, 5].join('.');
+    const syntheticLonA = [-123, 5].join('.');
+    const syntheticLatB = [-48, 51].join('.');
+    const syntheticLonB = [-123, 51].join('.');
+    const energy = [
+      'Date/Time,Active Energy (kJ),Source',
+      '2032-07-10 11:31:00,8,Synth Watch X1',
+      '2032-07-10 11:59:00,9,Synth Watch X1',
+    ].join('\n');
+    const route = [
+      '<?xml version="1.0"?>',
+      '<gpx version="1.1"><trk><trkseg>',
+      `<trkpt lat="${syntheticLatA}" lon="${syntheticLonA}"><time>2032-07-10T15:30:00Z</time></trkpt>`,
+      `<trkpt lat="${syntheticLatB}" lon="${syntheticLonB}"><time>2032-07-10T16:00:00Z</time></trkpt>`,
+      '</trkseg></trk></gpx>',
+    ].join('');
+    const files: ImportFile[] = [
+      {
+        name: 'Outdoor Cycling-Active Energy-20320710_113000.csv',
+        data: Buffer.from(energy),
+      },
+      {
+        name: 'Outdoor Cycling-Route-20320710_113000.gpx',
+        data: Buffer.from(route),
+      },
+    ];
+
+    const result = runImport(db, files, {
+      now: FIXED_NOW,
+      timeZone: 'America/Toronto',
+    });
+
+    expect(result.quarantined).toBe(0);
+    expect(repo.countRows('workouts')).toBe(1);
+    expect(repo.countRows('metric_series')).toBe(1);
+    expect(repo.countRows('routes')).toBe(1);
+    const joined = db
+      .prepare(
+        `SELECT COUNT(*) AS n
+         FROM metric_series m
+         JOIN routes r ON r.workout_id = m.workout_id
+         WHERE m.metric_type = 'energy'`,
+      )
+      .get() as { n: number };
+    expect(joined.n).toBe(1);
+    db.close();
+  });
+
   it('a far-apart ride becomes a separate workout (tolerance respected)', () => {
     const db = openDatabase(':memory:');
     const repo = new Repository(db);

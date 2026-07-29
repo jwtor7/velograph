@@ -98,11 +98,89 @@ export interface RouteSpec {
   /** Projected [x, y] for start and finish markers. */
   start: [number, number] | null;
   finish: [number, number] | null;
+  /** Cumulative-distance labels sampled along recorded segments only. */
+  distanceMarkers: { distanceM: number; label: string; position: [number, number] }[];
+  /** Direction chevrons sampled along recorded segments only. */
+  directionMarkers: { position: [number, number]; angleDeg: number }[];
+  /** A geographic scale bar derived from the route projection. */
+  scaleBar: { distanceM: number; label: string; widthPx: number };
+  totalDistanceM: number;
   w: number;
   h: number;
   /** Map a route point index (flat) to projected coordinates. */
   project: (lat: number, lon: number) => [number, number];
 }
+
+const EARTH_RADIUS_M = 6_371_000;
+
+function routeDistanceM(a: RoutePointIn, b: RoutePointIn): number {
+  const toRad = Math.PI / 180;
+  const lat1 = a.lat * toRad;
+  const lat2 = b.lat * toRad;
+  const dLat = (b.lat - a.lat) * toRad;
+  const dLon = (b.lon - a.lon) * toRad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function niceDistance(targetM: number, mode: 'nearest' | 'floor' = 'nearest'): number {
+  if (!Number.isFinite(targetM) || targetM <= 0) return 1;
+  const power = 10 ** Math.floor(Math.log10(targetM));
+  const normalized = targetM / power;
+  const choices = [1, 2, 5, 10];
+  if (mode === 'floor') {
+    const factor = [...choices].reverse().find((choice) => choice <= normalized) ?? 1;
+    return factor * power;
+  }
+  const factor = choices.reduce((best, choice) =>
+    Math.abs(choice - normalized) < Math.abs(best - normalized) ? choice : best,
+  );
+  return factor * power;
+}
+
+interface LocatedRoutePoint {
+  point: RoutePointIn;
+  previous: RoutePointIn;
+}
+
+function locateAtDistance(
+  segments: { points: RoutePointIn[] }[],
+  targetM: number,
+): LocatedRoutePoint | null {
+  let traversedM = 0;
+  for (const segment of segments) {
+    for (let i = 1; i < segment.points.length; i++) {
+      const a = segment.points[i - 1]!;
+      const b = segment.points[i]!;
+      const edgeM = routeDistanceM(a, b);
+      if (edgeM > 0 && traversedM + edgeM >= targetM) {
+        const ratio = Math.max(0, Math.min(1, (targetM - traversedM) / edgeM));
+        return {
+          previous: a,
+          point: {
+            lat: a.lat + (b.lat - a.lat) * ratio,
+            lon: a.lon + (b.lon - a.lon) * ratio,
+          },
+        };
+      }
+      traversedM += edgeM;
+    }
+  }
+  return null;
+}
+
+function totalRecordedDistanceM(segments: { points: RoutePointIn[] }[]): number {
+  let total = 0;
+  for (const segment of segments) {
+    for (let i = 1; i < segment.points.length; i++) {
+      total += routeDistanceM(segment.points[i - 1]!, segment.points[i]!);
+    }
+  }
+  return total;
+}
+
+const distanceLabel = (distanceM: number): string =>
+  distanceM >= 1000 ? `${r2(distanceM / 1000)} km` : `${Math.round(distanceM)} m`;
 
 /**
  * Equirectangular projection scaled to fit, aspect-corrected by the mean
@@ -149,10 +227,48 @@ export function buildRouteSpec(
   const first = segments.find((s) => s.points.length > 0)?.points[0] ?? null;
   const lastSeg = [...segments].reverse().find((s) => s.points.length > 0);
   const last = lastSeg ? lastSeg.points[lastSeg.points.length - 1]! : null;
+  const totalDistanceM = totalRecordedDistanceM(segments);
+  const markerStepM = niceDistance(totalDistanceM / 4);
+  const distanceMarkers: RouteSpec['distanceMarkers'] = [];
+  for (let distanceM = markerStepM; distanceM < totalDistanceM; distanceM += markerStepM) {
+    const located = locateAtDistance(segments, distanceM);
+    if (!located) continue;
+    distanceMarkers.push({
+      distanceM,
+      label: distanceLabel(distanceM),
+      position: project(located.point.lat, located.point.lon),
+    });
+  }
+
+  const directionMarkers: RouteSpec['directionMarkers'] = [];
+  if (totalDistanceM > 0) {
+    for (const fraction of [0.25, 0.5, 0.75]) {
+      const located = locateAtDistance(segments, totalDistanceM * fraction);
+      if (!located) continue;
+      const from = project(located.previous.lat, located.previous.lon);
+      const to = project(located.point.lat, located.point.lon);
+      directionMarkers.push({
+        position: to,
+        angleDeg: r2((Math.atan2(to[1] - from[1], to[0] - from[0]) * 180) / Math.PI),
+      });
+    }
+  }
+
+  const metersPerPixel = 111_320 / scale;
+  const scaleDistanceM = niceDistance(metersPerPixel * 90, 'floor');
+  const scaleBar = {
+    distanceM: scaleDistanceM,
+    label: distanceLabel(scaleDistanceM),
+    widthPx: r2(scaleDistanceM / metersPerPixel),
+  };
   return {
     segmentPaths,
     start: first ? project(first.lat, first.lon) : null,
     finish: last ? project(last.lat, last.lon) : null,
+    distanceMarkers,
+    directionMarkers,
+    scaleBar,
+    totalDistanceM,
     w,
     h,
     project,

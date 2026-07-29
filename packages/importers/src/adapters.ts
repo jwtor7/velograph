@@ -34,6 +34,11 @@ export interface FilenameInfo {
   label: string;
 }
 
+export interface AdapterOptions {
+  /** IANA timezone for Health Auto Export CSV wall times that omit an offset. */
+  timeZone?: string;
+}
+
 /** Classify a Health Auto Export-shaped filename. Returns null when unrecognized. */
 export function parseHaeFilename(name: string): FilenameInfo | null {
   const m = /^(Outdoor|Indoor) Cycling-(.+?)-(\d{8}_\d{6})\.(csv|gpx)$/i.exec(name.trim());
@@ -59,15 +64,19 @@ interface CsvShape {
 const CSV_SHAPES: CsvShape[] = [
   {
     metric: 'heart_rate',
-    value: ['avgbpm', 'avg', 'heartratebpm', 'bpm'],
-    min: ['minbpm', 'min'],
-    max: ['maxbpm', 'max'],
+    value: ['avgbpm', 'avgcount/min', 'avg', 'heartratebpm', 'bpm'],
+    min: ['minbpm', 'mincount/min', 'min'],
+    max: ['maxbpm', 'maxcount/min', 'max'],
     toCanonical: (v) => v,
   },
-  { metric: 'cadence', value: ['cadencerpm', 'cadence', 'rpm'], toCanonical: (v) => v },
+  {
+    metric: 'cadence',
+    value: ['cadencerpm', 'cyclingcadencecount/min', 'cadence', 'rpm'],
+    toCanonical: (v) => v,
+  },
   {
     metric: 'distance',
-    value: ['distancekm', 'distance'],
+    value: ['cyclingdistancekm', 'distancekm', 'distance'],
     toCanonical: (v) => v * 1000, // km → m
   },
   {
@@ -80,7 +89,7 @@ const CSV_SHAPES: CsvShape[] = [
 const ROUTE_CSV_HEADERS = ['timestamp', 'latitude', 'longitude'];
 
 /** Parse a Health Auto Export CSV (metric or route) into normalized form. */
-export function parseHaeCsv(name: string, text: string): ParsedFile {
+export function parseHaeCsv(name: string, text: string, options: AdapterOptions = {}): ParsedFile {
   const info = parseHaeFilename(name);
   if (!info) throw new AdapterError('unsupported_file_type', 'filename not recognized');
   if (text.trim() === '') throw new AdapterError('empty_file', 'file is empty');
@@ -99,7 +108,7 @@ export function parseHaeCsv(name: string, text: string): ParsedFile {
   if (tIdx === -1) throw new AdapterError('unrecognized_headers', 'no timestamp column');
 
   if (ROUTE_CSV_HEADERS.every((h) => header.includes(h))) {
-    return parseRouteCsvRows(info, rows, header);
+    return parseRouteCsvRows(info, rows, header, options);
   }
 
   const shape = CSV_SHAPES.find((s) => idx(s.value) !== -1);
@@ -114,7 +123,7 @@ export function parseHaeCsv(name: string, text: string): ParsedFile {
   let source: string | null = null;
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i]!;
-    const t = parseInstant(row[tIdx] ?? '');
+    const t = parseInstant(row[tIdx] ?? '', { defaultTimeZone: options.timeZone ?? null });
     const v = Number(row[vIdx]);
     if (t == null || !Number.isFinite(v)) continue;
     const s: MetricSample = { t, value: shape.toCanonical(v) };
@@ -133,7 +142,12 @@ export function parseHaeCsv(name: string, text: string): ParsedFile {
   return { kind: 'metric', metric: shape.metric, workoutType: info.workoutType, source, samples };
 }
 
-function parseRouteCsvRows(info: FilenameInfo, rows: string[][], header: string[]): ParsedFile {
+function parseRouteCsvRows(
+  info: FilenameInfo,
+  rows: string[][],
+  header: string[],
+  options: AdapterOptions,
+): ParsedFile {
   const col = (n: string) => header.indexOf(n);
   const tIdx = col('timestamp');
   const latIdx = col('latitude');
@@ -147,7 +161,7 @@ function parseRouteCsvRows(info: FilenameInfo, rows: string[][], header: string[
   const points = [];
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i]!;
-    const t = parseInstant(row[tIdx] ?? '');
+    const t = parseInstant(row[tIdx] ?? '', { defaultTimeZone: options.timeZone ?? null });
     const lat = Number(row[latIdx]);
     const lon = Number(row[lonIdx]);
     if (t == null || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;

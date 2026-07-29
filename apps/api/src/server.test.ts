@@ -158,13 +158,28 @@ describe('loopback API', () => {
     const put = await fetch(`${base}/api/settings`, {
       method: 'PUT',
       headers,
-      body: JSON.stringify({ settings: { hrZoneBounds: [110, 125, 140, 155, 170] } }),
+      body: JSON.stringify({
+        settings: {
+          hrZoneBounds: [110, 125, 140, 155, 170],
+          timeZone: 'America/Toronto',
+        },
+      }),
     });
     expect(put.status).toBe(200);
     const got = (await (await fetch(`${base}/api/settings`)).json()) as {
-      settings: { hrZoneBounds: number[] };
+      settings: { hrZoneBounds: number[]; timeZone: string };
     };
     expect(got.settings.hrZoneBounds).toEqual([110, 125, 140, 155, 170]);
+    expect(got.settings.timeZone).toBe('America/Toronto');
+  });
+
+  it('rejects an invalid import timezone', async () => {
+    const res = await fetch(`${base}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-velograph-request': '1' },
+      body: JSON.stringify({ settings: { timeZone: 'Not/A_Zone' } }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it('404s unknown API routes', async () => {

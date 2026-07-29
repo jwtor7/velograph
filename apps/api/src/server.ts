@@ -272,7 +272,7 @@ function route(
           send(res, 400, { error: 'no_files' });
           return;
         }
-        const result = runImport(db, files, { now: now() });
+        const result = runImport(db, files, { now: now(), timeZone: loadSettings(db).timeZone });
         send(res, 200, { result });
       })
       .catch(() => send(res, 400, { error: 'invalid_body' }));

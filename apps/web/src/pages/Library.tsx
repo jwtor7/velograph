@@ -14,6 +14,9 @@ export function Library() {
   const [minKm, setMinKm] = useState('');
   const [pendingDelete, setPendingDelete] = useState<WorkoutSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [timeZone, setTimeZone] = useState(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  );
   const navigate = useNavigate();
 
   const load = () =>
@@ -24,6 +27,10 @@ export function Library() {
 
   useEffect(() => {
     load();
+    api
+      .settings()
+      .then((r) => setTimeZone(r.settings.timeZone))
+      .catch(() => {});
   }, []);
 
   const confirmDelete = async () => {
@@ -132,7 +139,7 @@ export function Library() {
                   onClick={() => navigate(`/rides/${w.id}`)}
                   onKeyDown={(e) => e.key === 'Enter' && navigate(`/rides/${w.id}`)}
                 >
-                  <td>{fmtDate(w.startUtc)}</td>
+                  <td>{fmtDate(w.startUtc, timeZone)}</td>
                   <td>{fmtDuration(w.durationS)}</td>
                   <td>
                     {fmtKm(w.distanceM)} <span className="muted">km</span>

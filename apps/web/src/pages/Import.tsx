@@ -18,6 +18,7 @@ export function ImportPage() {
   const [result, setResult] = useState<ImportResultBody | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   const addFiles = (files: FileList | File[]) => {
     const list = [...files].filter((f) => /\.(csv|gpx|zip)$/i.test(f.name));
@@ -59,8 +60,8 @@ export function ImportPage() {
         <div>
           <h1 className="page-title">Import from Apple Health</h1>
           <div className="page-sub">
-            Health Auto Export CSV, GPX, or ZIP · files are read locally and never leave this
-            machine
+            Health Auto Export folder, CSV, GPX, or ZIP · files are read locally and never leave
+            this machine
           </div>
         </div>
         <span className="pill">Local-first · Offline</span>
@@ -89,9 +90,46 @@ export function ImportPage() {
             browse
           </span>
         </p>
-        <p style={{ margin: '6px 0 0', fontSize: 12 }}>.csv · .gpx · .zip</p>
+        <p className="muted" style={{ margin: '6px 0 12px', fontSize: 12 }}>
+          One CSV contains one metric. Choose the export folder or all companion files for a
+          complete ride.
+        </p>
+        <div className="row" style={{ justifyContent: 'center' }}>
+          <button
+            type="button"
+            className="btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              inputRef.current?.click();
+            }}
+          >
+            Choose files
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              folderInputRef.current?.click();
+            }}
+          >
+            Choose export folder
+          </button>
+        </div>
+        <p style={{ margin: '10px 0 0', fontSize: 11 }}>.csv · .gpx · .zip</p>
         <input
           ref={inputRef}
+          type="file"
+          accept={ACCEPT}
+          multiple
+          hidden
+          onChange={(e) => e.target.files && addFiles(e.target.files)}
+        />
+        <input
+          ref={(node) => {
+            folderInputRef.current = node;
+            node?.setAttribute('webkitdirectory', '');
+          }}
           type="file"
           accept={ACCEPT}
           multiple

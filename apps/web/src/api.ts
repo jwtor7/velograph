@@ -99,6 +99,7 @@ export interface TrendsResponse {
 }
 
 export interface Settings {
+  timeZone: string;
   hrZoneBounds: number[] | null;
   movingSpeedThresholdMs: number;
   minCoverageForEfficiency: number;

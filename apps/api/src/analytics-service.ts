@@ -7,17 +7,28 @@ import {
   type AnalyticsSettings,
   type RideAnalytics,
 } from '@velograph/analytics';
-import { sha256Hex, stableStringify } from '@velograph/shared';
+import { isValidTimeZone, sha256Hex, stableStringify, systemTimeZone } from '@velograph/shared';
 import { Repository } from '@velograph/db';
 
 export const SETTINGS_KEY = 'analytics';
 
-export function loadSettings(db: Database): AnalyticsSettings {
-  const stored = new Repository(db).getSetting<Partial<AnalyticsSettings>>(SETTINGS_KEY);
-  return { ...DEFAULT_ANALYTICS_SETTINGS, ...(stored ?? {}) };
+export interface AppSettings extends AnalyticsSettings {
+  /** IANA timezone for offset-less imports and local date/time display. */
+  timeZone: string;
 }
 
-export function saveSettings(db: Database, settings: AnalyticsSettings): void {
+export function loadSettings(db: Database): AppSettings {
+  const stored = new Repository(db).getSetting<Partial<AppSettings>>(SETTINGS_KEY);
+  const requestedZone = stored?.timeZone;
+  const timeZone =
+    typeof requestedZone === 'string' && isValidTimeZone(requestedZone)
+      ? requestedZone
+      : systemTimeZone();
+  return { ...DEFAULT_ANALYTICS_SETTINGS, ...(stored ?? {}), timeZone };
+}
+
+export function saveSettings(db: Database, settings: AppSettings): void {
+  if (!isValidTimeZone(settings.timeZone)) throw new Error('invalid_time_zone');
   new Repository(db).setSetting(SETTINGS_KEY, settings);
 }
 

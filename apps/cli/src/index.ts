@@ -24,6 +24,7 @@ import {
 } from '@velograph/db';
 import { repairWorkout } from '@velograph/api';
 import { runImport, type ImportFile } from '@velograph/importers';
+import { systemTimeZone } from '@velograph/shared';
 
 const USAGE = [
   'Usage:',
@@ -76,7 +77,7 @@ function runImportCmd(args: string[]): number {
       console.error('No importable files found (.csv, .gpx, .zip)');
       return 2;
     }
-    const result = runImport(db, files);
+    const result = runImport(db, files, { timeZone: systemTimeZone() });
     console.log(
       [
         `Batch ${result.batchId} committed`,
