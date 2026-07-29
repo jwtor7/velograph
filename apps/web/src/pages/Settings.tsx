@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type Settings } from '../api.ts';
 import { ConfirmDialog } from '../components/ui.tsx';
+import { validateZoneBoundsDraft } from '../settings-form.ts';
 
 /** Settings: HR zones (user-authoritative, never inferred) + thresholds. */
 export function SettingsPage() {
@@ -8,7 +9,9 @@ export function SettingsPage() {
   const [bounds, setBounds] = useState<string[]>(['', '', '', '', '']);
   const [timeZone, setTimeZone] = useState('');
   const [saved, setSaved] = useState(false);
-  const [error, setError] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [zoneError, setZoneError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [backupPath, setBackupPath] = useState('');
   const [restorePath, setRestorePath] = useState('');
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
@@ -27,22 +30,34 @@ export function SettingsPage() {
           setBounds(r.settings.hrZoneBounds.map(String));
         }
       })
-      .catch(() => setError(true));
+      .catch(() => setLoadFailed(true));
   }, []);
 
   const save = async () => {
     setSaved(false);
-    const nums = bounds.map(Number).filter((n) => Number.isFinite(n) && n > 0);
-    const ascending = nums.length === 5 && nums.every((n, i) => i === 0 || n > nums[i - 1]!);
+    const zoneDraft = validateZoneBoundsDraft(bounds);
+    if (zoneDraft.error) {
+      setZoneError(zoneDraft.error);
+      setSaveError(null);
+      return;
+    }
+    if (!timeZone.trim()) {
+      setSaveError('Enter a valid IANA timezone.');
+      return;
+    }
     try {
       const r = await api.saveSettings({
-        hrZoneBounds: ascending ? nums : null,
-        timeZone,
+        hrZoneBounds: zoneDraft.value,
+        timeZone: timeZone.trim(),
       });
       setSettings(r.settings);
+      setTimeZone(r.settings.timeZone);
+      setBounds(r.settings.hrZoneBounds?.map(String) ?? ['', '', '', '', '']);
+      setZoneError(null);
+      setSaveError(null);
       setSaved(true);
     } catch {
-      setError(true);
+      setSaveError('Settings were not saved. Check the timezone and zone boundaries.');
     }
   };
 
@@ -83,7 +98,7 @@ export function SettingsPage() {
     }
   };
 
-  if (error) return <p className="muted">The local API is not reachable.</p>;
+  if (loadFailed) return <p className="muted">The local API is not reachable.</p>;
   if (!settings) return <p className="muted">Loading…</p>;
 
   return (
@@ -110,7 +125,11 @@ export function SettingsPage() {
             spellCheck={false}
             placeholder="America/Toronto"
             style={{ width: 240 }}
-            onChange={(e) => setTimeZone(e.target.value)}
+            onChange={(e) => {
+              setTimeZone(e.target.value);
+              setSaved(false);
+              setSaveError(null);
+            }}
           />
         </label>
       </div>
@@ -132,14 +151,31 @@ export function SettingsPage() {
                 value={b}
                 min="40"
                 max="230"
+                aria-invalid={zoneError !== null}
+                aria-describedby="zone-bounds-status"
                 style={{ width: 76 }}
-                onChange={(e) =>
-                  setBounds((prev) => prev.map((p, j) => (j === i ? e.target.value : p)))
-                }
+                onChange={(e) => {
+                  const next = bounds.map((previous, index) =>
+                    index === i ? e.target.value : previous,
+                  );
+                  setBounds(next);
+                  setSaved(false);
+                  setZoneError(validateZoneBoundsDraft(next).error);
+                  setSaveError(null);
+                }}
               />
             </label>
           ))}
         </div>
+        <p
+          id="zone-bounds-status"
+          className="muted"
+          role="status"
+          aria-live="polite"
+          style={{ fontSize: 12, margin: '8px 0 0', minHeight: '1.2em' }}
+        >
+          {zoneError ?? ''}
+        </p>
       </div>
 
       <div className="card">
@@ -171,6 +207,14 @@ export function SettingsPage() {
         </button>
         {saved && <span style={{ color: 'var(--vg-brand-green)', fontSize: 12 }}>Saved</span>}
       </div>
+      <p
+        className="muted"
+        role="status"
+        aria-live="polite"
+        style={{ margin: 0, minHeight: '1.2em' }}
+      >
+        {saveError ?? ''}
+      </p>
 
       <div className="card">
         <h2 className="card-title">Data management</h2>

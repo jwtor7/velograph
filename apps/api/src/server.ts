@@ -16,7 +16,9 @@ import { inventoryFiles, runImport, type ImportFile } from '@velograph/importers
 import { APP_VERSION } from '@velograph/shared';
 import {
   getOrComputeAnalytics,
+  InvalidAppSettingsError,
   loadSettings,
+  mergeAppSettings,
   repairWorkout,
   saveSettings,
 } from './analytics-service.ts';
@@ -349,15 +351,31 @@ function route(
   if (method === 'PUT' && path === '/api/settings') {
     return readJsonBody(req, 1024 * 1024)
       .then((body) => {
-        const s = (body as { settings?: unknown }).settings;
-        if (!s || typeof s !== 'object') {
-          send(res, 400, { error: 'invalid_settings' });
-          return;
+        try {
+          if (
+            typeof body !== 'object' ||
+            body === null ||
+            Array.isArray(body) ||
+            Object.keys(body).length !== 1 ||
+            !Object.hasOwn(body, 'settings')
+          ) {
+            throw new InvalidAppSettingsError();
+          }
+          const patch = (body as { settings: unknown }).settings;
+          const merged = mergeAppSettings(loadSettings(db), patch);
+          const settings = saveSettings(db, merged);
+          send(res, 200, { settings });
+        } catch (error) {
+          if (error instanceof InvalidAppSettingsError) {
+            send(res, 400, { error: 'invalid_settings' });
+            return;
+          }
+          send(res, 500, { error: 'internal_error' });
         }
-        saveSettings(db, { ...loadSettings(db), ...(s as object) });
-        send(res, 200, { settings: loadSettings(db) });
       })
-      .catch(() => send(res, 400, { error: 'invalid_body' }));
+      .catch(() => {
+        if (!res.headersSent) send(res, 400, { error: 'invalid_body' });
+      });
     return;
   }
 

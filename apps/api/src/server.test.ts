@@ -185,6 +185,47 @@ describe('loopback API', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects invalid analytics setting patches atomically', async () => {
+    const before = (await (await fetch(`${base}/api/settings`)).json()) as {
+      settings: Record<string, unknown>;
+    };
+    const headers = { 'Content-Type': 'application/json', 'x-velograph-request': '1' };
+    const invalidPatches = [
+      { movingSpeedThresholdMs: null },
+      { movingSpeedThresholdMs: '1' },
+      { movingSpeedThresholdMs: -1 },
+      { minCoverageForEfficiency: 0 },
+      { elevationHysteresisM: 101 },
+      { hrZoneBounds: [90, 130, 130, 150, 170] },
+      { hrZoneBounds: [90, 140, 130, 150, 170] },
+      { unexpectedSetting: true },
+    ];
+
+    for (const settings of invalidPatches) {
+      const response = await fetch(`${base}/api/settings`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ settings }),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: 'invalid_settings' });
+    }
+    const after = (await (await fetch(`${base}/api/settings`)).json()) as {
+      settings: Record<string, unknown>;
+    };
+    expect(after).toEqual(before);
+  });
+
+  it('rejects unexpected settings request-envelope keys', async () => {
+    const response = await fetch(`${base}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-velograph-request': '1' },
+      body: JSON.stringify({ settings: {}, unexpected: true }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'invalid_settings' });
+  });
+
   it('surfaces an analytics snapshot conflict without exposing stored values', async () => {
     const conflictDb = openDatabase(':memory:');
     const repo = new Repository(conflictDb);

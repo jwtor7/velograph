@@ -49,7 +49,7 @@
 
 - [x] Load complete nullable route input and preserve all boundaries (#20).
 - [x] Make analytics snapshots immutable and replay-safe (#21).
-- [ ] Add strict shared analytics settings validation and accessible UI feedback (#22).
+- [x] Add strict shared analytics settings validation and accessible UI feedback (#22).
 - [ ] Implement analytics-v2 bounded weighting, splits, zones, and moving-time decoupling
       (#18, #19, #29, analytics half of #53).
 - [ ] Preserve unavailable trend values as gaps (#27).

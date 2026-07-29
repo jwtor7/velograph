@@ -63,6 +63,11 @@ is pre-1.0, and for the release procedure.
   are idempotent cache hits, while a differing result for the same formula, settings, and input
   hashes raises a value-free integrity error without changing the original result or creation
   timestamp (#21).
+- **Analytics settings now fail closed before storage or computation.** One shared runtime parser
+  rejects unknown keys, wrong types, non-finite or out-of-range thresholds, invalid timezones, and
+  implausible, duplicate, or unordered heart-rate boundaries without partial writes. The Settings
+  screen now treats five blank zones as an explicit disable action and announces partial or invalid
+  drafts instead of silently converting them to `null` (#22).
 - **Large and partially timed routes render safely and stay synchronized.** Route bounds now use
   one bounded pass instead of spreading every coordinate into `Math.min`/`Math.max`, including
   the persisted route summary. Elevation keeps recorded segment gaps, uses the ride's full time

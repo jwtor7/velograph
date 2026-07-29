@@ -4,6 +4,8 @@ import {
   computeRideAnalytics,
   DEFAULT_ANALYTICS_SETTINGS,
   FORMULA_VERSION,
+  InvalidAnalyticsSettingsError,
+  parseAnalyticsSettings,
   type AnalyticsSettings,
   type RideAnalytics,
 } from '@velograph/analytics';
@@ -17,19 +19,78 @@ export interface AppSettings extends AnalyticsSettings {
   timeZone: string;
 }
 
-export function loadSettings(db: Database): AppSettings {
-  const stored = new Repository(db).getSetting<Partial<AppSettings>>(SETTINGS_KEY);
-  const requestedZone = stored?.timeZone;
-  const timeZone =
-    typeof requestedZone === 'string' && isValidTimeZone(requestedZone)
-      ? requestedZone
-      : systemTimeZone();
-  return { ...DEFAULT_ANALYTICS_SETTINGS, ...(stored ?? {}), timeZone };
+const APP_SETTING_KEYS = [
+  'hrZoneBounds',
+  'movingSpeedThresholdMs',
+  'minCoverageForEfficiency',
+  'elevationHysteresisM',
+  'timeZone',
+] as const;
+
+export class InvalidAppSettingsError extends Error {
+  readonly code = 'invalid_settings';
+
+  constructor() {
+    super('invalid_settings');
+    this.name = 'InvalidAppSettingsError';
+  }
 }
 
-export function saveSettings(db: Database, settings: AppSettings): void {
-  if (!isValidTimeZone(settings.timeZone)) throw new Error('invalid_time_zone');
-  new Repository(db).setSetting(SETTINGS_KEY, settings);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function failAppSettings(): never {
+  throw new InvalidAppSettingsError();
+}
+
+/** Exact, value-free runtime parser shared by stored-setting loads and writes. */
+export function parseAppSettings(value: unknown): AppSettings {
+  if (!isRecord(value)) return failAppSettings();
+  const keys = Object.keys(value);
+  if (
+    keys.length !== APP_SETTING_KEYS.length ||
+    keys.some((key) => !APP_SETTING_KEYS.includes(key as never))
+  ) {
+    return failAppSettings();
+  }
+  let analytics: AnalyticsSettings;
+  try {
+    analytics = parseAnalyticsSettings({
+      hrZoneBounds: value['hrZoneBounds'],
+      movingSpeedThresholdMs: value['movingSpeedThresholdMs'],
+      minCoverageForEfficiency: value['minCoverageForEfficiency'],
+      elevationHysteresisM: value['elevationHysteresisM'],
+    });
+  } catch (error) {
+    if (error instanceof InvalidAnalyticsSettingsError) return failAppSettings();
+    throw error;
+  }
+  const timeZone = value['timeZone'];
+  if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) return failAppSettings();
+  return { ...analytics, timeZone };
+}
+
+export function mergeAppSettings(current: AppSettings, patch: unknown): AppSettings {
+  if (!isRecord(patch)) return failAppSettings();
+  if (Object.keys(patch).some((key) => !APP_SETTING_KEYS.includes(key as never))) {
+    return failAppSettings();
+  }
+  return parseAppSettings({ ...current, ...patch });
+}
+
+export function loadSettings(db: Database): AppSettings {
+  const stored = new Repository(db).getSetting<unknown>(SETTINGS_KEY);
+  const defaults = { ...DEFAULT_ANALYTICS_SETTINGS, timeZone: systemTimeZone() };
+  if (stored === undefined) return parseAppSettings(defaults);
+  if (!isRecord(stored)) return failAppSettings();
+  return parseAppSettings({ ...defaults, ...stored });
+}
+
+export function saveSettings(db: Database, settings: unknown): AppSettings {
+  const parsed = parseAppSettings(settings);
+  new Repository(db).setSetting(SETTINGS_KEY, parsed);
+  return parsed;
 }
 
 /**
