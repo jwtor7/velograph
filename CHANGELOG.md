@@ -9,6 +9,24 @@ is pre-1.0, and for the release procedure.
 
 ## [Unreleased]
 
+### Added
+
+- **Local server lifecycle commands**: `pnpm app:start`, `app:stop`, `app:status`, and
+  `app:restart`. `app:start` builds the web client, refuses to start when a server already
+  holds the port, and waits for the API to actually answer before reporting success.
+  `app:status` reports pid, port, data directory, ride count, and timezone, and is safe to
+  run when nothing is up. Previously there was no supported way to tell whether a server was
+  running or which data directory it served, and a stale API could end up serving a
+  freshly-built web client whose endpoints it did not implement (#49).
+
+### Fixed
+
+- **"Choose export folder" could not select a folder.** The directory input carried
+  `accept=".csv,.gpx,.zip"`; since a directory matches none of those extensions, the OS
+  picker greyed folders out. Because Health Auto Export writes one CSV per metric, this
+  forced users into hand-picking files and produced rides missing most of their data — one
+  ride imported with only `energy`, another with only `distance` (#49).
+
 ## [0.1.0] - 2026-07-28
 
 Initial MVP: import a Health Auto Export CSV/GPX/ZIP, compute deterministic ride and

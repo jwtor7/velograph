@@ -38,7 +38,7 @@ walkthrough at an explicit throwaway directory instead, so it can't touch real d
 ```bash
 export VELO_DATA_DIR=$(mktemp -d)                        # throwaway directory for this demo
 node apps/cli/src/index.ts import fixtures/synthetic/rides
-node apps/api/src/main.ts
+pnpm app:start
 ```
 
 Then open `http://127.0.0.1:5123` in your browser. `VELO_DATA_DIR` stays set for the rest of
@@ -60,8 +60,31 @@ startup.
 
 ```bash
 node apps/cli/src/index.ts import /path/to/your/health-auto-export
-node apps/api/src/main.ts
+pnpm app:start
 ```
+
+Import the **whole export folder**, not individual files. Health Auto Export writes one CSV
+per metric — heart rate, cadence, distance, and energy each arrive in their own file, with
+the route as a separate GPX. Importing a single CSV produces a ride with only that one
+metric. Files are associated into a single workout by type and overlapping sample range, so
+companion files still join correctly if they arrive in a later import.
+
+### Managing the local server
+
+`pnpm app:start` builds the web client and starts the API in the background, then waits until
+it actually answers before reporting success. The other three tell you what's happening
+rather than leaving you to guess:
+
+```bash
+pnpm app:status    # running? which pid, port, data directory, and how many rides
+pnpm app:restart   # pick up code changes
+pnpm app:stop      # clean no-op if nothing is running
+```
+
+`app:status` is safe to run at any time, and `app:start` refuses to start a second server on
+a port that is already held — which otherwise produces a stale API serving a freshly built
+web client. Server output goes to a log file whose path `app:start` and `app:status` print.
+(Process lookup uses `lsof`; on Windows use Task Manager to stop a stray server.)
 
 Run the test suite and the other checks CI runs:
 

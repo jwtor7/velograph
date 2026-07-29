@@ -17,6 +17,11 @@ export default tseslint.config(
         process: 'readonly',
         Buffer: 'readonly',
         URL: 'readonly',
+        // Standard on Node >= 20 (see engines in package.json)
+        fetch: 'readonly',
+        AbortSignal: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
       },
     },
   },
