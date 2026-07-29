@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
@@ -26,6 +26,33 @@ let exportDir: string;
 let db: Database;
 let server: Server;
 let base: string;
+const extraDirs: string[] = [];
+
+interface PathPreviewResponse {
+  preview: {
+    confirmationToken: string;
+    rides: { files: unknown[] }[];
+    ungrouped: unknown[];
+    totalFiles: number;
+    truncated: boolean;
+  };
+}
+
+async function previewPath(path: string): Promise<PathPreviewResponse> {
+  const res = await fetch(`${base}/api/import/path/inventory`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ path }),
+  });
+  expect(res.status).toBe(200);
+  return (await res.json()) as PathPreviewResponse;
+}
+
+function mutationDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'velograph-path-mutation-'));
+  extraDirs.push(dir);
+  return dir;
+}
 
 beforeAll(async () => {
   exportDir = mkdtempSync(join(tmpdir(), 'velograph-path-import-'));
@@ -51,6 +78,7 @@ afterAll(async () => {
   await new Promise((r) => server.close(r));
   db.close();
   rmSync(exportDir, { recursive: true, force: true });
+  for (const dir of extraDirs) rmSync(dir, { recursive: true, force: true });
 });
 
 describe('POST /api/import/path/inventory', () => {
@@ -62,8 +90,14 @@ describe('POST /api/import/path/inventory', () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      preview: { rides: { files: unknown[] }[]; ungrouped: unknown[]; totalFiles: number };
+      preview: {
+        confirmationToken: string;
+        rides: { files: unknown[] }[];
+        ungrouped: unknown[];
+        totalFiles: number;
+      };
     };
+    expect(body.preview.confirmationToken).toMatch(/^[a-f0-9]{64}$/);
     expect(body.preview.rides).toHaveLength(4);
     for (const ride of body.preview.rides) {
       // Heart rate, cadence, distance, energy, route CSV, route GPX.
@@ -97,11 +131,60 @@ describe('POST /api/import/path/inventory', () => {
 });
 
 describe('POST /api/import/path', () => {
-  it('imports a real-shaped export folder by path with complete metric coverage', async () => {
+  it('requires an inventory confirmation token', async () => {
     const res = await fetch(`${base}/api/import/path`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ path: exportDir }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'preview_required' });
+  });
+
+  it('rejects mutation, addition, and same-size replacement after preview without writes', async () => {
+    const before = (await (await fetch(`${base}/api/workouts`)).json()) as {
+      workouts: unknown[];
+    };
+    const changes: ((dir: string, path: string) => void)[] = [
+      (_dir, path) => writeFileSync(path, 'changed-size'),
+      (dir) => writeFileSync(join(dir, 'Outdoor Cycling-Cycling Cadence-20260101_070000.csv'), 'x'),
+      (dir, path) => {
+        const replaced = join(dir, 'replaced.csv');
+        renameSync(path, replaced);
+        writeFileSync(path, 'original');
+        rmSync(replaced);
+      },
+    ];
+
+    for (const change of changes) {
+      const dir = mutationDir();
+      const path = join(dir, 'Outdoor Cycling-Heart Rate-20260101_070000.csv');
+      writeFileSync(path, 'original');
+      const { preview } = await previewPath(dir);
+      change(dir, path);
+
+      const res = await fetch(`${base}/api/import/path`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ path: dir, confirmationToken: preview.confirmationToken }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'path_changed' });
+    }
+
+    const after = (await (await fetch(`${base}/api/workouts`)).json()) as {
+      workouts: unknown[];
+    };
+    expect(after.workouts).toHaveLength(before.workouts.length);
+  });
+
+  it('imports a real-shaped export folder by path with complete metric coverage', async () => {
+    const { preview } = await previewPath(exportDir);
+    expect(preview.truncated).toBe(false);
+    const res = await fetch(`${base}/api/import/path`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ path: exportDir, confirmationToken: preview.confirmationToken }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {

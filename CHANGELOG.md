@@ -16,15 +16,24 @@ is pre-1.0, and for the release procedure.
   preview the files it finds (grouped by ride — workout type + the filename's trailing
   timestamp — so companion metric files are obviously one ride before anything imports),
   then confirm. The API reads the folder directly from disk, recursing into subfolders,
-  with metadata-only traversal bounded by file-count and total-byte caps. Confirmation
-  revalidates canonical root/file identity and reads one bounded association group at a time
-  inside one atomic import transaction, so a large accepted folder is never retained as one
-  giant buffer and a path swap fails closed. A group over the resident-byte cap is reported
-  and skipped in full rather than importing a partial ride. A symlinked directory is never
-  followed, and a symlinked file is only followed when its target stays inside the walked
-  tree. Anything a cap or symlink rule excludes is reported, not silently dropped. The
-  destination path is rejected when it resolves inside the repository checkout, reusing
-  `guardAgainstCheckout` (the same guard `VELO_DATA_DIR` and database backups use). New endpoints:
+  through incremental directory handles with explicit visited-entry, directory, depth,
+  importable-file, and total-byte bounds; unsupported entries count toward traversal limits
+  too. Preview returns an opaque digest of the exact private manifest. Confirmation repeats
+  the bounded walk and requires that digest to match before reading source bytes or beginning
+  the database transaction, so mutation, addition, deletion, replacement, or a path swap
+  fails closed with `path_changed`. A truncated preview is visibly non-confirmable and the API
+  independently refuses it with `folder_limits_exceeded`. Accepted confirmation revalidates
+  canonical root/file identity and reads one bounded association group at a time inside one
+  atomic import transaction, so a large accepted folder is never retained as one giant
+  buffer. ZIP groups preflight central-directory and local-header names, counts, and declared
+  sizes without extraction, skip hidden/resource entries before inflation, then stream
+  compressed input while enforcing actual per-entry and aggregate output limits. Declared,
+  local-header, and actual-size mismatches fail closed. A group over the resident-byte cap is
+  reported and excluded in full rather than importing a partial ride. A symlinked directory
+  is never followed, and a symlinked file is only followed when its target stays inside the
+  walked tree. Anything a cap or symlink rule excludes is reported. The destination path is
+  rejected when it resolves inside the repository checkout, reusing `guardAgainstCheckout`
+  (the same guard `VELO_DATA_DIR` and database backups use). New endpoints:
   `POST /api/import/path/inventory` (preview) and `POST /api/import/path` (import), both
   loopback-only with the same CSRF header and hardened headers as every other mutating route.
   Folder drag-and-drop (`webkitGetAsEntry`) reads a dropped folder's files into the existing

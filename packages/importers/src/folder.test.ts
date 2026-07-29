@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  confirmFolderImportPlan,
   FolderImportError,
   planFolderImport,
   previewImportFolder,
@@ -125,6 +126,34 @@ describe('walkImportFolder — caps', () => {
     expect(result.truncated).toBe(false);
     expect(result.files).toHaveLength(1);
   });
+
+  it('counts unsupported entries toward the traversal-entry bound', () => {
+    const root = tempDir();
+    for (let i = 0; i < 5; i++) writeFileSync(join(root, `unsupported-${i}.txt`), 'x');
+    const result = walkImportFolder(root, { maxVisitedEntries: 2 });
+    expect(result.truncated).toBe(true);
+    expect(result.visitedEntries).toBe(2);
+    expect(result.skipped.some((item) => item.reason === 'max_entries_exceeded')).toBe(true);
+  });
+
+  it('bounds visited directories and recursion depth explicitly', () => {
+    const root = tempDir();
+    const first = join(root, 'first');
+    const second = join(first, 'second');
+    mkdirSync(second, { recursive: true });
+    writeFileSync(join(second, 'Outdoor Cycling-Heart Rate-20260101_070000.csv'), 'x');
+
+    const directoryBound = walkImportFolder(root, { maxDirectories: 1 });
+    expect(directoryBound.truncated).toBe(true);
+    expect(directoryBound.visitedDirectories).toBe(1);
+    expect(directoryBound.skipped.some((item) => item.reason === 'max_directories_exceeded')).toBe(
+      true,
+    );
+
+    const depthBound = walkImportFolder(root, { maxDepth: 1 });
+    expect(depthBound.truncated).toBe(true);
+    expect(depthBound.skipped.some((item) => item.reason === 'max_depth_exceeded')).toBe(true);
+  });
 });
 
 describe('walkImportFolder — symlinks', () => {
@@ -228,6 +257,34 @@ describe('previewImportFolder — grouping', () => {
     const preview = previewImportFolder(root, { maxFiles: 1 });
     expect(preview.truncated).toBe(true);
     expect(preview.skipped.length).toBeGreaterThan(0);
+  });
+
+  it('returns an opaque digest and refuses confirmation of a truncated manifest', () => {
+    const root = tempDir();
+    writeFileSync(join(root, 'Outdoor Cycling-Heart Rate-20260101_070000.csv'), 'x');
+    writeFileSync(join(root, 'Outdoor Cycling-Cycling Cadence-20260101_070000.csv'), 'x');
+    const opts = { maxFiles: 1 };
+    const preview = previewImportFolder(root, opts);
+    const plan = planFolderImport(root, opts);
+    expect(preview.confirmationToken).toMatch(/^[a-f0-9]{64}$/);
+    expect(() => confirmFolderImportPlan(plan, preview.confirmationToken)).toThrowError(
+      expect.objectContaining({ code: 'folder_limits_exceeded' }),
+    );
+  });
+
+  it('binds confirmation to accepted and unsupported traversal entries', () => {
+    const root = tempDir();
+    const path = join(root, 'Outdoor Cycling-Heart Rate-20260101_070000.csv');
+    writeFileSync(path, 'original');
+    const preview = previewImportFolder(root);
+    expect(() =>
+      confirmFolderImportPlan(planFolderImport(root), preview.confirmationToken),
+    ).not.toThrow();
+
+    writeFileSync(join(root, 'unsupported-after-preview.txt'), 'x');
+    expect(() =>
+      confirmFolderImportPlan(planFolderImport(root), preview.confirmationToken),
+    ).toThrowError(expect.objectContaining({ code: 'path_changed' }));
   });
 });
 

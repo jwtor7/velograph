@@ -3,7 +3,7 @@ import {
   fstatSync,
   lstatSync,
   openSync,
-  readdirSync,
+  opendirSync,
   readSync,
   realpathSync,
   statSync,
@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { guardAgainstCheckout } from '@velograph/db';
+import { sha256Hex, stableStringify } from '@velograph/shared';
 import { parseHaeFilename } from './adapters.ts';
 import type { ImportFile, ImportFileGroupLoader } from './importer.ts';
 
@@ -31,6 +32,9 @@ import type { ImportFile, ImportFileGroupLoader } from './importer.ts';
 export const DEFAULT_MAX_FILES = 5000;
 export const DEFAULT_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024; // metadata traversal cap: 2 GiB
 export const DEFAULT_MAX_GROUP_BYTES = 64 * 1024 * 1024; // resident source bytes per ride group
+export const DEFAULT_MAX_VISITED_ENTRIES = 20_000;
+export const DEFAULT_MAX_DIRECTORIES = 2_000;
+export const DEFAULT_MAX_DEPTH = 32;
 
 const IMPORTABLE_EXTENSION = /\.(csv|gpx|zip)$/i;
 
@@ -38,6 +42,9 @@ export interface FolderWalkOptions {
   maxFiles?: number;
   maxTotalBytes?: number;
   maxGroupBytes?: number;
+  maxVisitedEntries?: number;
+  maxDirectories?: number;
+  maxDepth?: number;
 }
 
 interface EntryIdentity {
@@ -46,6 +53,13 @@ interface EntryIdentity {
   sizeBytes: number;
   modifiedMs: number;
   changedMs: number;
+}
+
+interface TraversalManifestEntry extends EntryIdentity {
+  relativePath: string;
+  kind: 'file' | 'directory' | 'symlink' | 'other';
+  canonicalTarget?: string;
+  targetIdentity?: EntryIdentity;
 }
 
 export interface WalkedFile extends EntryIdentity {
@@ -62,7 +76,10 @@ export type FolderSkipReason =
   | 'unreadable'
   | 'max_files_exceeded'
   | 'max_total_bytes_exceeded'
-  | 'max_group_bytes_exceeded';
+  | 'max_group_bytes_exceeded'
+  | 'max_entries_exceeded'
+  | 'max_directories_exceeded'
+  | 'max_depth_exceeded';
 
 export interface FolderSkip {
   relativePath: string;
@@ -74,8 +91,11 @@ export interface FolderWalkResult {
   canonicalRoot: string;
   rootDevice: number;
   rootInode: number;
+  manifestEntries: TraversalManifestEntry[];
   files: WalkedFile[];
   skipped: FolderSkip[];
+  visitedEntries: number;
+  visitedDirectories: number;
   totalBytes: number;
   truncated: boolean;
 }
@@ -86,7 +106,8 @@ export type FolderImportErrorCode =
   | 'inside_checkout'
   | 'path_changed'
   | 'file_changed'
-  | 'file_unreadable';
+  | 'file_unreadable'
+  | 'folder_limits_exceeded';
 
 export class FolderImportError extends Error {
   readonly code: FolderImportErrorCode;
@@ -141,12 +162,18 @@ function insideCanonicalRoot(canonicalRoot: string, candidate: string): boolean 
 }
 
 /**
- * Recursively walk `rootPath`, returning importable file metadata bounded by
- * file count and aggregate size. No source contents are read.
+ * Recursively walk `rootPath`, returning importable file metadata. Directory
+ * handles are consumed incrementally: no directory's entries are materialized
+ * in memory. Every entry encountered, including unsupported entries, counts
+ * toward explicit traversal bounds and contributes metadata to the private
+ * confirmation manifest. No source contents are read.
  */
 export function walkImportFolder(rootPath: string, opts: FolderWalkOptions = {}): FolderWalkResult {
   const maxFiles = opts.maxFiles ?? DEFAULT_MAX_FILES;
   const maxTotalBytes = opts.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
+  const maxVisitedEntries = opts.maxVisitedEntries ?? DEFAULT_MAX_VISITED_ENTRIES;
+  const maxDirectories = opts.maxDirectories ?? DEFAULT_MAX_DIRECTORIES;
+  const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
   const root = resolve(rootPath);
   checkNotInsideCheckout(root);
 
@@ -169,19 +196,46 @@ export function walkImportFolder(rootPath: string, opts: FolderWalkOptions = {})
   checkNotInsideCheckout(canonicalRoot);
 
   const rootIdentity = identityOf(rootStats);
+  const manifestEntries: TraversalManifestEntry[] = [];
   const files: WalkedFile[] = [];
   const skipped: FolderSkip[] = [];
+  let visitedEntries = 0;
+  let visitedDirectories = 0;
   let totalBytes = 0;
   let truncated = false;
+  let traversalStopped = false;
 
   const relativeToRoot = (path: string) => toPosix(relative(root, path)) || '.';
 
-  function addFile(fullPath: string, symbolicLink: boolean): void {
+  function addManifestEntry(
+    fullPath: string,
+    kind: TraversalManifestEntry['kind'],
+    stats: Stats,
+    target?: { canonicalPath: string; stats: Stats },
+  ): void {
+    manifestEntries.push({
+      relativePath: relativeToRoot(fullPath),
+      kind,
+      ...identityOf(stats),
+      ...(target
+        ? {
+            canonicalTarget: target.canonicalPath,
+            targetIdentity: identityOf(target.stats),
+          }
+        : {}),
+    });
+  }
+
+  function addFile(
+    fullPath: string,
+    symbolicLink: boolean,
+    target?: { canonicalPath: string; stats: Stats },
+  ): void {
     let canonicalPath: string;
     let targetStats: Stats;
     try {
-      canonicalPath = realpathSync(fullPath);
-      targetStats = statSync(fullPath);
+      canonicalPath = target?.canonicalPath ?? realpathSync(fullPath);
+      targetStats = target?.stats ?? statSync(fullPath);
     } catch {
       skipped.push({ relativePath: relativeToRoot(fullPath), reason: 'unreadable' });
       return;
@@ -214,67 +268,125 @@ export function walkImportFolder(rootPath: string, opts: FolderWalkOptions = {})
     });
   }
 
-  function walk(dir: string): void {
-    if (truncated) return;
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      skipped.push({ relativePath: relativeToRoot(dir), reason: 'unreadable' });
+  function stopForEntryLimit(fullPath: string): void {
+    skipped.push({ relativePath: relativeToRoot(fullPath), reason: 'max_entries_exceeded' });
+    truncated = true;
+    traversalStopped = true;
+  }
+
+  function walk(dirPath: string, depth: number): void {
+    if (traversalStopped) return;
+    if (depth > maxDepth) {
+      skipped.push({ relativePath: relativeToRoot(dirPath), reason: 'max_depth_exceeded' });
+      truncated = true;
       return;
     }
-    const sorted = [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    for (const entry of sorted) {
-      if (truncated) return;
-      const fullPath = join(dir, entry.name);
-      let entryStats: Stats;
-      try {
-        entryStats = lstatSync(fullPath);
-      } catch {
-        skipped.push({ relativePath: relativeToRoot(fullPath), reason: 'unreadable' });
-        continue;
-      }
+    if (visitedDirectories >= maxDirectories) {
+      skipped.push({
+        relativePath: relativeToRoot(dirPath),
+        reason: 'max_directories_exceeded',
+      });
+      truncated = true;
+      return;
+    }
 
-      if (entryStats.isSymbolicLink()) {
-        let targetStats: Stats;
+    let dir;
+    try {
+      dir = opendirSync(dirPath);
+      visitedDirectories++;
+    } catch {
+      skipped.push({ relativePath: relativeToRoot(dirPath), reason: 'unreadable' });
+      return;
+    }
+
+    try {
+      for (;;) {
+        const entry = dir.readSync();
+        if (!entry) break;
+        const fullPath = join(dirPath, entry.name);
+        if (visitedEntries >= maxVisitedEntries) {
+          stopForEntryLimit(fullPath);
+          return;
+        }
+        visitedEntries++;
+
+        let entryStats: Stats;
         try {
-          targetStats = statSync(fullPath);
+          entryStats = lstatSync(fullPath);
         } catch {
           skipped.push({ relativePath: relativeToRoot(fullPath), reason: 'unreadable' });
           continue;
         }
-        if (targetStats.isDirectory()) {
-          skipped.push({
-            relativePath: relativeToRoot(fullPath),
-            reason: 'symlink_directory_skipped',
-          });
+
+        if (entryStats.isSymbolicLink()) {
+          let targetStats: Stats;
+          let canonicalTarget: string;
+          try {
+            canonicalTarget = realpathSync(fullPath);
+            targetStats = statSync(fullPath);
+            addManifestEntry(fullPath, 'symlink', entryStats, {
+              canonicalPath: canonicalTarget,
+              stats: targetStats,
+            });
+          } catch {
+            addManifestEntry(fullPath, 'symlink', entryStats);
+            skipped.push({ relativePath: relativeToRoot(fullPath), reason: 'unreadable' });
+            continue;
+          }
+          if (targetStats.isDirectory()) {
+            skipped.push({
+              relativePath: relativeToRoot(fullPath),
+              reason: 'symlink_directory_skipped',
+            });
+            continue;
+          }
+          if (!IMPORTABLE_EXTENSION.test(entry.name)) continue;
+          addFile(fullPath, true, { canonicalPath: canonicalTarget, stats: targetStats });
           continue;
         }
-        if (!IMPORTABLE_EXTENSION.test(entry.name)) continue;
-        addFile(fullPath, true);
-        continue;
-      }
 
-      if (entryStats.isDirectory()) {
-        walk(fullPath);
-        continue;
-      }
-      if (!entryStats.isFile()) {
+        if (entryStats.isDirectory()) {
+          addManifestEntry(fullPath, 'directory', entryStats);
+          walk(fullPath, depth + 1);
+          if (traversalStopped) return;
+          continue;
+        }
+
+        if (entryStats.isFile()) {
+          addManifestEntry(fullPath, 'file', entryStats);
+          if (IMPORTABLE_EXTENSION.test(entry.name)) addFile(fullPath, false);
+          continue;
+        }
+
+        addManifestEntry(fullPath, 'other', entryStats);
         skipped.push({ relativePath: relativeToRoot(fullPath), reason: 'not_a_regular_file' });
-        continue;
       }
-      if (IMPORTABLE_EXTENSION.test(entry.name)) addFile(fullPath, false);
+    } finally {
+      try {
+        dir.closeSync();
+      } catch {
+        // Closing a read-only traversal handle cannot change the manifest.
+      }
     }
   }
 
-  walk(root);
+  walk(root, 0);
+  files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  manifestEntries.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  skipped.sort(
+    (a, b) => a.relativePath.localeCompare(b.relativePath) || a.reason.localeCompare(b.reason),
+  );
+
   return {
     root,
     canonicalRoot,
     rootDevice: rootIdentity.device,
     rootInode: rootIdentity.inode,
+    manifestEntries,
     files,
     skipped,
+    visitedEntries,
+    visitedDirectories,
     totalBytes,
     truncated,
   };
@@ -294,11 +406,15 @@ export interface FolderImportPlan {
   canonicalRoot: string;
   rootDevice: number;
   rootInode: number;
+  manifestEntries: TraversalManifestEntry[];
   groups: PlannedFolderGroup[];
   skipped: FolderSkip[];
+  visitedEntries: number;
+  visitedDirectories: number;
   totalFiles: number;
   totalBytes: number;
   truncated: boolean;
+  limits: Required<FolderWalkOptions>;
 }
 
 function fileName(file: WalkedFile): string {
@@ -351,6 +467,14 @@ function compareGroups(a: PlannedFolderGroup, b: PlannedFolderGroup): number {
 export function planFolderImport(rootPath: string, opts: FolderWalkOptions = {}): FolderImportPlan {
   const walk = walkImportFolder(rootPath, opts);
   const maxGroupBytes = opts.maxGroupBytes ?? DEFAULT_MAX_GROUP_BYTES;
+  const limits: Required<FolderWalkOptions> = {
+    maxFiles: opts.maxFiles ?? DEFAULT_MAX_FILES,
+    maxTotalBytes: opts.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES,
+    maxGroupBytes,
+    maxVisitedEntries: opts.maxVisitedEntries ?? DEFAULT_MAX_VISITED_ENTRIES,
+    maxDirectories: opts.maxDirectories ?? DEFAULT_MAX_DIRECTORIES,
+    maxDepth: opts.maxDepth ?? DEFAULT_MAX_DEPTH,
+  };
   const byKey = new Map<string, PlannedFolderGroup>();
 
   for (const file of walk.files) {
@@ -392,11 +516,15 @@ export function planFolderImport(rootPath: string, opts: FolderWalkOptions = {})
     canonicalRoot: walk.canonicalRoot,
     rootDevice: walk.rootDevice,
     rootInode: walk.rootInode,
+    manifestEntries: walk.manifestEntries,
     groups,
     skipped,
+    visitedEntries: walk.visitedEntries,
+    visitedDirectories: walk.visitedDirectories,
     totalFiles: groups.reduce((sum, group) => sum + group.files.length, 0),
     totalBytes: groups.reduce((sum, group) => sum + group.totalBytes, 0),
     truncated,
+    limits,
   };
 }
 
@@ -426,9 +554,52 @@ export interface FolderPreview {
   rides: FolderRideGroup[];
   ungrouped: FolderUngroupedItem[];
   skipped: FolderSkip[];
+  visitedEntries: number;
+  visitedDirectories: number;
   totalFiles: number;
   totalBytes: number;
   truncated: boolean;
+  confirmationToken: string;
+}
+
+function planConfirmationToken(plan: FolderImportPlan): string {
+  return sha256Hex(
+    stableStringify({
+      version: 1,
+      root: {
+        requested: plan.root,
+        canonical: plan.canonicalRoot,
+        device: plan.rootDevice,
+        inode: plan.rootInode,
+      },
+      manifestEntries: plan.manifestEntries,
+      groups: plan.groups,
+      skipped: plan.skipped,
+      visitedEntries: plan.visitedEntries,
+      visitedDirectories: plan.visitedDirectories,
+      totalFiles: plan.totalFiles,
+      totalBytes: plan.totalBytes,
+      truncated: plan.truncated,
+      limits: plan.limits,
+    }),
+  );
+}
+
+/**
+ * Bind confirmation to the exact value-free preview manifest. The client
+ * returns only this opaque digest; a fresh bounded traversal must reproduce
+ * it before any source bytes are read or database transaction begins.
+ */
+export function confirmFolderImportPlan(plan: FolderImportPlan, token: string): void {
+  if (!/^[a-f0-9]{64}$/.test(token) || token !== planConfirmationToken(plan)) {
+    throw new FolderImportError('path_changed', 'folder changed after preview');
+  }
+  if (plan.truncated) {
+    throw new FolderImportError(
+      'folder_limits_exceeded',
+      'folder preview exceeded safe traversal limits',
+    );
+  }
 }
 
 /**
@@ -475,9 +646,12 @@ export function previewImportFolder(rootPath: string, opts: FolderWalkOptions = 
     rides,
     ungrouped,
     skipped: plan.skipped,
+    visitedEntries: plan.visitedEntries,
+    visitedDirectories: plan.visitedDirectories,
     totalFiles: plan.totalFiles,
     totalBytes: plan.totalBytes,
     truncated: plan.truncated,
+    confirmationToken: planConfirmationToken(plan),
   };
 }
 

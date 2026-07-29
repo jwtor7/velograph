@@ -130,9 +130,12 @@ export interface FolderPreviewBody {
   rides: FolderRideGroup[];
   ungrouped: FolderUngroupedItem[];
   skipped: FolderSkipItem[];
+  visitedEntries: number;
+  visitedDirectories: number;
   totalFiles: number;
   totalBytes: number;
   truncated: boolean;
+  confirmationToken: string;
 }
 
 export interface ImportResultBody {
@@ -156,6 +159,18 @@ export interface RepairResultBody {
   analytics: RideAnalytics;
 }
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+
+  constructor(status: number, code: string) {
+    super(`api_${status}`);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -165,7 +180,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {}),
     },
   });
-  if (!res.ok) throw new Error(`api_${res.status}`);
+  if (!res.ok) {
+    let code = 'request_failed';
+    try {
+      const body = (await res.json()) as { error?: unknown };
+      if (typeof body.error === 'string') code = body.error;
+    } catch {
+      // Preserve a stable generic code when the API response is not JSON.
+    }
+    throw new ApiError(res.status, code);
+  }
   return (await res.json()) as T;
 }
 
@@ -189,10 +213,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ path }),
     }),
-  importPath: (path: string) =>
+  importPath: (path: string, confirmationToken: string) =>
     request<{ result: ImportResultBody; skipped: FolderSkipItem[]; truncated: boolean }>(
       '/api/import/path',
-      { method: 'POST', body: JSON.stringify({ path }) },
+      { method: 'POST', body: JSON.stringify({ path, confirmationToken }) },
     ),
   deleteWorkout: (id: number) =>
     request<DeleteResultBody>(`/api/workouts/${id}`, { method: 'DELETE' }),

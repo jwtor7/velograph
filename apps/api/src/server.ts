@@ -6,6 +6,7 @@ import { Repository, backupDatabase, loadWorkoutData, restoreDatabase } from '@v
 import {
   DEFAULT_MAX_GROUP_BYTES,
   DEFAULT_ZIP_LIMITS,
+  confirmFolderImportPlan,
   FolderImportError,
   inventoryFiles,
   planFolderImport,
@@ -322,12 +323,18 @@ function route(
     readJsonBody(req, MAX_PATH_BODY_BYTES)
       .then((body) => {
         const p = readPathField(body);
+        const confirmationToken = readConfirmationToken(body);
         if (!p) {
           send(res, 400, { error: 'invalid_path' });
           return;
         }
+        if (!confirmationToken) {
+          send(res, 400, { error: 'preview_required' });
+          return;
+        }
         try {
           const plan = planFolderImport(p);
+          confirmFolderImportPlan(plan, confirmationToken);
           if (plan.totalFiles === 0) {
             send(res, 400, {
               error: 'no_files',
@@ -413,6 +420,11 @@ function route(
 function readPathField(body: unknown): string | undefined {
   const p = (body as { path?: unknown } | null)?.path;
   return typeof p === 'string' && p.trim() !== '' ? p : undefined;
+}
+
+function readConfirmationToken(body: unknown): string | undefined {
+  const token = (body as { confirmationToken?: unknown } | null)?.confirmationToken;
+  return typeof token === 'string' && /^[a-f0-9]{64}$/.test(token) ? token : undefined;
 }
 
 function folderErrorCode(err: unknown): string {
