@@ -4,6 +4,7 @@ import {
   chmodSync,
   chownSync,
   closeSync,
+  copyFileSync,
   existsSync,
   fsyncSync,
   mkdirSync,
@@ -20,6 +21,13 @@ import { isOrderedMigrationPrefix, listMigrationFiles } from './migrate.ts';
 export interface BackupResult {
   totalPages: number;
   remainingPages: number;
+}
+
+export interface BackupOptions {
+  /** @internal Deterministic fault-injection seam. */
+  stageBackup?: (source: Database, destination: string) => Promise<BackupResult>;
+  /** @internal Deterministic fault-injection seam. */
+  afterInstall?: () => void | Promise<void>;
 }
 
 export type RestoreValidationErrorCode =
@@ -88,19 +96,77 @@ export class RestoreDatabaseError extends Error {
  * real health data — enforced by the same `guardAgainstCheckout` guard used
  * for VELO_DATA_DIR.
  */
-export async function backupDatabase(db: Database, destPath: string): Promise<BackupResult> {
+export async function backupDatabase(
+  db: Database,
+  destPath: string,
+  options: BackupOptions = {},
+): Promise<BackupResult> {
   const resolved = resolve(destPath);
-  guardAgainstCheckout(dirname(resolved));
-  mkdirSync(dirname(resolved), { recursive: true });
-  const created = !existsSync(resolved);
-  if (created) createPrivateArtifact(resolved);
+  const parent = dirname(resolved);
+  guardAgainstCheckout(parent);
+  mkdirSync(parent, { recursive: true });
+  const id = randomUUID();
+  const stagedPath = join(parent, `.${basename(resolved)}.backup-${id}.tmp`);
+  const previousPath = join(parent, `.${basename(resolved)}.previous-${id}.tmp`);
+  const hadPrevious = existsSync(resolved);
+  let installed = false;
+  let previousRestored = false;
   try {
-    const result = await db.backup(resolved);
-    if (created) chmodSync(resolved, 0o600);
+    if (hadPrevious) {
+      createPrivateArtifact(previousPath);
+      copyFileSync(resolved, previousPath);
+      chmodSync(previousPath, 0o600);
+      fsyncPath(previousPath);
+    }
+
+    createPrivateArtifact(stagedPath);
+    const result = options.stageBackup
+      ? await options.stageBackup(db, stagedPath)
+      : await db.backup(stagedPath);
+    chmodSync(stagedPath, 0o600);
+
+    let probe: Database | undefined;
+    try {
+      probe = new DatabaseConstructor(stagedPath, {
+        readonly: true,
+        fileMustExist: true,
+      });
+      validateCanonicalDatabase(probe);
+    } finally {
+      closeQuietly(probe);
+    }
+    removeSidecars(stagedPath);
+    fsyncPath(stagedPath);
+
+    renameSync(stagedPath, resolved);
+    installed = true;
+    fsyncDirectory(parent);
+    await options.afterInstall?.();
+
+    removeArtifact(previousPath);
     return result;
   } catch (error) {
-    if (created) removeArtifact(resolved);
+    if (installed) {
+      try {
+        if (hadPrevious) {
+          renameSync(previousPath, resolved);
+          previousRestored = true;
+        } else {
+          removeArtifact(resolved);
+        }
+        fsyncDirectory(parent);
+      } catch {
+        // The independently fsynced previous snapshot remains private and
+        // separate when it cannot be reinstalled. Preserve the primary
+        // failure; never delete the only known-good prior backup.
+      }
+    }
     throw error;
+  } finally {
+    removeArtifact(stagedPath);
+    if (!hadPrevious || !installed || previousRestored) {
+      removeArtifact(previousPath);
+    }
   }
 }
 
@@ -324,6 +390,14 @@ function applyDatabaseMetadata(path: string, metadata: DatabaseMetadata): void {
   chmodSync(path, metadata.mode);
 }
 
+function applyRecoveryArtifactMetadata(path: string, metadata: DatabaseMetadata): void {
+  const current = statSync(path);
+  if (current.uid !== metadata.uid || current.gid !== metadata.gid) {
+    chownSync(path, metadata.uid, metadata.gid);
+  }
+  chmodSync(path, 0o600);
+}
+
 function closeQuietly(db: Database | undefined): void {
   if (!db?.open) return;
   try {
@@ -372,35 +446,68 @@ function openAndValidateCanonical(path: string): Database {
   }
 }
 
-function reopenOriginal(
+async function reopenOriginal(
   dbPath: string,
   rollbackPath: string,
+  recoveryInstallPath: string,
+  metadata: DatabaseMetadata,
   replacementInstalled: boolean,
   reopen: (path: string) => Database,
-): { database?: Database; rollbackInstalled: boolean } {
+): Promise<Database | undefined> {
   if (!replacementInstalled) {
     try {
-      return { database: reopen(dbPath), rollbackInstalled: false };
+      return reopen(dbPath);
     } catch {
       // The original path should still be intact. Install the independently
-      // validated rollback snapshot if reopening it nevertheless fails.
+      // validated rollback snapshot from a copy if reopening nevertheless
+      // fails, while retaining the source snapshot separately.
     }
   }
 
+  let source: Database | undefined;
+  let recoveryProbe: Database | undefined;
   try {
+    createPrivateArtifact(recoveryInstallPath);
+    source = openBackupSource(rollbackPath);
+    await source.backup(recoveryInstallPath);
+    closeQuietly(source);
+    source = undefined;
+    chmodSync(recoveryInstallPath, 0o600);
+
+    recoveryProbe = new DatabaseConstructor(recoveryInstallPath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    validateCanonicalDatabase(recoveryProbe);
+    recoveryProbe.close();
+    recoveryProbe = undefined;
+    removeSidecars(recoveryInstallPath);
+    applyDatabaseMetadata(recoveryInstallPath, metadata);
+    fsyncPath(recoveryInstallPath);
+
     removeSidecars(dbPath);
-    renameSync(rollbackPath, dbPath);
+    renameSync(recoveryInstallPath, dbPath);
     fsyncDirectory(dirname(dbPath));
     removeSidecars(dbPath);
     fsyncDirectory(dirname(dbPath));
   } catch {
-    return { rollbackInstalled: false };
+    return undefined;
+  } finally {
+    closeQuietly(recoveryProbe);
+    closeQuietly(source);
+    try {
+      removeSidecars(rollbackPath);
+    } catch {
+      // Keep the validated main recovery snapshot even if sidecar cleanup
+      // cannot be completed.
+    }
+    removeArtifact(recoveryInstallPath);
   }
 
   try {
-    return { database: reopen(dbPath), rollbackInstalled: true };
+    return reopen(dbPath);
   } catch {
-    return { rollbackInstalled: true };
+    return undefined;
   }
 }
 
@@ -426,18 +533,19 @@ export async function restoreDatabase(
   const id = randomUUID();
   const stagedPath = join(parent, `.${basename(resolvedDbPath)}.restore-${id}.tmp`);
   const rollbackPath = join(parent, `.${basename(resolvedDbPath)}.rollback-${id}.tmp`);
+  const recoveryInstallPath = join(parent, `.${basename(resolvedDbPath)}.recovery-${id}.tmp`);
   const reopen = options.reopenDatabase ?? openDatabase;
   const source = openBackupSource(resolvedBackup);
 
   let staged: Database | undefined;
   let rollbackProbe: Database | undefined;
+  let metadata: DatabaseMetadata | undefined;
   let liveClosed = false;
   let replacementInstalled = false;
-  let rollbackInstalled = false;
   let cleanupRollback = true;
   try {
     mkdirSync(parent, { recursive: true });
-    const metadata = databaseMetadata(resolvedDbPath);
+    metadata = databaseMetadata(resolvedDbPath);
 
     try {
       createPrivateArtifact(stagedPath);
@@ -494,7 +602,7 @@ export async function restoreDatabase(
     rollbackProbe.close();
     rollbackProbe = undefined;
     removeSidecars(rollbackPath);
-    applyDatabaseMetadata(rollbackPath, metadata);
+    applyRecoveryArtifactMetadata(rollbackPath, metadata);
     fsyncPath(rollbackPath);
 
     try {
@@ -529,20 +637,27 @@ export async function restoreDatabase(
       throw normalizePreCutoverError(error);
     }
 
-    const recovery = reopenOriginal(resolvedDbPath, rollbackPath, replacementInstalled, reopen);
-    rollbackInstalled = recovery.rollbackInstalled;
-    cleanupRollback = recovery.database !== undefined;
+    const recoveredDatabase = await reopenOriginal(
+      resolvedDbPath,
+      rollbackPath,
+      recoveryInstallPath,
+      metadata!,
+      replacementInstalled,
+      reopen,
+    );
+    cleanupRollback = recoveredDatabase !== undefined;
     const primaryCode = replacementInstalled ? 'restore_reopen_failed' : 'restore_cutover_failed';
     throw new RestoreDatabaseError(
-      recovery.database ? primaryCode : 'restore_recovery_failed',
-      recovery.database,
+      recoveredDatabase ? primaryCode : 'restore_recovery_failed',
+      recoveredDatabase,
     );
   } finally {
     closeQuietly(staged);
     closeQuietly(rollbackProbe);
     closeQuietly(source);
     removeArtifact(stagedPath);
-    if (cleanupRollback || rollbackInstalled) {
+    removeArtifact(recoveryInstallPath);
+    if (cleanupRollback) {
       removeArtifact(rollbackPath);
     }
   }
