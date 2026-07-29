@@ -25,6 +25,7 @@ import { existsSync, openSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { homedir, platform, tmpdir } from 'node:os';
+import { openBrowser } from './open-browser.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env['VELO_PORT'] ?? 5123);
@@ -261,22 +262,6 @@ export async function stopProcess(
   }
   console.error(`SIGKILL was sent to Velograph pid ${pid}, but process exit was not confirmed.`);
   return 1;
-}
-
-/** Open `url` in the OS default browser. Best-effort — never fatal. */
-function openBrowser(url) {
-  const plat = platform();
-  const [cmd, args] =
-    plat === 'darwin'
-      ? ['open', [url]]
-      : plat === 'win32'
-        ? ['cmd', ['/c', 'start', '', url]]
-        : ['xdg-open', [url]];
-  try {
-    spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
-  } catch {
-    console.log(`Open ${url} in your browser.`);
-  }
 }
 
 /**
