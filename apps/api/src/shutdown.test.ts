@@ -8,6 +8,22 @@ import { createApiServer } from './server.ts';
 import { shutdownApiServer } from './shutdown.ts';
 
 describe('shutdownApiServer', () => {
+  it('closes database and basemap resources before a server ever listens', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'velo-shutdown-before-listen-'));
+    try {
+      const db = openDatabase(join(dir, 'live.sqlite3'));
+      const server = createApiServer({ db });
+
+      await shutdownApiServer(server);
+
+      expect(server.listening).toBe(false);
+      expect(db.open).toBe(false);
+      expect(() => server.closeBasemap()).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('drains the server, checkpoints the WAL, and closes the current database', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'velo-shutdown-'));
     const dbPath = join(dir, 'live.sqlite3');

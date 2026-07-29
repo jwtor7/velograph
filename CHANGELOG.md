@@ -11,6 +11,14 @@ is pre-1.0, and for the release procedure.
 
 ### Added
 
+- **Production API and CLI packages** now run from checked-in esbuild bundles instead of
+  TypeScript source. The API package contains the complete offline web build, and both packages
+  carry byte-identical migrations and dependency notices. Clean-install verifiers exercise
+  import, repair, backup, restore, web assets, health/version reporting, migration adoption,
+  signal shutdown, and value-free failures on Node 20 and 26. The local app supervisor now
+  proves health, PID, and command identity before declaring readiness or signaling a process,
+  rejects malformed host/port configuration before opening storage, and cleans up its exact
+  child on startup failure or timeout (#11).
 - **Portable, self-verifying backups.** Every new SQLite backup carries a versioned manifest with
   the Velograph app version, current schema migration, included/excluded categories, and
   deterministic SHA-256 table checksums. Restore verifies the manifest, checksums, SQLite

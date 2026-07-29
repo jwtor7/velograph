@@ -20,17 +20,18 @@ Your health data never leaves your machine unless you explicitly send it somewhe
 ## Quick start
 
 The build system is a pnpm/TypeScript monorepo with a working import pipeline, analytics
-engine, loopback API, and web client.
+engine, loopback API, and web client. Use Node.js `^20.19.0 || >=22.12.0 <27` and the
+repository-pinned pnpm `10.34.5`.
 
 ```bash
 pnpm install   # install workspace dependencies
-pnpm dev       # API on 127.0.0.1:5123 + live Vite UI on 127.0.0.1:5124
+pnpm dev       # build the API runtime, then run it with a live Vite UI
 ```
 
-`pnpm dev` owns both foreground processes: press Ctrl-C once to stop both. Its proxy rewrites
-only the configured loopback development Origin and Host, so the API's DNS-rebinding and
-cross-origin protections remain strict. For the built background app on port 5123, use
-`pnpm app:start` as documented below.
+`pnpm dev` builds and runs `apps/api/dist/velograph-api.mjs`, then owns both foreground
+processes: press Ctrl-C once to stop both. Its proxy rewrites only the configured loopback
+development Origin and Host, so the API's DNS-rebinding and cross-origin protections remain
+strict. For the built background app on port 5123, use `pnpm app:start` as documented below.
 
 ### Try it with the synthetic fixtures
 
@@ -40,7 +41,8 @@ walkthrough at an explicit throwaway directory so the demo never touches real da
 
 ```bash
 export VELO_DATA_DIR=$(mktemp -d)                        # throwaway directory for this demo
-node apps/cli/src/index.ts import fixtures/synthetic/rides
+pnpm cli:build
+pnpm velograph-import import fixtures/synthetic/rides
 pnpm dev
 ```
 
@@ -62,7 +64,8 @@ inside this checkout; a `VELO_DATA_DIR` that resolves inside a git checkout is r
 startup.
 
 ```bash
-node apps/cli/src/index.ts import /path/to/your/health-auto-export
+pnpm cli:build
+pnpm velograph-import import /path/to/your/health-auto-export
 pnpm app:start
 ```
 
@@ -122,10 +125,11 @@ Two ways to run it, background or foreground:
 pnpm app:dev       # foreground: build, start, open the browser; Ctrl-C stops everything
 ```
 
-`app:dev` is the everyday workflow — one command builds the web client, starts the API in the
-foreground of your terminal, and opens it in your browser once it answers. Ctrl-C (or a
-`kill`) tears it down cleanly: the API child is signaled, waited on, and force-killed if it
-doesn't exit in time, so nothing is ever left holding the port after you stop it.
+`app:dev` is the everyday workflow — one command builds the web client and packaged API,
+starts `apps/api/dist/velograph-api.mjs` in the foreground of your terminal, and opens it in
+your browser once it answers. Ctrl-C (or a `kill`) tears it down cleanly: the exact API child
+is signaled, waited on, and force-killed if it doesn't exit in time, so nothing is ever left
+holding the port after you stop it.
 
 ```bash
 pnpm app:start     # background: same build+wait-for-ready, but detached
@@ -136,10 +140,11 @@ pnpm app:stop      # clean no-op if nothing is running
 
 Use the background commands when you want a server that outlives the current shell (or a
 session that needs to run something else in the same terminal). `app:status` is safe to run
-at any time, and `app:start` refuses to start a second server on a port that is already
-held — which otherwise produces a stale API serving a freshly built web client. Server output
-goes to a log file whose path `app:start` and `app:status` print. (Process lookup uses `lsof`;
-on Windows use Task Manager to stop a stray server.)
+at any time. `app:start` builds the web client and API package, forces a loopback bind, and
+waits for a health response whose version, listener PID, and command all identify the child it
+started. An unrelated listener is reported as unverified and is never labeled or signaled as
+Velograph. Server output goes to a log file whose path `app:start` and `app:status` print.
+(Process lookup uses `lsof`; on Windows use Task Manager to stop a stray server.)
 
 ## Run with Docker Compose
 
@@ -174,6 +179,10 @@ pnpm test         # unit, parser, migration, and analytics golden tests
 pnpm lint         # eslint
 pnpm typecheck    # tsc --noEmit across every workspace package
 pnpm format       # prettier --check
+pnpm runtime:build
+pnpm runtime:verify-artifacts
+pnpm api:verify-package
+pnpm cli:verify-package
 node scripts/privacy-scan.mjs --all   # privacy/data-leak scan
 ```
 
@@ -181,8 +190,8 @@ Backups are self-contained SQLite files with an app/schema manifest and determin
 checksums. Restore is destructive and therefore requires explicit confirmation:
 
 ```bash
-node apps/cli/src/index.ts backup /safe/path/velograph.sqlite3
-node apps/cli/src/index.ts restore /safe/path/velograph.sqlite3 --confirm-replace
+pnpm velograph-import backup /safe/path/velograph.sqlite3
+pnpm velograph-import restore /safe/path/velograph.sqlite3 --confirm-replace
 ```
 
 ## Project layout
@@ -207,6 +216,8 @@ fixtures/synthetic/   invented data used by tests and this quickstart
 - [Repository guidelines](AGENTS.md) — structure, workflow, and privacy boundaries for contributors
 - [Changelog](CHANGELOG.md) — what shipped, release by release
 - [Release procedure](docs/releasing.md) — versioning scheme and how a release is cut
+- [Runtime packaging](docs/runtime-packaging.md) — production bundles, artifact checks, and
+  clean-install verification
 - [Design system](docs/design-system.md) — palette, typography, and visual language
 - [Offline route maps](docs/offline-basemap.md) — interactive route controls and optional local raster MBTiles setup
 - [Analytics formulas](docs/formulas.md) — every metric definition, versioned

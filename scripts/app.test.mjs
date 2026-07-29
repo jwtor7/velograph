@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isVelographCommand, stopProcess } from './app.mjs';
+import {
+  isExpectedVelographRuntime,
+  isVelographCommand,
+  readManagedPort,
+  stopProcess,
+} from './app.mjs';
 
 describe('app:stop graceful-shutdown escalation', () => {
   it('waits for the grace period, reports escalation, then sends SIGKILL', async () => {
@@ -71,18 +76,48 @@ describe('app:stop graceful-shutdown escalation', () => {
   });
 
   it('recognizes only the Velograph API entrypoint', () => {
-    const entrypoint = `${process.cwd()}/apps/api/src/main.ts`;
+    const entrypoint = `${process.cwd()}/apps/api/dist/velograph-api.mjs`;
     expect(isVelographCommand(`/usr/local/bin/node ${entrypoint}`)).toBe(true);
     expect(isVelographCommand(`/usr/local/bin/node ${entrypoint}.bak`)).toBe(false);
-    expect(isVelographCommand('/usr/local/bin/node /tmp/other/apps/api/src/main.ts')).toBe(false);
+    expect(isVelographCommand('/usr/local/bin/node /tmp/other/velograph-api.mjs')).toBe(false);
     expect(isVelographCommand('/usr/local/bin/node other-server.mjs')).toBe(false);
+  });
+
+  it('requires lexical managed ports from 1 through 65535', () => {
+    expect(readManagedPort('1')).toBe(1);
+    expect(readManagedPort('65535')).toBe(65_535);
+    for (const value of ['0', '00', '', ' 5123', '+5123', '5e3', '65536']) {
+      expect(() => readManagedPort(value)).toThrow('invalid_port');
+    }
+  });
+
+  it('requires health, exact listener pid, and the built command before identifying Velograph', () => {
+    const entrypoint = `${process.cwd()}/apps/api/dist/velograph-api.mjs`;
+    const command = `/usr/local/bin/node ${entrypoint}`;
+    const valid = {
+      health: { ok: true, version: '0.1.0' },
+      listener: 4242,
+      expectedPid: 4242,
+      command,
+    };
+    expect(isExpectedVelographRuntime(valid)).toBe(true);
+    expect(isExpectedVelographRuntime({ ...valid, health: { ok: false, version: '0.1.0' } })).toBe(
+      false,
+    );
+    expect(isExpectedVelographRuntime({ ...valid, health: { ok: true, version: '0.0.0' } })).toBe(
+      false,
+    );
+    expect(isExpectedVelographRuntime({ ...valid, listener: 4343 })).toBe(false);
+    expect(isExpectedVelographRuntime({ ...valid, command: '/usr/local/bin/node other.mjs' })).toBe(
+      false,
+    );
   });
 
   it('refuses to signal when the listener identity changes before shutdown', async () => {
     const signals = [];
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const entrypoint = `${process.cwd()}/apps/api/src/main.ts`;
+      const entrypoint = `${process.cwd()}/apps/api/dist/velograph-api.mjs`;
       const result = await stopProcess(4242, {
         expectedCommand: `/usr/local/bin/node ${entrypoint}`,
         getListenerPid: () => 4242,
@@ -102,7 +137,7 @@ describe('app:stop graceful-shutdown escalation', () => {
   it('refuses SIGKILL when the command changes during the grace period', async () => {
     const signals = [];
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const entrypoint = `${process.cwd()}/apps/api/src/main.ts`;
+    const entrypoint = `${process.cwd()}/apps/api/dist/velograph-api.mjs`;
     const expectedCommand = `/usr/local/bin/node ${entrypoint}`;
     let commandChecks = 0;
     try {

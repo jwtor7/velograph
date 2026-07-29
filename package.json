@@ -5,9 +5,9 @@
   "description": "Velograph — local-first cycling analytics for Apple Health exports",
   "type": "module",
   "engines": {
-    "node": "^20.19.0 || >=22.12.0"
+    "node": "^20.19.0 || >=22.12.0 <27"
   },
-  "packageManager": "pnpm@11.17.0",
+  "packageManager": "pnpm@10.34.5",
   "scripts": {
     "prepare": "node scripts/configure-git-hooks.mjs",
     "format": "prettier --check .",
@@ -16,6 +16,13 @@
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "vitest run",
     "dev": "node scripts/dev.mjs",
+    "runtime:build": "pnpm cli:build && pnpm api:build",
+    "runtime:verify-artifacts": "node scripts/verify-runtime-artifacts.mjs",
+    "api:build": "pnpm package:web && pnpm --filter @velograph/api build",
+    "api:verify-package": "node scripts/verify-api-package.mjs",
+    "cli:build": "pnpm --filter @velograph/cli build",
+    "cli:verify-package": "node scripts/verify-cli-package.mjs",
+    "velograph-import": "node apps/cli/dist/velograph-import.mjs",
     "app:start": "node scripts/app.mjs start",
     "app:stop": "node scripts/app.mjs stop",
     "app:status": "node scripts/app.mjs status",
@@ -29,6 +36,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.32.0",
+    "esbuild": "^0.28.1",
     "eslint": "^9.32.0",
     "prettier": "^3.6.2",
     "typescript": "^5.9.2",

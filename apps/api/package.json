@@ -4,24 +4,36 @@
   "private": true,
   "type": "module",
   "description": "Velograph local loopback HTTP API",
+  "bin": {
+    "velograph-api": "./dist/velograph-api.mjs"
+  },
+  "files": [
+    "dist",
+    "migrations"
+  ],
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0 <27"
+  },
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "pnpm --filter @velograph/web build && pnpm run build",
     "typecheck": "tsc --noEmit",
-    "start": "node src/main.ts"
+    "start": "node dist/velograph-api.mjs"
   },
   "dependencies": {
-    "@velograph/analytics": "workspace:*",
-    "@velograph/db": "workspace:*",
-    "@velograph/importers": "workspace:*",
-    "@velograph/shared": "workspace:*",
-    "better-sqlite3": "^12.11.1"
+    "better-sqlite3": "^12.11.1",
+    "fflate": "^0.8.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.13.3",
-    "fflate": "^0.8.2",
+    "@velograph/analytics": "workspace:*",
+    "@velograph/db": "workspace:*",
+    "@velograph/importers": "workspace:*",
+    "@velograph/shared": "workspace:*",
     "typescript": "^5.9.2"
   }
 }

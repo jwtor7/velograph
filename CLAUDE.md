@@ -24,7 +24,9 @@ The `.gitignore` (created in Phase 0, maintained forever) is default-deny for an
 - Application data directories (any local `VELO_DATA_DIR`, `data/`), backup/restore output, and Health Auto Export folders
 - Logs (`*.log`, `logs/`) and generated report/export output
 - Credential material: `.env` and `.env.*`, `*.pem`, `*.key`, token/credential files, any Codex auth cache path
-- Standard dev noise: `node_modules/`, build output (`dist/`, `build/`), coverage, `.DS_Store`
+- Standard dev noise: `node_modules/`, ordinary build output, coverage, `.DS_Store`. The
+  reviewed API and CLI `dist/` production packages are explicit exceptions: they are checked
+  in, rebuilt deterministically, and scanned by the runtime artifact verifier.
 
 Never `git add -f` an ignored file — if something legitimate is blocked, change the ignore rules in a reviewed PR instead. When a tool starts writing a new kind of local artifact, gitignore it in the same change that introduces the tool. The ignore file is a guardrail, not the defense: the pre-commit privacy scanner and CI secret/data-leak scans are the blocking checks.
 
@@ -54,6 +56,12 @@ Browser UI → Local HTTP API (loopback)
     └── Insight orchestrator → Codex provider (host codex exec; optional host-side AI Bridge in container mode) | Ollama (loopback) | disabled
 ```
 
+Production execution uses checked-in, self-contained esbuild packages:
+`apps/api/dist/velograph-api.mjs` and `apps/cli/dist/velograph-import.mjs`. Workspace
+packages are bundled into those files; only Node built-ins, `better-sqlite3`, and `fflate`
+remain external. Both packages carry byte-identical database migrations, and the API package
+contains the complete built web client. See `docs/runtime-packaging.md`.
+
 Data-model invariants: source files are identified by SHA-256 and re-imports are idempotent; raw files are retained only on user opt-in (hashes + normalized data are the default record); each import batch commits atomically; storage holds canonical SI units and absolute instants, with unit/timezone conversion only at render; analytics snapshots persist formula version + settings hash + input hash; workout association uses type + timestamps + sample-time tolerance, never filename alone; GPX is preferred for route geometry, route CSV is the fallback, provenance preserved; backups use SQLite's backup API, never a copy of a live WAL database.
 
 ## Git flow
@@ -73,7 +81,7 @@ The maintainer must never have to remember what is running or clean up after us.
 
 - Use the declared commands only: `pnpm app:start`, `pnpm app:stop`, `pnpm app:status`,
   `pnpm app:restart`. Never `nohup … &`, never `pkill -f`, never a bare
-  `node apps/api/src/main.ts` left in the background.
+  API runtime left in the background.
 - **Run `pnpm app:status` before starting anything.** A server may already be running —
   possibly one the maintainer or another agent started. Never assume the port is free.
 - **Tear down what you start.** Before ending a turn in which you started a server and the

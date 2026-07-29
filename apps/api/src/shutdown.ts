@@ -1,34 +1,64 @@
 import { checkpointDatabase } from '@velograph/db';
 import type { VelographApiServer } from './server.ts';
 
+function closeHttpServer(server: VelographApiServer): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const wasListening = server.listening;
+    server.close((error) => {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === 'ERR_SERVER_NOT_RUNNING') {
+        resolve();
+      } else if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    });
+    if (wasListening) {
+      // Keep the drain bounded on every supported Node release without
+      // interrupting active responses.
+      server.closeIdleConnections?.();
+    }
+  });
+}
+
 /**
- * Stop accepting connections, drain in-flight requests, checkpoint the
- * current WAL, and close the current database handle. `getDatabase()` is
- * intentionally read only after the HTTP drain because a restore may replace
- * the handle while its request is still in flight.
+ * Stop accepting connections, drain accepted work, checkpoint the current
+ * WAL, and release both database handles. Every cleanup stage runs even if an
+ * earlier stage fails, which also makes this safe after create/listen failure.
  */
 export async function shutdownApiServer(server: VelographApiServer): Promise<void> {
-  if (server.listening) {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-      // Node closes idle keep-alive connections automatically on current
-      // releases; this explicit call keeps the drain bounded on older
-      // supported releases without interrupting active responses.
-      server.closeIdleConnections?.();
-    });
+  let firstError: unknown;
+  const capture = (error: unknown) => {
+    firstError ??= error;
+  };
+
+  try {
+    await closeHttpServer(server);
+  } catch (error) {
+    capture(error);
   }
 
-  // A client can disconnect while its asynchronous import, backup, or restore
-  // work is still settling. The HTTP socket drain alone does not account for
-  // that work, so wait on the server's operation tracker before touching the
-  // current database handle.
-  await server.waitForRequests();
+  try {
+    await server.waitForRequests();
+  } catch (error) {
+    capture(error);
+  }
 
   const db = server.getDatabase();
-  if (!db.open) return;
-  try {
-    checkpointDatabase(db);
-  } finally {
-    db.close();
+  if (db.open) {
+    try {
+      checkpointDatabase(db);
+    } catch (error) {
+      capture(error);
+    } finally {
+      try {
+        db.close();
+      } catch (error) {
+        capture(error);
+      }
+    }
   }
+  server.closeBasemap();
+
+  if (firstError !== undefined) throw firstError;
 }

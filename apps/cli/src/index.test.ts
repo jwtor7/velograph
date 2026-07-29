@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { databasePath, openDatabase, Repository } from '@velograph/db';
-import { main } from './index.ts';
+import { main, portableBasename } from './index.ts';
 
 // Every temp dir here is created outside the checkout (never under the repo)
 // via the OS temp directory, matching the repo's no-real-data-in-checkout rule.
@@ -22,8 +22,10 @@ const FIXTURES = join(
 const CLI_ENTRYPOINT = fileURLToPath(new URL('./index.ts', import.meta.url));
 
 let dataDir: string;
+let previousDataDir: string | undefined;
 
 beforeEach(() => {
+  previousDataDir = process.env['VELO_DATA_DIR'];
   dataDir = mkdtempSync(join(tmpdir(), 'velo-cli-'));
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -32,6 +34,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   rmSync(dataDir, { recursive: true, force: true });
+  if (previousDataDir === undefined) delete process.env['VELO_DATA_DIR'];
+  else process.env['VELO_DATA_DIR'] = previousDataDir;
 });
 
 function firstWorkoutId(): number {
@@ -53,6 +57,29 @@ function workoutCount(): number {
 }
 
 describe('velograph CLI', () => {
+  it('derives a portable source filename from POSIX and Windows separators', () => {
+    expect(
+      portableBasename('/synthetic/export/Outdoor Cycling-Heart Rate-20310102_080000.csv'),
+    ).toBe('Outdoor Cycling-Heart Rate-20310102_080000.csv');
+    expect(
+      portableBasename('C:\\synthetic\\export\\Outdoor Cycling-Heart Rate-20310102_080000.csv'),
+    ).toBe('Outdoor Cycling-Heart Rate-20310102_080000.csv');
+  });
+
+  it('rejects missing, blank, flag-like, or repeated data-dir values before fallback', async () => {
+    const fallback = join(dataDir, 'must-not-be-created');
+    process.env['VELO_DATA_DIR'] = fallback;
+    const fixture = join(FIXTURES, 'Outdoor Cycling-Heart Rate-20310402_073000.csv');
+
+    expect(await main(['import', fixture, '--data-dir'])).toBe(2);
+    expect(await main(['import', fixture, '--data-dir', ''])).toBe(2);
+    expect(await main(['import', fixture, '--data-dir', '--confirm-replace'])).toBe(2);
+    expect(
+      await main(['import', fixture, '--data-dir', dataDir, '--data-dir', join(dataDir, 'other')]),
+    ).toBe(2);
+    expect(() => statSync(fallback)).toThrow();
+  });
+
   it('prints usage and exits 2 for no/unknown command', async () => {
     expect(await main([])).toBe(2);
     expect(await main(['bogus'])).toBe(2);

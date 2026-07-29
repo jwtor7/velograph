@@ -50,20 +50,27 @@ standalone; nothing in this repository anticipates that today.
    release dependency/SBOM diff before proceeding.
 2. **Choose the new version** using the scheme above.
 3. **Open a release PR** that, in one commit:
-   - Renames `## [Unreleased]` to `## [x.y.z] - YYYY-MM-DD` (UTC date) and adds a fresh empty
+   - Runs `date '+%Y-%m-%d %H:%M:%S %Z (%z)'` and renames `## [Unreleased]` to
+     `## [x.y.z] - YYYY-MM-DD` using that machine-local date, then adds a fresh empty
      `## [Unreleased]` section above it.
    - Updates the compare-link reference definitions at the bottom of `CHANGELOG.md`.
    - Bumps `version` in the root `package.json` and in every workspace package's
      `package.json` to the same `x.y.z` (lockstep).
+   - Runs `pnpm runtime:build`, `pnpm runtime:verify-artifacts`,
+     `pnpm api:verify-package`, and `pnpm cli:verify-package`. The package verifiers must pass
+     from clean temporary installs on every Node version in the CI runtime matrix.
 4. **Merge the release PR** (squash, per the normal git flow in `CLAUDE.md`/`AGENTS.md`).
-5. **Tag the merge commit** on `main`:
+5. **Verify the local merge timestamp** with
+   `git log -1 --pretty=format:'%cd' --date=local`. If its date does not match the documented
+   release date, fix the release documentation before pushing.
+6. **Tag the merge commit** on `main`:
 
    ```sh
    git tag -a vX.Y.Z -m "vX.Y.Z"
    git push origin vX.Y.Z
    ```
 
-6. **Publish a GitHub Release** from the tag, with the `CHANGELOG.md` section for that
+7. **Publish a GitHub Release** from the tag, with the `CHANGELOG.md` section for that
    version pasted into the release notes.
 
 ## CHANGELOG discipline (enforced by CI)

@@ -1,0 +1,881 @@
+{
+  "inputs": {
+    "packages/shared/src/types.ts": {
+      "bytes": 2697,
+      "imports": [],
+      "format": "esm"
+    },
+    "packages/shared/src/time.ts": {
+      "bytes": 6005,
+      "imports": [],
+      "format": "esm"
+    },
+    "packages/shared/src/hash.ts": {
+      "bytes": 814,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/shared/src/version.ts": {
+      "bytes": 120,
+      "imports": [],
+      "format": "esm"
+    },
+    "packages/shared/src/import-limits.ts": {
+      "bytes": 622,
+      "imports": [],
+      "format": "esm"
+    },
+    "packages/shared/src/index.ts": {
+      "bytes": 148,
+      "imports": [
+        {
+          "path": "packages/shared/src/types.ts",
+          "kind": "import-statement",
+          "original": "./types.ts"
+        },
+        {
+          "path": "packages/shared/src/time.ts",
+          "kind": "import-statement",
+          "original": "./time.ts"
+        },
+        {
+          "path": "packages/shared/src/hash.ts",
+          "kind": "import-statement",
+          "original": "./hash.ts"
+        },
+        {
+          "path": "packages/shared/src/version.ts",
+          "kind": "import-statement",
+          "original": "./version.ts"
+        },
+        {
+          "path": "packages/shared/src/import-limits.ts",
+          "kind": "import-statement",
+          "original": "./import-limits.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/db/src/migrate.ts": {
+      "bytes": 5936,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/shared/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/shared"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/db/src/database.ts": {
+      "bytes": 1463,
+      "imports": [
+        {
+          "path": "better-sqlite3",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:url",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/db/src/migrate.ts",
+          "kind": "import-statement",
+          "original": "./migrate.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/db/src/datadir.ts": {
+      "bytes": 3924,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/db/src/repository.ts": {
+      "bytes": 17457,
+      "imports": [],
+      "format": "esm"
+    },
+    "packages/db/src/analytics-input.ts": {
+      "bytes": 5577,
+      "imports": [],
+      "format": "esm"
+    },
+    "packages/db/src/backup-manifest.ts": {
+      "bytes": 9367,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/shared/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/shared"
+        },
+        {
+          "path": "packages/db/src/migrate.ts",
+          "kind": "import-statement",
+          "original": "./migrate.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/db/src/backup.ts": {
+      "bytes": 56523,
+      "imports": [
+        {
+          "path": "better-sqlite3",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/db/src/datadir.ts",
+          "kind": "import-statement",
+          "original": "./datadir.ts"
+        },
+        {
+          "path": "packages/db/src/database.ts",
+          "kind": "import-statement",
+          "original": "./database.ts"
+        },
+        {
+          "path": "packages/db/src/backup-manifest.ts",
+          "kind": "import-statement",
+          "original": "./backup-manifest.ts"
+        },
+        {
+          "path": "packages/db/src/migrate.ts",
+          "kind": "import-statement",
+          "original": "./migrate.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/db/src/index.ts": {
+      "bytes": 229,
+      "imports": [
+        {
+          "path": "packages/db/src/database.ts",
+          "kind": "import-statement",
+          "original": "./database.ts"
+        },
+        {
+          "path": "packages/db/src/migrate.ts",
+          "kind": "import-statement",
+          "original": "./migrate.ts"
+        },
+        {
+          "path": "packages/db/src/datadir.ts",
+          "kind": "import-statement",
+          "original": "./datadir.ts"
+        },
+        {
+          "path": "packages/db/src/repository.ts",
+          "kind": "import-statement",
+          "original": "./repository.ts"
+        },
+        {
+          "path": "packages/db/src/analytics-input.ts",
+          "kind": "import-statement",
+          "original": "./analytics-input.ts"
+        },
+        {
+          "path": "packages/db/src/backup.ts",
+          "kind": "import-statement",
+          "original": "./backup.ts"
+        },
+        {
+          "path": "packages/db/src/backup-manifest.ts",
+          "kind": "import-statement",
+          "original": "./backup-manifest.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/importers/src/csv.ts": {
+      "bytes": 4973,
+      "imports": [],
+      "format": "esm"
+    },
+    "packages/importers/src/numeric.ts": {
+      "bytes": 1033,
+      "imports": [],
+      "format": "esm"
+    },
+    "packages/importers/src/gpx.ts": {
+      "bytes": 22143,
+      "imports": [
+        {
+          "path": "packages/shared/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/shared"
+        },
+        {
+          "path": "packages/importers/src/numeric.ts",
+          "kind": "import-statement",
+          "original": "./numeric.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/importers/src/zip.ts": {
+      "bytes": 13592,
+      "imports": [
+        {
+          "path": "node:zlib",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/importers/src/adapters.ts": {
+      "bytes": 21472,
+      "imports": [
+        {
+          "path": "packages/shared/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/shared"
+        },
+        {
+          "path": "packages/importers/src/csv.ts",
+          "kind": "import-statement",
+          "original": "./csv.ts"
+        },
+        {
+          "path": "packages/importers/src/gpx.ts",
+          "kind": "import-statement",
+          "original": "./gpx.ts"
+        },
+        {
+          "path": "packages/importers/src/numeric.ts",
+          "kind": "import-statement",
+          "original": "./numeric.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/importers/src/association.ts": {
+      "bytes": 2617,
+      "imports": [],
+      "format": "esm"
+    },
+    "packages/importers/src/importer.ts": {
+      "bytes": 25147,
+      "imports": [
+        {
+          "path": "packages/shared/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/shared"
+        },
+        {
+          "path": "packages/db/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/db"
+        },
+        {
+          "path": "packages/importers/src/adapters.ts",
+          "kind": "import-statement",
+          "original": "./adapters.ts"
+        },
+        {
+          "path": "packages/importers/src/association.ts",
+          "kind": "import-statement",
+          "original": "./association.ts"
+        },
+        {
+          "path": "packages/importers/src/gpx.ts",
+          "kind": "import-statement",
+          "original": "./gpx.ts"
+        },
+        {
+          "path": "packages/importers/src/csv.ts",
+          "kind": "import-statement",
+          "original": "./csv.ts"
+        },
+        {
+          "path": "packages/importers/src/zip.ts",
+          "kind": "import-statement",
+          "original": "./zip.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/importers/src/folder.ts": {
+      "bytes": 27136,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/db/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/db"
+        },
+        {
+          "path": "packages/shared/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/shared"
+        },
+        {
+          "path": "packages/importers/src/adapters.ts",
+          "kind": "import-statement",
+          "original": "./adapters.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/importers/src/index.ts": {
+      "bytes": 233,
+      "imports": [
+        {
+          "path": "packages/importers/src/csv.ts",
+          "kind": "import-statement",
+          "original": "./csv.ts"
+        },
+        {
+          "path": "packages/importers/src/numeric.ts",
+          "kind": "import-statement",
+          "original": "./numeric.ts"
+        },
+        {
+          "path": "packages/importers/src/gpx.ts",
+          "kind": "import-statement",
+          "original": "./gpx.ts"
+        },
+        {
+          "path": "packages/importers/src/zip.ts",
+          "kind": "import-statement",
+          "original": "./zip.ts"
+        },
+        {
+          "path": "packages/importers/src/adapters.ts",
+          "kind": "import-statement",
+          "original": "./adapters.ts"
+        },
+        {
+          "path": "packages/importers/src/association.ts",
+          "kind": "import-statement",
+          "original": "./association.ts"
+        },
+        {
+          "path": "packages/importers/src/importer.ts",
+          "kind": "import-statement",
+          "original": "./importer.ts"
+        },
+        {
+          "path": "packages/importers/src/folder.ts",
+          "kind": "import-statement",
+          "original": "./folder.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/analytics/src/types.ts": {
+      "bytes": 2473,
+      "imports": [],
+      "format": "esm"
+    },
+    "packages/analytics/src/settings.ts": {
+      "bytes": 2876,
+      "imports": [],
+      "format": "esm"
+    },
+    "packages/analytics/src/engine.ts": {
+      "bytes": 20260,
+      "imports": [
+        {
+          "path": "packages/analytics/src/settings.ts",
+          "kind": "import-statement",
+          "original": "./settings.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/analytics/src/index.ts": {
+      "bytes": 88,
+      "imports": [
+        {
+          "path": "packages/analytics/src/types.ts",
+          "kind": "import-statement",
+          "original": "./types.ts"
+        },
+        {
+          "path": "packages/analytics/src/engine.ts",
+          "kind": "import-statement",
+          "original": "./engine.ts"
+        },
+        {
+          "path": "packages/analytics/src/settings.ts",
+          "kind": "import-statement",
+          "original": "./settings.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "apps/api/src/analytics-service.ts": {
+      "bytes": 5345,
+      "imports": [
+        {
+          "path": "packages/db/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/db"
+        },
+        {
+          "path": "packages/analytics/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/analytics"
+        },
+        {
+          "path": "packages/shared/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/shared"
+        },
+        {
+          "path": "packages/db/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/db"
+        }
+      ],
+      "format": "esm"
+    },
+    "apps/api/src/basemap.ts": {
+      "bytes": 26700,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/db/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/db"
+        },
+        {
+          "path": "better-sqlite3",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
+    "apps/api/src/server.ts": {
+      "bytes": 38127,
+      "imports": [
+        {
+          "path": "node:http",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/db/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/db"
+        },
+        {
+          "path": "packages/shared/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/shared"
+        },
+        {
+          "path": "packages/importers/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/importers"
+        },
+        {
+          "path": "packages/shared/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/shared"
+        },
+        {
+          "path": "apps/api/src/analytics-service.ts",
+          "kind": "import-statement",
+          "original": "./analytics-service.ts"
+        },
+        {
+          "path": "apps/api/src/basemap.ts",
+          "kind": "import-statement",
+          "original": "./basemap.ts"
+        }
+      ],
+      "format": "esm"
+    },
+    "apps/api/src/shutdown-coordinator.ts": {
+      "bytes": 1415,
+      "imports": [],
+      "format": "esm"
+    },
+    "apps/api/src/shutdown.ts": {
+      "bytes": 1627,
+      "imports": [
+        {
+          "path": "packages/db/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/db"
+        }
+      ],
+      "format": "esm"
+    },
+    "apps/api/src/main.ts": {
+      "bytes": 6063,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:url",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/db/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/db"
+        },
+        {
+          "path": "apps/api/src/server.ts",
+          "kind": "import-statement",
+          "original": "./server.ts"
+        },
+        {
+          "path": "apps/api/src/shutdown-coordinator.ts",
+          "kind": "import-statement",
+          "original": "./shutdown-coordinator.ts"
+        },
+        {
+          "path": "apps/api/src/shutdown.ts",
+          "kind": "import-statement",
+          "original": "./shutdown.ts"
+        }
+      ],
+      "format": "esm"
+    }
+  },
+  "outputs": {
+    "apps/api/dist/api-runtime.mjs": {
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:url",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "better-sqlite3",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:url",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "better-sqlite3",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:http",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:zlib",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "better-sqlite3",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "exports": [
+        "main",
+        "readApiRuntimeConfig",
+        "resolveWebDist"
+      ],
+      "entryPoint": "apps/api/src/main.ts",
+      "inputs": {
+        "apps/api/src/main.ts": {
+          "bytesInOutput": 4756
+        },
+        "packages/db/src/database.ts": {
+          "bytesInOutput": 741
+        },
+        "packages/db/src/migrate.ts": {
+          "bytesInOutput": 3937
+        },
+        "packages/shared/src/types.ts": {
+          "bytesInOutput": 97
+        },
+        "packages/shared/src/index.ts": {
+          "bytesInOutput": 0
+        },
+        "packages/shared/src/time.ts": {
+          "bytesInOutput": 4310
+        },
+        "packages/shared/src/hash.ts": {
+          "bytesInOutput": 492
+        },
+        "packages/shared/src/version.ts": {
+          "bytesInOutput": 27
+        },
+        "packages/shared/src/import-limits.ts": {
+          "bytesInOutput": 207
+        },
+        "packages/db/src/index.ts": {
+          "bytesInOutput": 0
+        },
+        "packages/db/src/datadir.ts": {
+          "bytesInOutput": 2862
+        },
+        "packages/db/src/repository.ts": {
+          "bytesInOutput": 14067
+        },
+        "packages/db/src/analytics-input.ts": {
+          "bytesInOutput": 3601
+        },
+        "packages/db/src/backup.ts": {
+          "bytesInOutput": 42644
+        },
+        "packages/db/src/backup-manifest.ts": {
+          "bytesInOutput": 7352
+        },
+        "apps/api/src/server.ts": {
+          "bytesInOutput": 29493
+        },
+        "packages/importers/src/csv.ts": {
+          "bytesInOutput": 3533
+        },
+        "packages/importers/src/index.ts": {
+          "bytesInOutput": 0
+        },
+        "packages/importers/src/numeric.ts": {
+          "bytesInOutput": 614
+        },
+        "packages/importers/src/gpx.ts": {
+          "bytesInOutput": 18740
+        },
+        "packages/importers/src/zip.ts": {
+          "bytesInOutput": 11172
+        },
+        "packages/importers/src/adapters.ts": {
+          "bytesInOutput": 15830
+        },
+        "packages/importers/src/association.ts": {
+          "bytesInOutput": 1673
+        },
+        "packages/importers/src/importer.ts": {
+          "bytesInOutput": 16688
+        },
+        "packages/importers/src/folder.ts": {
+          "bytesInOutput": 19450
+        },
+        "packages/analytics/src/index.ts": {
+          "bytesInOutput": 0
+        },
+        "packages/analytics/src/settings.ts": {
+          "bytesInOutput": 2151
+        },
+        "packages/analytics/src/engine.ts": {
+          "bytesInOutput": 16049
+        },
+        "apps/api/src/analytics-service.ts": {
+          "bytesInOutput": 3547
+        },
+        "apps/api/src/basemap.ts": {
+          "bytesInOutput": 20467
+        },
+        "apps/api/src/shutdown-coordinator.ts": {
+          "bytesInOutput": 870
+        },
+        "apps/api/src/shutdown.ts": {
+          "bytesInOutput": 1026
+        }
+      },
+      "bytes": 247571
+    }
+  }
+}

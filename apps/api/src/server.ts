@@ -101,6 +101,8 @@ export interface VelographApiServer extends Server {
   isRestoreInProgress(): boolean;
   /** Resolves after all accepted request work has settled, even if a client disconnected. */
   waitForRequests(): Promise<void>;
+  /** Idempotently releases the read-only basemap handle and tile cache. */
+  closeBasemap(): void;
 }
 
 function notifyRequestWaiters(state: ApiRuntimeState): void {
@@ -139,54 +141,62 @@ export function createApiServer(opts: ApiOptions): VelographApiServer {
     ...(opts.basemapPathRequired === undefined ? {} : { required: opts.basemapPathRequired }),
   });
 
-  const server = createServer((req, res) => {
-    state.activeRequests += 1;
-    let finished = false;
-    let operationPending = false;
-    const finishRequest = () => {
-      if (finished) return;
-      finished = true;
-      state.activeRequests -= 1;
-      notifyRequestWaiters(state);
-    };
-    const finishResponse = () => {
-      if (!operationPending) finishRequest();
-    };
-    res.once('finish', finishResponse);
-    res.once('close', finishResponse);
+  let server: Server;
+  try {
+    server = createServer((req, res) => {
+      state.activeRequests += 1;
+      let finished = false;
+      let operationPending = false;
+      const finishRequest = () => {
+        if (finished) return;
+        finished = true;
+        state.activeRequests -= 1;
+        notifyRequestWaiters(state);
+      };
+      const finishResponse = () => {
+        if (!operationPending) finishRequest();
+      };
+      res.once('finish', finishResponse);
+      res.once('close', finishResponse);
 
-    try {
-      const operation = handle(req, res, opts, now, server, state, basemap);
-      if (operation) {
-        operationPending = true;
-        void operation
-          .catch((error) =>
-            send(res, 500, {
-              error:
-                error instanceof AnalyticsSnapshotConflictError
-                  ? 'analytics_snapshot_conflict'
-                  : 'internal_error',
-            }),
-          )
-          .finally(() => {
-            operationPending = false;
-            finishRequest();
-          });
+      try {
+        const operation = handle(req, res, opts, now, server, state, basemap);
+        if (operation) {
+          operationPending = true;
+          void operation
+            .catch((error) =>
+              send(res, 500, {
+                error:
+                  error instanceof AnalyticsSnapshotConflictError
+                    ? 'analytics_snapshot_conflict'
+                    : 'internal_error',
+              }),
+            )
+            .finally(() => {
+              operationPending = false;
+              finishRequest();
+            });
+        }
+      } catch (error) {
+        send(res, 500, {
+          error:
+            error instanceof AnalyticsSnapshotConflictError
+              ? 'analytics_snapshot_conflict'
+              : 'internal_error',
+        });
       }
-    } catch (error) {
-      send(res, 500, {
-        error:
-          error instanceof AnalyticsSnapshotConflictError
-            ? 'analytics_snapshot_conflict'
-            : 'internal_error',
-      });
-    }
-  });
-  server.once('close', () => basemap.close());
+    });
+  } catch (error) {
+    basemap.close();
+    throw error;
+  }
+  const closeBasemap = () => basemap.close();
+  server.once('close', closeBasemap);
   return Object.assign(server, {
     getDatabase: () => opts.db,
     isRestoreInProgress: () => state.restoreInProgress,
     waitForRequests: () => waitForRequests(state),
+    closeBasemap,
   });
 }
 

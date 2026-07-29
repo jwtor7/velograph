@@ -32,37 +32,49 @@ jobs:
         run: pnpm lint
       - name: Typecheck
         run: pnpm typecheck
-      - name: Production web build
-        run: pnpm --filter @velograph/web build
+      - name: Package and verify production web artifact
+        run: pnpm package:web
       - name: Unit tests
         run: pnpm test
 
-  node-compatibility:
-    name: Clean install and verification (Node ${{ matrix.node-version }})
+  runtime-packages:
+    name: Runtime packages (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # Vite 7 requires Node 20.19 or newer. Node 26 catches assumptions about
-        # a newer supported runtime without weakening the deterministic core.
-        node-version: ['20.19.0', '26']
+        # Vite 7 requires Node 20.19 or newer. Node 26 is the upper
+        # supported major and catches assumptions hidden by the primary runtime.
+        node: ['20.19.0', '26.x']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: ${{ matrix.node }}
+          cache: pnpm
       - name: Clean frozen-lockfile install
         run: pnpm install --frozen-lockfile
-      - name: Third-party runtime licence and notices gate
+      - name: Third-party runtime licence and canonical notices gate
         run: pnpm license:check
-      - name: Package and verify the browser artifact on the minimum runtime
-        if: matrix.node-version == '20.19.0'
-        run: pnpm package:web
-      - name: Typecheck
-        run: pnpm typecheck
-      - name: Unit tests
-        run: pnpm test
+      - name: Build API, CLI, migrations, and packaged web assets
+        run: pnpm runtime:build
+      - name: Verify generated artifacts and scan every generated file
+        run: pnpm runtime:verify-artifacts
+      - name: Verify clean-installed CLI package
+        run: pnpm cli:verify-package
+      - name: Verify clean-installed API package
+        run: pnpm api:verify-package
+      - name: Built runtime artifacts are current
+        run: |
+          git diff --exit-code -- \
+            apps/api/dist apps/api/migrations \
+            apps/cli/dist apps/cli/migrations
+          test -z "$(git ls-files --others --exclude-standard -- \
+            apps/api/dist apps/api/migrations \
+            apps/cli/dist apps/cli/migrations)"
 
   secret-scan:
     name: Secret scan (gitleaks)
