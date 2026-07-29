@@ -46,6 +46,25 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
+  packages/analytics:
+    dependencies:
+      '@velograph/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      '@types/node':
+        specifier: ^24.13.3
+        version: 24.13.3
+      '@velograph/db':
+        specifier: workspace:*
+        version: link:../db
+      '@velograph/importers':
+        specifier: workspace:*
+        version: link:../importers
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
   packages/db:
     dependencies:
       '@velograph/shared':
