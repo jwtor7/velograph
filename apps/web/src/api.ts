@@ -106,6 +106,18 @@ export interface Settings {
   elevationHysteresisM: number;
 }
 
+export type BasemapResponse =
+  | { state: 'not_configured' | 'invalid' }
+  | {
+      state: 'ready';
+      format: 'raster-mbtiles';
+      name: string;
+      attribution: string;
+      minZoom: number;
+      maxZoom: number;
+      bounds?: readonly [number, number, number, number];
+    };
+
 export interface ImportResultBody {
   batchId: number;
   imported: number;
@@ -171,6 +183,7 @@ export const api = {
   workouts: () => request<{ workouts: WorkoutSummary[] }>('/api/workouts'),
   workout: (id: number) => request<WorkoutDetail>(`/api/workouts/${id}`),
   trends: () => request<TrendsResponse>('/api/trends'),
+  basemap: () => request<BasemapResponse>('/api/basemap'),
   settings: () => request<{ settings: Settings }>('/api/settings'),
   saveSettings: (settings: Partial<Settings>) =>
     request<{ settings: Settings }>('/api/settings', {

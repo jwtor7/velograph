@@ -124,6 +124,21 @@ describe('loopback API', () => {
     expect(same.status).toBe(200);
   });
 
+  it('rejects cross-site browser fetch metadata while preserving local clients', async () => {
+    const crossSite = await fetch(`${base}/api/health`, {
+      headers: { 'Sec-Fetch-Site': 'cross-site' },
+    });
+    expect(crossSite.status).toBe(403);
+    expect(await crossSite.json()).toEqual({ error: 'cross_site_request' });
+
+    const sameOrigin = await fetch(`${base}/api/health`, {
+      headers: { 'Sec-Fetch-Site': 'same-origin' },
+    });
+    expect(sameOrigin.status).toBe(200);
+    // Non-browser and local command-line clients usually omit fetch metadata.
+    expect((await fetch(`${base}/api/health`)).status).toBe(200);
+  });
+
   it('requires the CSRF header on mutating requests', async () => {
     const res = await fetch(`${base}/api/import`, {
       method: 'POST',

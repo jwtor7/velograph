@@ -15,9 +15,11 @@
     "@velograph/analytics": "workspace:*",
     "@velograph/db": "workspace:*",
     "@velograph/importers": "workspace:*",
-    "@velograph/shared": "workspace:*"
+    "@velograph/shared": "workspace:*",
+    "better-sqlite3": "^12.11.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.13.3",
     "typescript": "^5.9.2"
   }

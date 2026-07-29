@@ -9,6 +9,8 @@ import { shutdownApiServer } from './shutdown.ts';
 const dataDir = resolveDataDir();
 const dbPath = databasePath(dataDir);
 const db = openDatabase(dbPath);
+const basemapOverride = process.env['VELO_BASEMAP_PATH']?.trim();
+const basemapPath = basemapOverride || join(dataDir, 'basemap.mbtiles');
 const port = Number(process.env['VELO_PORT'] ?? 5123);
 const host = process.env['VELO_HOST'] ?? '127.0.0.1';
 
@@ -22,6 +24,8 @@ const webDist = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web',
 const server = createApiServer({
   db,
   dbPath,
+  basemapPath,
+  basemapPathRequired: Boolean(basemapOverride),
   ...(existsSync(webDist) ? { staticDir: webDist } : {}),
 });
 server.listen(port, host, () => {

@@ -19,6 +19,12 @@ is pre-1.0, and for the release procedure.
   once and cryptographically pinned thereafter; altered applied migrations fail closed. The API
   and CLI require explicit replacement confirmation, while known older backups remain restorable
   through a reported compatibility migration (PRD §13).
+- **Interactive offline route maps** replace the static route image with a keyboard-, pointer-,
+  and touch-operable geographic viewport with fit, scale, markers, preserved gaps, and the
+  synchronized chart cursor. An optional, validated raster MBTiles package can be loaded only
+  from the local data environment and served through the loopback API; the useful route-only
+  fallback makes no remote tile, font, geocoding, telemetry, or CDN request. MBTiles files remain
+  ignored and are rejected by the repository privacy scanner (#56).
 - **Local server lifecycle commands**: `pnpm app:start`, `app:stop`, `app:status`, and
   `app:restart`. `app:start` builds the web client, refuses to start when a server already
   holds the port, and waits for the API to actually answer before reporting success.

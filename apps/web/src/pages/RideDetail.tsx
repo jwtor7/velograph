@@ -3,7 +3,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, type WorkoutDetail, type WorkoutSummary } from '../api.ts';
 import { fmtDate, fmtDuration, fmtInt, fmtKm, fmtSpeedKmh, type Pt } from '../chartspec/spec.ts';
 import { TimeSeriesChart } from '../components/charts.tsx';
-import { ElevationProfile, RoutePanel, ZoneStrip } from '../components/route.tsx';
+import { InteractiveRouteMap } from '../components/interactive-route-map.tsx';
+import { ElevationProfile, ZoneStrip } from '../components/route.tsx';
 import { ConfirmDialog, Kpi, EmptyState } from '../components/ui.tsx';
 import { findPreviousWorkout, repairAndReloadRide } from '../ride-repair.ts';
 
@@ -174,11 +175,8 @@ export function RideDetail() {
 
       <div className="two-col">
         <div className="card">
-          <div className="chart-tile-head">
-            <h2 className="card-title">Offline route map</h2>
-            <span className="badge">Local geometry · no remote tiles</span>
-          </div>
-          <RoutePanel segments={detail.route} cursorT={cursorT} />
+          <h2 className="card-title">Interactive offline route map</h2>
+          <InteractiveRouteMap segments={detail.route} cursorT={cursorT} />
         </div>
         <div className="stack">
           <div className="card">

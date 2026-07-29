@@ -64,7 +64,7 @@ Chart fills are the channel color at ~12–18% alpha fading to 0 toward the base
 
 ### Route trace (sampled)
 
-Route polylines are drawn as a progress gradient start→finish: `#2CE466` → `#3D61F9`, on a neutral dark grid (no map tiles). Start marker green, finish marker white ring on dark.
+Route polylines are drawn as a progress gradient start→finish: `#2CE466` → `#3D61F9`, in a true interactive geographic viewport. Start is green and finish is a white ring on dark. The route-only state uses the existing dark canvas without inventing geographic context; when a validated local raster MBTiles package is configured, its tiles sit beneath the same route geometry. Map controls use text labels, the existing compact button treatment, visible focus, and 44 px touch targets on narrow screens.
 
 ### Text
 
@@ -100,7 +100,9 @@ Accessibility note: sampled label grays from the art fail AA contrast at small s
 - **Pill badge**: transparent fill, 1 px `--vg-brand-green` border, brand-green text (as in "Open Source · Local-First · Runs in Your Browser").
 - **Chart tile**: title left, current value right in channel color; sparkline/area chart beneath; muted axis ticks.
 - **Zone strip**: six columns, zone label + time + percent, thin rounded progress bar in the zone color.
-- **Route panel**: dark canvas, subtle grid, gradient polyline, start/finish markers, no tiles.
+- **Route panel**: interactive geographic viewport, gradient polyline, start/finish/distance/
+  direction markers, scale, compact controls, and an optional validated local basemap beneath the
+  route.
 
 ## 5. Rules
 

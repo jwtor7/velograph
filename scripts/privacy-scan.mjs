@@ -37,7 +37,7 @@ export const LEAK_MARKER = ['VELOGRAPH', 'SYNTHETIC', 'LEAK', 'MARKER'].join('_'
 
 const DATA_EXTENSIONS = /\.(csv|gpx)$/i;
 const ARCHIVE_EXTENSIONS = /\.(zip|tar|tar\.gz|tgz|gz|bz2|xz|7z|rar)$/i;
-const SQLITE_EXTENSIONS = /\.(sqlite3?|db|db-wal|db-shm|db-journal|dump)$/i;
+const SQLITE_EXTENSIONS = /\.(sqlite3?|mbtiles|db|db-wal|db-shm|db-journal|dump)$/i;
 const ALLOWED_BINARY = /\.(png|jpe?g|svg|ico|woff2?)$/i;
 const MAX_BINARY_BYTES = 4 * 1024 * 1024;
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;

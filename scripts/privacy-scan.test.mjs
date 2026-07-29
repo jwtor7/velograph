@@ -88,6 +88,7 @@ describe('privacy scanner (PRD §12.2)', () => {
   it('blocks archives and sqlite/env/auth files by name', () => {
     expect(rules(scanFile('backup.zip', buf('x')))).toContain('archive-file');
     expect(rules(scanFile('app.db', buf('x')))).toContain('sqlite-file-extension');
+    expect(rules(scanFile('basemap.mbtiles', buf('x')))).toContain('sqlite-file-extension');
     expect(rules(scanFile('.env.local', buf('x')))).toContain('env-file');
     expect(rules(scanFile('config/auth.json', buf('{}')))).toContain('provider-auth-cache-file');
   });

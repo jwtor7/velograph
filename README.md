@@ -126,10 +126,12 @@ fixtures/synthetic/   invented data used by tests and this quickstart
 - [Changelog](CHANGELOG.md) — what shipped, release by release
 - [Release procedure](docs/releasing.md) — versioning scheme and how a release is cut
 - [Design system](docs/design-system.md) — palette, typography, and visual language
+- [Offline route maps](docs/offline-basemap.md) — interactive route controls and optional local raster MBTiles setup
 - [Analytics formulas](docs/formulas.md) — every metric definition, versioned
 - [Data management](docs/data-management.md) — delete, backup, restore, and repair: cascade behaviour and the delete/re-import idempotency decision
 - [AI insight privacy](docs/ai-privacy.md) — what would leave the machine per provider, and why AI is a stub today
 - [CI supply-chain policy](docs/ci-supply-chain.md) — pinned-SHA GitHub Actions and how to update them
+- [Third-party notices](THIRD_PARTY_NOTICES.md) — bundled dependency licences and notices
 
 ## License
 
