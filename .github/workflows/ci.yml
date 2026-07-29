@@ -22,6 +22,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Third-party runtime licence and notices gate (blocking)
+        run: pnpm license:check
       - name: Privacy / data-leak scan (blocking)
         run: node scripts/privacy-scan.mjs --all
       - name: Format check
@@ -41,9 +43,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Node 20 is the declared minimum. Node 26 catches assumptions about a
-        # newer supported runtime without weakening the deterministic core.
-        node-version: [20, 26]
+        # Vite 7 requires Node 20.19 or newer. Node 26 catches assumptions about
+        # a newer supported runtime without weakening the deterministic core.
+        node-version: ['20.19.0', '26']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
@@ -52,6 +54,11 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - name: Clean frozen-lockfile install
         run: pnpm install --frozen-lockfile
+      - name: Third-party runtime licence and notices gate
+        run: pnpm license:check
+      - name: Package and verify the browser artifact on the minimum runtime
+        if: matrix.node-version == '20.19.0'
+        run: pnpm package:web
       - name: Typecheck
         run: pnpm typecheck
       - name: Unit tests

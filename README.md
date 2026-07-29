@@ -215,9 +215,13 @@ fixtures/synthetic/   invented data used by tests and this quickstart
 - [CI supply-chain policy](docs/ci-supply-chain.md) — pinned-SHA GitHub Actions and how to update them
 - [Third-party notices](THIRD_PARTY_NOTICES.md) — bundled dependency licences and notices
 - [Release privacy audit](docs/release-privacy-audit.md) — worktree, history, artifact, and image-layer release checks
+- [Third-party licence gate](docs/third-party-licences.md) — exact runtime inventory, canonical notices, and artifact checks
 - [Threat model](docs/threat-model.md) — privacy/security boundaries and release evidence
 - [Security policy](SECURITY.md) and [incident response](docs/privacy-incident-response.md) — report and contain vulnerabilities or privacy leaks
 
 ## License
 
-License to be determined (Apache-2.0 recommended; see PRD §20). Until a license is published, all rights reserved.
+No licence has been selected for Velograph (Apache-2.0 remains a PRD §20
+recommendation only). Until a project licence is published, all rights are
+reserved. Distributed dependencies retain their own terms; see
+[Third-party notices](THIRD_PARTY_NOTICES.md).

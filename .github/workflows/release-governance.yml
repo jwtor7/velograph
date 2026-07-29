@@ -23,6 +23,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Verify runtime dependency licences and canonical notices
+        run: pnpm license:check
       - name: Audit tracked worktree
         run: node scripts/privacy-audit-release.mjs --working-tree
       - name: Audit every reachable Git blob

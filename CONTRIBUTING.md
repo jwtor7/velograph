@@ -29,6 +29,7 @@ pnpm format
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm license:check
 node scripts/privacy-scan.mjs --all
 ```
 
@@ -55,10 +56,13 @@ into a container. The checked-in Compose file uses a Docker-managed local
 volume and publishes only to host loopback. Before a release, run the history,
 artifact, native-container, and exact OCI output checks in
 [the release privacy audit guide](docs/release-privacy-audit.md).
+Build distributable browser files with `pnpm package:web`, which includes and
+verifies the canonical third-party notices.
 
 ## Licence status
 
 No open-source licence has been selected or added. Do not add, copy, or imply a
 licence without explicit maintainer authority. The outstanding decision is
 tracked in PRD §20 and the README; until it is resolved, all rights are
-reserved.
+reserved. Upstream dependencies retain their own terms; review and update them
+through the [third-party licence gate](docs/third-party-licences.md).

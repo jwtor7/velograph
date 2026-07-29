@@ -30,13 +30,25 @@ import {
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, isAbsolute, join, relative } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 import { createGunzip } from 'node:zlib';
 import { scanFile } from './privacy-scan.mjs';
+import { verifyWebArtifactContents } from './third-party-license-gate.mjs';
 
 export const MAX_AUDIT_ENTRY_BYTES = 64 * 1024 * 1024;
+const REPOSITORY_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const CANONICAL_NOTICES_PATH = join(REPOSITORY_ROOT, 'THIRD_PARTY_NOTICES.md');
+export const REQUIRED_CONTAINER_NOTICE_PATHS = [
+  'app/api/THIRD_PARTY_NOTICES.md',
+  'app/web/dist/THIRD_PARTY_NOTICES.md',
+];
+export const REQUIRED_CONTAINER_SYSTEM_NOTICE_PATHS = [
+  'usr/local/LICENSE',
+  'usr/share/doc/tini/copyright',
+];
+const WEB_ARTIFACT_PREFIX = 'app/web/dist/';
 const COMMAND_BUFFER_BYTES = MAX_AUDIT_ENTRY_BYTES + 1;
 const TARGET_PLATFORMS = ['linux/amd64', 'linux/arm64'];
 const APP_ENTRYPOINTS = new Set([
@@ -54,6 +66,20 @@ class AuditFailure extends Error {
 
 function fail(code) {
   throw new AuditFailure(code);
+}
+
+function canonicalNotices() {
+  let content;
+  try {
+    const stat = lstatSync(CANONICAL_NOTICES_PATH);
+    if (!stat.isFile() || stat.isSymbolicLink()) fail('canonical_notices_invalid');
+    assertAuditableSize(stat.size, 'canonical_notices_exceeds_64_mib');
+    content = readFileSync(CANONICAL_NOTICES_PATH);
+  } catch (error) {
+    if (error instanceof AuditFailure) throw error;
+    fail('canonical_notices_unreadable');
+  }
+  return content;
 }
 
 export function assertAuditableSize(size, code = 'entry_exceeds_64_mib') {
@@ -241,7 +267,7 @@ function walkProductionDeployment(root, current = root) {
         fail('production_deploy_broken_symlink');
       }
       const targetPath = relative(root, target);
-      if (isAbsolute(targetPath) || targetPath === '..' || targetPath.startsWith('../')) {
+      if (isAbsolute(targetPath) || targetPath === '..' || targetPath.startsWith(`..${sep}`)) {
         fail('production_deploy_external_symlink');
       }
       // pnpm's physical package targets are traversed under node_modules/.pnpm.
@@ -263,6 +289,22 @@ export function auditProductionDeploy(path) {
   if (!lstatSync(root).isDirectory()) fail('production_deploy_not_directory');
 
   const files = walkProductionDeployment(root);
+  let packagedNotices;
+  try {
+    const noticesPath = join(root, 'THIRD_PARTY_NOTICES.md');
+    const stat = lstatSync(noticesPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      fail('production_deploy_notices_invalid');
+    }
+    assertAuditableSize(stat.size, 'production_deploy_notices_exceeds_64_mib');
+    packagedNotices = readFileSync(noticesPath);
+  } catch (error) {
+    if (error instanceof AuditFailure) throw error;
+    fail('production_deploy_notices_missing');
+  }
+  if (!packagedNotices.equals(canonicalNotices())) {
+    fail('production_deploy_notices_mismatch');
+  }
   const violations = [];
   for (const file of files) {
     const deploymentPath = relative(root, file).replaceAll('\\', '/');
@@ -376,10 +418,56 @@ function isApplicationEntry(path) {
   return path === 'app' || path.startsWith('app/') || APP_ENTRYPOINTS.has(path);
 }
 
-function auditLayerTar(layerTar, layerIdentity, violations) {
+function shouldTrackContainerEntry(path) {
+  return (
+    REQUIRED_CONTAINER_NOTICE_PATHS.includes(path) ||
+    REQUIRED_CONTAINER_SYSTEM_NOTICE_PATHS.includes(path) ||
+    path.startsWith(WEB_ARTIFACT_PREFIX)
+  );
+}
+
+function applyContainerWhiteout(entry, containerState) {
+  const name = basename(entry);
+  if (!name.startsWith('.wh.')) return false;
+  const directory = dirname(entry);
+  const prefix = directory === '.' ? '' : `${directory}/`;
+  if (name === '.wh..wh..opq') {
+    for (const path of containerState.keys()) {
+      if (path.startsWith(prefix)) containerState.delete(path);
+    }
+  } else {
+    const target = `${prefix}${name.slice('.wh.'.length)}`;
+    for (const path of containerState.keys()) {
+      if (path === target || path.startsWith(`${target}/`)) {
+        containerState.delete(path);
+      }
+    }
+  }
+  return true;
+}
+
+function applyContainerReplacement(entry, containerState) {
+  for (const path of containerState.keys()) {
+    if (path === entry || path.startsWith(`${entry}/`)) {
+      containerState.delete(path);
+    }
+  }
+}
+
+function auditLayerTar(layerTar, layerIdentity, violations, containerState) {
   const entries = listTarEntries(layerTar, 'container_layer_index_unreadable');
   for (const [entry] of entries) {
-    if (entry.endsWith('/') || !isApplicationEntry(entry)) continue;
+    if (applyContainerWhiteout(entry, containerState)) continue;
+    const directoryEntry = entry.endsWith('/');
+    const replacementPath = directoryEntry ? entry.slice(0, -1) : entry;
+    if (directoryEntry) {
+      containerState.delete(replacementPath);
+    } else {
+      applyContainerReplacement(replacementPath, containerState);
+    }
+    if (directoryEntry) continue;
+    const tracked = shouldTrackContainerEntry(entry);
+    if (!isApplicationEntry(entry) && !tracked) continue;
     const content = readTarEntry(
       layerTar,
       entries,
@@ -387,9 +475,37 @@ function auditLayerTar(layerTar, layerIdentity, violations) {
       'container_entry_unreadable_or_exceeds_64_mib',
     );
     assertAuditableSize(content.length, 'container_entry_exceeds_64_mib');
-    violations.push(
-      ...scanContent(entry, content, opaquePath('container-entry', `${layerIdentity}\0${entry}`)),
-    );
+    if (tracked) {
+      containerState.set(entry, content);
+    }
+    if (isApplicationEntry(entry)) {
+      violations.push(
+        ...scanContent(entry, content, opaquePath('container-entry', `${layerIdentity}\0${entry}`)),
+      );
+    }
+  }
+}
+
+function verifyContainerNotices(containerState) {
+  const expected = canonicalNotices();
+  for (const path of REQUIRED_CONTAINER_NOTICE_PATHS) {
+    const content = containerState.get(path);
+    if (!content) fail('container_third_party_notices_missing');
+    if (!content.equals(expected)) fail('container_third_party_notices_mismatch');
+  }
+  for (const path of REQUIRED_CONTAINER_SYSTEM_NOTICE_PATHS) {
+    if (!containerState.get(path)?.length) fail('container_system_notices_missing');
+  }
+
+  const webContents = new Map(
+    [...containerState]
+      .filter(([path]) => path.startsWith(WEB_ARTIFACT_PREFIX))
+      .map(([path, content]) => [path.slice(WEB_ARTIFACT_PREFIX.length), content]),
+  );
+  try {
+    verifyWebArtifactContents(webContents, REPOSITORY_ROOT);
+  } catch {
+    fail('container_web_artifact_license_evidence_invalid');
   }
 }
 
@@ -438,13 +554,15 @@ export function auditImage(image) {
       ),
     );
 
+    const noticeState = new Map();
     for (const [index, rawLayerName] of imageRecord.Layers.entries()) {
       if (typeof rawLayerName !== 'string') fail('docker_manifest_invalid');
       const layerName = normalizedArchivePath(rawLayerName);
       const layer = join(directory, `layer-${index}.tar`);
       extractTarEntry(archive, archiveIndex, layerName, layer, 'docker_layer_unreadable');
-      auditLayerTar(layer, `native:${index}`, violations);
+      auditLayerTar(layer, `native:${index}`, violations, noticeState);
     }
+    verifyContainerNotices(noticeState);
 
     return report(
       `container application payload (${imageRecord.Layers.length} layer(s))`,
@@ -594,6 +712,7 @@ export async function auditOciArchive(archive) {
       ...scanContent('oci/index.json', indexContent, opaquePath('oci-index', 'index.json')),
     ];
     const imagesByPlatform = new Map();
+    const noticesByPlatform = new Map();
     const evidenceBySubject = new Map();
     let layerSequence = 0;
 
@@ -657,6 +776,7 @@ export async function auditOciArchive(archive) {
       const platform = platformKey(descriptor);
       if (imagesByPlatform.has(platform)) fail('oci_duplicate_platform_manifest');
       imagesByPlatform.set(platform, manifestDigest);
+      const noticeState = new Map();
       for (const layerDescriptor of manifest.layers) {
         const layerTar = await materializeOciLayer(
           archive,
@@ -665,9 +785,10 @@ export async function auditOciArchive(archive) {
           directory,
           layerSequence,
         );
-        auditLayerTar(layerTar, `${platform}:${layerSequence}`, violations);
+        auditLayerTar(layerTar, `${platform}:${layerSequence}`, violations, noticeState);
         layerSequence += 1;
       }
+      noticesByPlatform.set(platform, noticeState);
     }
 
     for (const platform of TARGET_PLATFORMS) {
@@ -679,6 +800,7 @@ export async function auditOciArchive(archive) {
       if (!evidence?.has('provenance')) {
         fail(`oci_${platform.replace('/', '_')}_missing_provenance_attestation`);
       }
+      verifyContainerNotices(noticesByPlatform.get(platform) ?? new Map());
     }
 
     return report(

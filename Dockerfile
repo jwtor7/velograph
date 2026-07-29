@@ -25,9 +25,10 @@ COPY scripts/configure-git-hooks.mjs scripts/configure-git-hooks.mjs
 RUN pnpm install --frozen-lockfile
 
 COPY . .
-RUN pnpm --filter @velograph/web build
-# Issue #11 adds a bundled Node 20-compatible API. Build it when that branch is
-# present; current main falls back to Node 22's TypeScript runtime.
+RUN node scripts/third-party-license-gate.mjs --workspace
+RUN pnpm package:web
+# Issue #11 adds a bundled Node 20.19-compatible API. Build it when that branch
+# is present; current main falls back to Node 22's TypeScript runtime.
 RUN pnpm --filter @velograph/api --if-present run build
 # Deploy only the API package and its production dependency graph. Lifecycle
 # scripts remain enabled so production native dependencies are built normally.
@@ -35,7 +36,9 @@ RUN pnpm --filter @velograph/api deploy --prod --legacy /opt/velograph/api
 # The published tar-fs package contains an install-only test archive. Remove
 # that exact reviewed fixture and fail if any other archive or dev package
 # appears in the production deployment.
-RUN node scripts/prune-deployed-api.mjs /opt/velograph/api \
+RUN cp THIRD_PARTY_NOTICES.md /opt/velograph/api/THIRD_PARTY_NOTICES.md \
+    && node scripts/prune-deployed-api.mjs /opt/velograph/api \
+    && node scripts/third-party-license-gate.mjs --production-deploy /opt/velograph/api \
     && node scripts/privacy-audit-release.mjs --production-deploy /opt/velograph/api
 
 FROM node:22.22.3-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752 AS runtime
@@ -53,6 +56,8 @@ ENV NODE_ENV=production \
 # in docker-compose.yml.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y tini \
+    && test -s /usr/local/LICENSE \
+    && test -s /usr/share/doc/tini/copyright \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build --chown=node:node /opt/velograph/api /app/api

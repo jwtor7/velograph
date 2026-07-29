@@ -8,6 +8,8 @@ for publication; a prior green run does not qualify a later build.
 ## Required commands
 
 ```sh
+pnpm license:check
+pnpm package:web
 node scripts/privacy-audit-release.mjs --working-tree
 node scripts/privacy-audit-release.mjs --history
 node scripts/privacy-audit-release.mjs --artifact path/to/extracted-release-output
@@ -21,11 +23,19 @@ put restricted data into a release archive merely to make the scanner pass.
 History, artifact, and container entries larger than 64 MiB fail closed instead
 of being skipped or buffered without a limit.
 
+The licence gate is a separate, equally blocking release check. It validates
+the exact runtime dependency closure, installed SPDX metadata and licence
+texts, Vite/SQLite embedded-component evidence, and the generated canonical
+notice. `package:web` records package provenance and hashes every emitted web
+file before placing and verifying that notice. The production API gate runs
+inside the Docker build after pruning.
+
 The native-image command streams layers from `docker image save` without
 extracting their paths into the checkout. It scans the application-owned
 payload (`/app` plus the checked-in entrypoint and relay) in every layer. The
-pinned upstream base image is covered separately by the generated SBOM and
-digest review. The OCI command validates both required platforms, verifies
+pinned upstream base image is covered by its digest, the generated SBOM, and
+required native Node/`tini` notice files. The OCI command validates both
+required platforms, verifies
 every consumed blob digest, scans the same application payload in the exact
 multi-architecture output, and requires both SBOM and provenance attestations
 for each platform. Reports contain only a rule and opaque audit identifier,
@@ -53,6 +63,14 @@ that exact OCI archive, records its SHA-256 plus image index, and retains the
 three files together for 14 days. CI does not publish an image or mount source
 exports. Any publication step must use the audited output and run only after a
 maintainer reviews its digests and SBOM.
+
+Both the native-image and exact OCI audits reconstruct final layer state,
+including whiteouts and file/directory replacements. They re-verify the final
+web artifact's complete hashed file set and package provenance, require the
+native Node and `tini` notices, and require the canonical notice bytes at
+`/app/api/THIRD_PARTY_NOTICES.md` and
+`/app/web/dist/THIRD_PARTY_NOTICES.md`. A notice that existed only in an
+overwritten layer does not pass.
 
 ## Operator checklist
 

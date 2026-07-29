@@ -46,6 +46,8 @@ standalone; nothing in this repository anticipates that today.
 1. **Confirm `CHANGELOG.md` is current.** Every merged PR since the last release should have
    left an entry under `## [Unreleased]` (enforced by CI — see below). Re-read the section
    against `git log <last-tag>..HEAD` and fill in anything missing.
+   Run `pnpm license:check` and review `THIRD_PARTY_NOTICES.md` against the
+   release dependency/SBOM diff before proceeding.
 2. **Choose the new version** using the scheme above.
 3. **Open a release PR** that, in one commit:
    - Renames `## [Unreleased]` to `## [x.y.z] - YYYY-MM-DD` (UTC date) and adds a fresh empty

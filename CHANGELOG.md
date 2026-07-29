@@ -115,7 +115,7 @@ is pre-1.0, and for the release procedure.
   Docker/Compose deployment with a local Docker-managed data volume, read-only
   runtime filesystem, dropped capabilities, bounded temporary storage, and no
   source-export or credential mounts. CI now verifies clean frozen-lockfile
-  installs on Node 20 and Node 26, audits worktree/Git-history/container
+  installs on Node 20.19 and Node 26, audits worktree/Git-history/container
   application payloads for privacy leaks, and performs a non-publishing
   `amd64`/`arm64` Buildx build with per-platform SBOM and provenance
   attestations. The fail-closed audit verifies and scans the exact OCI output;
@@ -123,7 +123,13 @@ is pre-1.0, and for the release procedure.
   installs can run outside Git, while the runtime includes only the built web
   client and API production deployment. Security reporting, contribution
   rules, threat model, privacy incident response, and release audit procedures
-  are documented; selecting an open-source licence remains an explicit
+  are documented. A fail-closed runtime licence gate now verifies exact
+  web/API dependency closures, installed SPDX metadata and authoritative
+  texts, Vite and embedded SQLite evidence, all emitted browser file hashes
+  and package provenance, canonical notices in browser/API artifacts, final
+  web-artifact lineage, and native Node/`tini` notice placement for every
+  container platform;
+  selecting an open-source licence for Velograph remains an explicit
   maintainer decision (#60).
 - **Local server lifecycle commands**: `pnpm app:start`, `app:stop`, `app:status`, and
   `app:restart`. `app:start` builds the web client, refuses to start when a server already

@@ -15,6 +15,13 @@ import {
 } from './privacy-audit-release.mjs';
 
 const temporaryDirectories = [];
+const canonicalNotices = readFileSync(join(process.cwd(), 'THIRD_PARTY_NOTICES.md'));
+const thirdPartyManifest = JSON.parse(
+  readFileSync(join(process.cwd(), 'third-party-licenses.json'), 'utf8'),
+);
+const webPackageManifest = JSON.parse(
+  readFileSync(join(process.cwd(), 'apps', 'web', 'package.json'), 'utf8'),
+);
 
 function makeArtifactDirectory() {
   const directory = mkdtempSync(join(tmpdir(), 'velograph-release-audit-'));
@@ -36,7 +43,80 @@ function jsonBlob(layout, value, mediaType) {
   return writeBlob(layout, Buffer.from(`${JSON.stringify(value)}\n`), mediaType);
 }
 
-function createSyntheticOciArchive({ omitArmProvenance = false } = {}) {
+function writeSyntheticWebArtifact(root) {
+  const webRoot = join(root, 'app', 'web', 'dist');
+  const script = Buffer.from('const relList = {}; relList.supports("modulepreload");\n');
+  const html = Buffer.from('<main>Synthetic container artifact</main>\n');
+  const font = Buffer.from('synthetic bundled font bytes\n');
+  const directDependencies = webPackageManifest.dependencies ?? {};
+  const requiredPackageIds = thirdPartyManifest.packages
+    .filter(
+      (entry) =>
+        entry.scopes.includes('web') &&
+        entry.artifactPresence === 'required' &&
+        (!entry.conditionalOnDirectDependency || Object.hasOwn(directDependencies, entry.name)),
+    )
+    .map((entry) => `${entry.name}@${entry.version}`);
+  const workspaceId = `${webPackageManifest.name}@${webPackageManifest.version}`;
+  const packageIds = [workspaceId, ...requiredPackageIds].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const fontPackage = requiredPackageIds.find((id) => id.startsWith('@fontsource/inter@'));
+  if (!fontPackage) throw new Error('synthetic_font_package_missing');
+
+  mkdirSync(join(webRoot, 'assets'), { recursive: true });
+  writeFileSync(join(webRoot, 'assets', 'index.js'), script);
+  writeFileSync(join(webRoot, 'assets', 'synthetic-font.woff2'), font);
+  writeFileSync(join(webRoot, 'index.html'), html);
+
+  const files = [
+    {
+      file: 'assets/index.js',
+      sha256: createHash('sha256').update(script).digest('hex'),
+      bytes: script.length,
+      generatedBy: 'rollup-chunk',
+      packages: packageIds,
+    },
+    {
+      file: 'assets/synthetic-font.woff2',
+      sha256: createHash('sha256').update(font).digest('hex'),
+      bytes: font.length,
+      generatedBy: 'rollup-asset',
+      packages: [fontPackage],
+    },
+    {
+      file: 'index.html',
+      sha256: createHash('sha256').update(html).digest('hex'),
+      bytes: html.length,
+      generatedBy: 'vite-html-entry',
+      packages: [workspaceId],
+    },
+  ];
+  writeFileSync(
+    join(webRoot, 'third-party-module-evidence.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      packages: packageIds.map((id) => ({ id, moduleCount: 1 })),
+      injectedModules: thirdPartyManifest.embeddedComponents
+        .filter((entry) => entry.scopes.includes('web'))
+        .map((entry) => entry.artifactEvidence)
+        .sort(),
+      files,
+    })}\n`,
+  );
+  return webRoot;
+}
+
+function createSyntheticOciArchive({
+  omitArmProvenance = false,
+  omitWebNotices = false,
+  omitSystemNotices = false,
+  whiteoutWebNotices = false,
+  whiteoutPath,
+  addWebScript = false,
+  replaceWebDirectory = false,
+  replaceNodeNoticeWithDirectory = false,
+} = {}) {
   const directory = makeArtifactDirectory();
   const layout = join(directory, 'layout');
   const blobs = join(layout, 'blobs', 'sha256');
@@ -45,14 +125,74 @@ function createSyntheticOciArchive({ omitArmProvenance = false } = {}) {
 
   const layerRoot = join(directory, 'layer-root');
   mkdirSync(join(layerRoot, 'app', 'api'), { recursive: true });
+  const webRoot = writeSyntheticWebArtifact(layerRoot);
   writeFileSync(join(layerRoot, 'app', 'api', 'release.txt'), 'synthetic container payload\n');
+  writeFileSync(join(layerRoot, 'app', 'api', 'THIRD_PARTY_NOTICES.md'), canonicalNotices);
+  if (!omitWebNotices) {
+    writeFileSync(join(webRoot, 'THIRD_PARTY_NOTICES.md'), canonicalNotices);
+  }
+  if (!omitSystemNotices) {
+    mkdirSync(join(layerRoot, 'usr', 'local'), { recursive: true });
+    mkdirSync(join(layerRoot, 'usr', 'share', 'doc', 'tini'), { recursive: true });
+    writeFileSync(join(layerRoot, 'usr', 'local', 'LICENSE'), 'Synthetic Node licence.\n');
+    writeFileSync(
+      join(layerRoot, 'usr', 'share', 'doc', 'tini', 'copyright'),
+      'Synthetic tini copyright notice.\n',
+    );
+  }
   const layerTar = join(directory, 'layer.tar');
-  execFileSync('tar', ['-cf', layerTar, '-C', layerRoot, 'app']);
+  const initialRoots = omitSystemNotices ? ['app'] : ['app', 'usr'];
+  execFileSync('tar', ['-cf', layerTar, '-C', layerRoot, ...initialRoots]);
   const layer = writeBlob(
     layout,
     gzipSync(readFileSync(layerTar)),
     'application/vnd.oci.image.layer.v1.tar+gzip',
   );
+  const imageLayers = [layer];
+  const effectiveWhiteoutPath =
+    whiteoutPath ?? (whiteoutWebNotices ? 'app/web/dist/.wh.THIRD_PARTY_NOTICES.md' : undefined);
+  if (
+    effectiveWhiteoutPath ||
+    addWebScript ||
+    replaceWebDirectory ||
+    replaceNodeNoticeWithDirectory
+  ) {
+    const whiteoutRoot = join(directory, 'whiteout-root');
+    const archiveRoots = new Set();
+    if (effectiveWhiteoutPath) {
+      const whiteout = join(whiteoutRoot, effectiveWhiteoutPath);
+      mkdirSync(dirname(whiteout), { recursive: true });
+      writeFileSync(whiteout, '');
+      archiveRoots.add(effectiveWhiteoutPath.split('/')[0]);
+    }
+    if (addWebScript) {
+      const extraScript = join(whiteoutRoot, 'app', 'web', 'dist', 'assets', 'unreviewed.js');
+      mkdirSync(dirname(extraScript), { recursive: true });
+      writeFileSync(extraScript, 'console.log("synthetic extra script");\n');
+      archiveRoots.add('app');
+    }
+    if (replaceWebDirectory) {
+      const replacement = join(whiteoutRoot, 'app', 'web', 'dist');
+      mkdirSync(dirname(replacement), { recursive: true });
+      writeFileSync(replacement, 'synthetic replacement file\n');
+      archiveRoots.add('app');
+    }
+    if (replaceNodeNoticeWithDirectory) {
+      mkdirSync(join(whiteoutRoot, 'usr', 'local', 'LICENSE'), {
+        recursive: true,
+      });
+      archiveRoots.add('usr');
+    }
+    const whiteoutTar = join(directory, 'whiteout.tar');
+    execFileSync('tar', ['-cf', whiteoutTar, '-C', whiteoutRoot, ...archiveRoots]);
+    imageLayers.push(
+      writeBlob(
+        layout,
+        gzipSync(readFileSync(whiteoutTar)),
+        'application/vnd.oci.image.layer.v1.tar+gzip',
+      ),
+    );
+  }
 
   const descriptors = [];
   for (const architecture of ['amd64', 'arm64']) {
@@ -63,7 +203,7 @@ function createSyntheticOciArchive({ omitArmProvenance = false } = {}) {
     );
     const manifest = jsonBlob(
       layout,
-      { schemaVersion: 2, config, layers: [layer] },
+      { schemaVersion: 2, config, layers: imageLayers },
       'application/vnd.oci.image.manifest.v1+json',
     );
     descriptors.push({ ...manifest, platform: { architecture, os: 'linux' } });
@@ -164,6 +304,51 @@ describe('release privacy artifact audit', () => {
     ).rejects.toThrow('oci_linux_arm64_missing_provenance_attestation');
   });
 
+  it('requires exact third-party notices in each platform image', async () => {
+    await expect(
+      auditOciArchive(createSyntheticOciArchive({ omitWebNotices: true })),
+    ).rejects.toThrow('container_third_party_notices_missing');
+  });
+
+  it('requires native Node and tini notice files in each platform image', async () => {
+    await expect(
+      auditOciArchive(createSyntheticOciArchive({ omitSystemNotices: true })),
+    ).rejects.toThrow('container_system_notices_missing');
+  });
+
+  it('does not accept a notice deleted by a later image layer', async () => {
+    await expect(
+      auditOciArchive(createSyntheticOciArchive({ whiteoutWebNotices: true })),
+    ).rejects.toThrow('container_third_party_notices_missing');
+  });
+
+  it.each(['app/.wh.api', 'app/web/.wh.dist', '.wh.app'])(
+    'tracks a parent-directory whiteout at %s',
+    async (whiteoutPath) => {
+      await expect(auditOciArchive(createSyntheticOciArchive({ whiteoutPath }))).rejects.toThrow(
+        'container_third_party_notices_missing',
+      );
+    },
+  );
+
+  it('rejects an unrecorded web script added by a later image layer', async () => {
+    await expect(
+      auditOciArchive(createSyntheticOciArchive({ addWebScript: true })),
+    ).rejects.toThrow('container_web_artifact_license_evidence_invalid');
+  });
+
+  it('forgets notices when a later regular file replaces their parent directory', async () => {
+    await expect(
+      auditOciArchive(createSyntheticOciArchive({ replaceWebDirectory: true })),
+    ).rejects.toThrow('container_third_party_notices_missing');
+  });
+
+  it('forgets a notice when a later directory replaces that file', async () => {
+    await expect(
+      auditOciArchive(createSyntheticOciArchive({ replaceNodeNoticeWithDirectory: true })),
+    ).rejects.toThrow('container_system_notices_missing');
+  });
+
   it('accepts a recognized native addon in a production deployment', () => {
     const directory = makeArtifactDirectory();
     const addon = join(
@@ -179,6 +364,7 @@ describe('release privacy artifact audit', () => {
     );
     mkdirSync(dirname(addon), { recursive: true });
     writeFileSync(addon, Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00]));
+    writeFileSync(join(directory, 'THIRD_PARTY_NOTICES.md'), canonicalNotices);
 
     expect(auditProductionDeploy(directory)).toBe(0);
   });
@@ -190,5 +376,14 @@ describe('release privacy artifact audit', () => {
     symlinkSync(outside, join(directory, 'outside'));
 
     expect(() => auditProductionDeploy(directory)).toThrow('production_deploy_external_symlink');
+  });
+
+  it('rejects a symlink in place of production third-party notices', () => {
+    const directory = makeArtifactDirectory();
+    const noticeTarget = join(directory, 'canonical-notice-copy');
+    writeFileSync(noticeTarget, canonicalNotices);
+    symlinkSync(noticeTarget, join(directory, 'THIRD_PARTY_NOTICES.md'));
+
+    expect(() => auditProductionDeploy(directory)).toThrow('production_deploy_notices_invalid');
   });
 });

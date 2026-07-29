@@ -76,7 +76,8 @@ touches.
 ## Container and runtime verification
 
 `ci.yml` retains the primary Node 22 checks and also performs separate clean,
-frozen-lockfile installs on Node 20 (the supported minimum) and Node 26. The
+frozen-lockfile installs on Node 20.19 (the supported minimum) and Node 26.
+The minimum-runtime lane packages and verifies the complete web artifact. The
 release-governance workflow audits the worktree and all reachable Git blobs,
 builds a native container solely for an application-payload layer audit, then
 creates and audits one exact OCI image index for `linux/amd64` and `linux/arm64`
@@ -95,3 +96,15 @@ native lifecycle scripts run, and the resulting deployment is privacy-scanned
 before the runtime copy. Update the human-readable base tag and digest
 together, then re-run the exact OCI privacy audit and SBOM build before
 publishing.
+
+Dependency metadata and generated SBOMs are not the licence authority on their
+own. `pnpm license:check` compares the exact web/API production closures with
+the reviewed manifest, installed SPDX metadata, and hashed authoritative
+licence texts. It also covers Vite's injected browser polyfill and SQLite
+embedded in the native addon. The Docker build verifies the physical API
+deployment and browser artifact. The native/OCI audits reconstruct and
+re-verify the final web file hashes and package evidence, require byte-exact
+canonical notices in both final application paths, and require the native Node
+and `tini` notice files on every platform. The pinned image digest and
+per-platform SBOM cover the remaining operating-system inventory. See the
+[third-party licence guide](third-party-licences.md).
