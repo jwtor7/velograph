@@ -37,6 +37,7 @@ export const DEFAULT_MAX_DIRECTORIES = 2_000;
 export const DEFAULT_MAX_DEPTH = 32;
 
 const IMPORTABLE_EXTENSION = /\.(csv|gpx|zip)$/i;
+const PLANNED_ENTRY_CHANGE_CODES = new Set(['EISDIR', 'ELOOP', 'ENOENT', 'ENOTDIR', 'ESTALE']);
 
 export interface FolderWalkOptions {
   maxFiles?: number;
@@ -160,6 +161,16 @@ function checkNotInsideCheckout(dir: string): void {
 
 function insideCanonicalRoot(canonicalRoot: string, candidate: string): boolean {
   return candidate === canonicalRoot || candidate.startsWith(canonicalRoot + sep);
+}
+
+function isPlannedEntryChange(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    PLANNED_ENTRY_CHANGE_CODES.has(error.code)
+  );
 }
 
 /**
@@ -334,6 +345,13 @@ export function walkImportFolder(rootPath: string, opts: FolderWalkOptions = {})
             skipped.push({ relativePath: relativeToRoot(fullPath), reason: 'unreadable' });
             continue;
           }
+          if (!insideCanonicalRoot(canonicalRoot, canonicalTarget)) {
+            skipped.push({
+              relativePath: relativeToRoot(fullPath),
+              reason: 'symlink_outside_tree',
+            });
+            continue;
+          }
           if (targetStats.isDirectory()) {
             skipped.push({
               relativePath: relativeToRoot(fullPath),
@@ -341,7 +359,17 @@ export function walkImportFolder(rootPath: string, opts: FolderWalkOptions = {})
             });
             continue;
           }
-          if (!IMPORTABLE_EXTENSION.test(entry.name)) continue;
+          if (!targetStats.isFile()) {
+            skipped.push({ relativePath: relativeToRoot(fullPath), reason: 'not_a_regular_file' });
+            continue;
+          }
+          if (!IMPORTABLE_EXTENSION.test(entry.name)) {
+            skipped.push({
+              relativePath: relativeToRoot(fullPath),
+              reason: 'unsupported_file_type',
+            });
+            continue;
+          }
           addFile(fullPath, true, { canonicalPath: canonicalTarget, stats: targetStats });
           continue;
         }
@@ -735,6 +763,9 @@ function readPlannedFile(plan: FolderImportPlan, file: WalkedFile): ImportFile {
     return { name: fileName(file), data };
   } catch (err) {
     if (err instanceof FolderImportError) throw err;
+    if (isPlannedEntryChange(err)) {
+      throw new FolderImportError('file_changed', 'file changed after traversal');
+    }
     throw new FolderImportError('file_unreadable', 'file could not be read safely');
   } finally {
     if (fd !== undefined) {

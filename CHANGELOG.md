@@ -27,7 +27,10 @@ is pre-1.0, and for the release procedure.
   confirmation revalidates
   canonical root/file identity and reads one bounded association group at a time inside one
   atomic import transaction, so a large accepted folder is never retained as one giant
-  buffer. ZIP groups preflight central-directory and local-header names, counts, and declared
+  buffer. If a planned entry disappears, becomes dangling, or changes type during that lazy
+  read, the API returns `file_changed` so the UI discards its stale preview; genuine access
+  failures remain separately reported as `file_unreadable`. ZIP groups preflight
+  central-directory and local-header names, counts, and declared
   sizes without extraction and skip hidden/resource entries before inflation. Included entries
   are decoded with a maximum output length configured before inflation begins, so forged declared
   sizes cannot materialize output beyond the remaining per-entry or aggregate limit. Declared,
@@ -35,7 +38,9 @@ is pre-1.0, and for the release procedure.
   reported and excluded in full rather than importing a partial ride. A symlinked directory
   is never followed, and a symlinked file is only followed when its target stays inside the
   walked tree. Anything a cap or symlink rule excludes is reported, and unsupported regular files
-  are listed as `unsupported_file_type` instead of being silently omitted. The destination path is
+  — including symlink aliases to regular files — are listed as `unsupported_file_type` instead of
+  being silently omitted. Symlink containment and target type are checked before extension
+  classification, so an external alias remains `symlink_outside_tree`. The destination path is
   rejected when it resolves inside the repository checkout, reusing `guardAgainstCheckout`
   (the same guard `VELO_DATA_DIR` and database backups use). New endpoints:
   `POST /api/import/path/inventory` (preview) and `POST /api/import/path` (import), both

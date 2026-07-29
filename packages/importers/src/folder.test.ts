@@ -205,6 +205,43 @@ describe('walkImportFolder — symlinks', () => {
     expect(result.files.length).toBeGreaterThanOrEqual(1);
     expect(result.skipped.some((s) => s.reason === 'symlink_outside_tree')).toBe(false);
   });
+
+  it('reports an unsupported symlink alias whose regular target stays inside the tree', () => {
+    const root = tempDir();
+    const real = join(root, 'synthetic-notes.txt');
+    const alias = join(root, 'synthetic-notes-alias.txt');
+    writeFileSync(real, 'invented note');
+    try {
+      symlinkSync(real, alias);
+    } catch {
+      return;
+    }
+
+    const result = walkImportFolder(root);
+    expect(result.skipped).toContainEqual({
+      relativePath: 'synthetic-notes-alias.txt',
+      reason: 'unsupported_file_type',
+    });
+  });
+
+  it('reports containment before extension for an unsupported symlink outside the tree', () => {
+    const outside = tempDir();
+    const outsideFile = join(outside, 'synthetic-notes.txt');
+    writeFileSync(outsideFile, 'invented note');
+
+    const root = tempDir();
+    try {
+      symlinkSync(outsideFile, join(root, 'synthetic-notes-alias.txt'));
+    } catch {
+      return;
+    }
+
+    const result = walkImportFolder(root);
+    expect(result.skipped).toContainEqual({
+      relativePath: 'synthetic-notes-alias.txt',
+      reason: 'symlink_outside_tree',
+    });
+  });
 });
 
 describe('previewImportFolder — grouping', () => {
@@ -415,6 +452,37 @@ describe('readFolderFileGroups — lazy bounded reads and TOCTOU checks', () => 
     expect(() => [...readFolderFileGroups(plan)].flatMap((load) => load())).toThrowError(
       expect.objectContaining({ code: 'path_changed' }),
     );
+  });
+
+  it('classifies a planned file deleted after confirmation as file_changed', () => {
+    const root = tempDir();
+    const name = 'Outdoor Cycling-Heart Rate-20260101_070000.csv';
+    const path = join(root, name);
+    writeFileSync(path, 'synthetic');
+
+    const preview = previewImportFolder(root);
+    const plan = planFolderImport(root);
+    confirmFolderImportPlan(plan, preview.confirmationToken);
+    const load = [...readFolderFileGroups(plan)][0]!;
+    unlinkSync(path);
+
+    expect(() => load()).toThrowError(expect.objectContaining({ code: 'file_changed' }));
+  });
+
+  it('classifies a planned path component replaced by a file as file_changed', () => {
+    const root = tempDir();
+    const nested = join(root, 'nested');
+    mkdirSync(nested);
+    writeFileSync(join(nested, 'Outdoor Cycling-Heart Rate-20260101_070000.csv'), 'synthetic');
+
+    const preview = previewImportFolder(root);
+    const plan = planFolderImport(root);
+    confirmFolderImportPlan(plan, preview.confirmationToken);
+    const load = [...readFolderFileGroups(plan)][0]!;
+    rmSync(nested, { recursive: true });
+    writeFileSync(nested, 'synthetic replacement');
+
+    expect(() => load()).toThrowError(expect.objectContaining({ code: 'file_changed' }));
   });
 
   it('never returns canonical paths or identity metadata in the public preview', () => {
