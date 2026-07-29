@@ -79,32 +79,54 @@ identical bytes → the ride comes back.
   `better-sqlite3`'s `Database.prototype.backup()`, which wraps SQLite's own online backup API
   (`sqlite3_backup_init`/`step`/`finish`). This is a safe, consistent snapshot of a live
   WAL-mode database; it is never a raw `fs.copyFile` of the `.sqlite3`/`-wal`/`-shm` files, which
-  could copy a torn, mid-write state.
-- `restoreDatabase(liveDb, dbPath, backupPath)` first backs the source into a uniquely named
-  sibling temporary file. That staged copy is opened through the normal database boundary,
-  migrated, integrity-checked, checkpointed, closed, and fsynced while `liveDb` remains usable.
-  Only then is the live handle checkpointed and closed. A same-directory `rename` is the atomic
-  commit point: a crash before it leaves the original path untouched, while a crash after it
-  leaves the complete staged database at the live path. Old `-wal`/`-shm` sidecars are removed
-  only after the rename commits. The replacement is reopened and returned; if a cutover error
-  occurs after the old handle closes, the error carries a recovered handle for whichever
-  complete database still owns the live path.
+  could copy a torn, mid-write state. A new destination is pre-created as `0600` before any
+  private bytes are written.
+- `restoreDatabase(liveDb, dbPath, backupPath)` opens the selected source once, read-only, then
+  backs it into a uniquely named sibling stage through SQLite's backup API. Before touching the
+  live handle, restore verifies SQLite integrity and requires the recorded migration names to be
+  an exact ordered prefix of the migrations bundled with the running version. It migrates only
+  the private stage, then compares the stage's complete `sqlite_schema` and migration list with a
+  freshly migrated canonical database and requires an empty `foreign_key_check`. A database that
+  merely contains a `workouts` table, claims a migration it does not structurally implement, has
+  an unknown/future/missing-middle/reordered migration, or contains broken references fails
+  closed.
+- Stage and rollback files are pre-created with mode `0600` before private bytes are populated.
+  Once complete, they receive the live database's ownership and permission mode, are closed and
+  fsynced, and only then become eligible for cutover. This prevents the process umask from making
+  a temporary health/location database broader than the live file and preserves restrictive
+  permissions across inode replacement.
+- The live handle is checkpointed, but remains open while restore creates and validates a second
+  rollback snapshot through SQLite's backup API. Only then is the handle closed. A same-directory
+  `rename` installs the complete stage atomically. If any operation after close fails—including
+  install durability or reopening the replacement—restore atomically reinstalls the rollback
+  snapshot and returns a reopened handle for the original database. If recovery itself cannot be
+  proven, the API fails closed and the private rollback artifact is retained rather than deleted.
+  Old `-wal`/`-shm`/`-journal` sidecars are removed only around a proven atomic outcome.
+- Restore failures cross API/CLI boundaries only as stable value-free codes such as
+  `invalid_backup_schema`, `invalid_backup_migrations`, `invalid_backup_foreign_keys`,
+  `restore_cutover_failed`, or `restore_reopen_failed`; native SQLite/filesystem messages, paths,
+  SQL, and stored values are not returned.
 - The API places restore behind an exclusive request barrier. New non-health requests receive a
   privacy-safe `restore_in_progress` response while every earlier request drains. Async operations
   remain leased after a client disconnects, so SIGINT/SIGTERM stop new connections and wait for
   that work to settle before checkpointing the current WAL and closing the current (possibly
   replaced) handle. A busy/incomplete WAL checkpoint fails closed. `pnpm app:stop` waits for the
   verified process to exit—not merely for its listening socket to close—then reports any SIGKILL
-  escalation after the 12-second grace period.
+  escalation after the 12-second grace period. If the process exits in the final identity-check
+  to `SIGKILL` race, `ESRCH` is treated as a completed stop rather than an unhandled command
+  failure.
 - Velograph currently supports one database-owning process at a time. Stop the API with
   `pnpm app:stop` before running `velograph restore`; do not run API and CLI restore concurrently
   against the same data directory.
 
 Both directions are exercised end to end (round trip, and rejecting a backup path inside a git
-checkout), along with interruption-before-swap, graceful WAL checkpoint/close, and stop
-escalation, in `packages/db/src/backup.test.ts`, `apps/api/src/shutdown.test.ts`,
-`apps/api/src/shutdown-coordinator.test.ts`, `apps/api/src/data-management.test.ts`,
-`scripts/app.test.mjs`, and
+checkout), along with forged/incomplete/current/future migration histories, corrupt input,
+foreign-key failure, copy and migration failure, private artifact modes, original-mode
+preservation, failures before and after replacement install, replacement-open rollback, graceful
+WAL checkpoint/close, privacy-safe surface codes, and stop escalation/`ESRCH`, in
+`packages/db/src/backup.test.ts`, `packages/db/src/migrate.test.ts`,
+`apps/api/src/shutdown.test.ts`, `apps/api/src/shutdown-coordinator.test.ts`,
+`apps/api/src/data-management.test.ts`, `scripts/app.test.mjs`, and
 `apps/cli/src/index.test.ts`.
 
 ## Repair

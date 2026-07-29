@@ -158,5 +158,6 @@ describe('POST /api/backup and /api/restore', () => {
       body: JSON.stringify({ path: join(workDir, 'export.sqlite3') + '-does-not-exist' }),
     });
     expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_backup_file' });
   });
 });
