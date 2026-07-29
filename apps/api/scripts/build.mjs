@@ -3,19 +3,19 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
-const cliRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const repositoryRoot = join(cliRoot, '..', '..');
-const outputDirectory = join(cliRoot, 'dist');
-const outputFile = join(outputDirectory, 'velograph-import.mjs');
-const runtimeFile = join(outputDirectory, 'cli-runtime.mjs');
-const migrationOutput = join(cliRoot, 'migrations');
+const apiRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+const repositoryRoot = join(apiRoot, '..', '..');
+const outputDirectory = join(apiRoot, 'dist');
+const outputFile = join(outputDirectory, 'velograph-api.mjs');
+const runtimeFile = join(outputDirectory, 'api-runtime.mjs');
+const migrationOutput = join(apiRoot, 'migrations');
 
 await rm(outputDirectory, { recursive: true, force: true });
 await rm(migrationOutput, { recursive: true, force: true });
 await mkdir(outputDirectory, { recursive: true });
 await build({
   absWorkingDir: repositoryRoot,
-  entryPoints: [join(cliRoot, 'src', 'index.ts')],
+  entryPoints: [join(apiRoot, 'src', 'main.ts')],
   outfile: runtimeFile,
   bundle: true,
   platform: 'node',
@@ -25,7 +25,7 @@ await build({
   legalComments: 'none',
   sourcemap: false,
 });
-await copyFile(join(cliRoot, 'src', 'bin.mjs'), outputFile);
+await copyFile(join(apiRoot, 'src', 'bin.mjs'), outputFile);
 await chmod(outputFile, 0o755);
 await cp(join(repositoryRoot, 'packages', 'db', 'migrations'), migrationOutput, {
   recursive: true,

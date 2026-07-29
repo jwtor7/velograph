@@ -29,8 +29,8 @@ pnpm --filter @velograph/web build      # build the web client (required before 
 ```
 
 Velograph supports Node 20 through Node 26. The repository includes the same built
-JavaScript CLI artifact that ships in the package; CI clean-installs and invokes it on Node
-20 and Node 26.
+JavaScript CLI and loopback API artifacts that ship in their packages; CI clean-installs and
+invokes both on Node 20 and Node 26.
 
 ### Try it with the synthetic fixtures
 
@@ -75,9 +75,9 @@ companion files still join correctly if they arrive in a later import.
 
 ### Managing the local server
 
-`pnpm app:start` builds the web client and starts the API in the background, then waits until
-it actually answers before reporting success. The other three tell you what's happening
-rather than leaving you to guess:
+`pnpm app:start` builds the web client and JavaScript API runtime, starts the API in the
+background, then waits until it actually answers before reporting success. The other three
+tell you what's happening rather than leaving you to guess:
 
 ```bash
 pnpm app:status    # running? which pid, port, data directory, and how many rides
@@ -99,10 +99,11 @@ pnpm typecheck    # tsc --noEmit across every workspace package
 pnpm format       # prettier --check
 node scripts/privacy-scan.mjs --all   # privacy/data-leak scan
 pnpm cli:verify-package               # clean-install and invoke the packaged CLI
+pnpm api:verify-package               # clean-install and health-check the packaged API
 ```
 
-`pnpm cli:build` regenerates `apps/cli/dist/velograph-import.mjs` and its packaged migration
-files. CI fails if the committed executable artifact is stale.
+`pnpm cli:build` and `pnpm api:build` regenerate the tracked JavaScript runtimes and their
+packaged migration files. CI fails if any committed executable artifact is stale.
 
 ## Project layout
 
@@ -135,3 +136,7 @@ fixtures/synthetic/   invented data used by tests and this quickstart
 ## License
 
 License to be determined (Apache-2.0 recommended; see PRD §20). Until a license is published, all rights reserved.
+
+The packaged runtimes keep `better-sqlite3` and `fflate` external as direct dependencies
+instead of copying their code into Velograph's tracked bundles. A normal install therefore
+retains each dependency's own package metadata and license notice.

@@ -84,9 +84,13 @@ async function status() {
   return 0;
 }
 
-function buildWeb() {
-  console.log('Building web client…');
+function buildApp() {
+  console.log('Building web client and API…');
   execFileSync('pnpm', ['--filter', '@velograph/web', 'build'], {
+    cwd: REPO_ROOT,
+    stdio: ['ignore', 'ignore', 'inherit'],
+  });
+  execFileSync('pnpm', ['--filter', '@velograph/api', 'build'], {
     cwd: REPO_ROOT,
     stdio: ['ignore', 'ignore', 'inherit'],
   });
@@ -99,13 +103,17 @@ async function start() {
     console.error('Use `pnpm app:restart` to pick up code changes, or `pnpm app:status`.');
     return 1;
   }
-  buildWeb();
+  buildApp();
   const log = openSync(LOG_PATH, 'a');
-  const child = spawn(process.execPath, [join(REPO_ROOT, 'apps', 'api', 'src', 'main.ts')], {
-    cwd: REPO_ROOT,
-    detached: true,
-    stdio: ['ignore', log, log],
-  });
+  const child = spawn(
+    process.execPath,
+    [join(REPO_ROOT, 'apps', 'api', 'dist', 'velograph-api.mjs')],
+    {
+      cwd: REPO_ROOT,
+      detached: true,
+      stdio: ['ignore', log, log],
+    },
+  );
   child.unref();
 
   // Wait for the port to actually accept a request before claiming success.

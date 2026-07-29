@@ -21,11 +21,14 @@ is pre-1.0, and for the release procedure.
 
 ### Fixed
 
-- **The declared CLI is now executable on every supported Node major.** The package bin
-  targets a bundled JavaScript artifact instead of TypeScript source, carries its ordered
-  migrations and direct native runtime dependency, and has clean-install execution coverage
-  on Node 20 and Node 26. Its top-level failure boundary emits only a stable, value-free code
-  rather than native stacks or local paths (#11).
+- **The declared CLI and loopback API are now executable on every supported Node major.**
+  Their package bins target bundled JavaScript runtimes instead of TypeScript source, carry
+  ordered migrations, and have clean-install execution/health coverage on Node 20 and Node 26. Minimal dynamic launchers contain module-load failures behind stable, value-free
+  errors; malformed `--data-dir` arguments fail before the CLI can fall back to a real data
+  directory; and direct-file names work with Windows or POSIX separators. Native SQLite and
+  MIT-licensed compression code remain direct dependencies, preserving their normal package
+  installation and license notices rather than embedding third-party code in the tracked
+  bundles (#11).
 - **"Choose export folder" could not select a folder.** The directory input carried
   `accept=".csv,.gpx,.zip"`; since a directory matches none of those extensions, the OS
   picker greyed folders out. Because Health Auto Export writes one CSV per metric, this

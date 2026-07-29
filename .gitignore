@@ -106,9 +106,14 @@ compose.override.yaml
 
 # --- Dependencies & build output ---------------------------------------------
 # Lockfiles (pnpm-lock.yaml) are deliberately committed — never ignore them.
-node_modules/
+# Match dependency directories and accidental symlinks to dependency stores.
+node_modules
 dist/
+!apps/api/dist/
+!apps/api/dist/api-runtime.mjs
+!apps/api/dist/velograph-api.mjs
 !apps/cli/dist/
+!apps/cli/dist/cli-runtime.mjs
 !apps/cli/dist/velograph-import.mjs
 build/
 coverage/

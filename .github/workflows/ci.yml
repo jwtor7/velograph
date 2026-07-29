@@ -44,8 +44,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  cli-package:
-    name: CLI package (Node ${{ matrix.node }})
+  runtime-packages:
+    name: Runtime packages (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -59,10 +59,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm cli:verify-package
-      - name: Built CLI artifact is current
+      - run: pnpm api:verify-package
+      - name: Built runtime artifacts are current
         run: |
-          git diff --exit-code -- apps/cli/dist/velograph-import.mjs apps/cli/migrations
-          test -z "$(git ls-files --others --exclude-standard -- apps/cli/dist apps/cli/migrations)"
+          git diff --exit-code -- apps/api/dist apps/api/migrations apps/cli/dist apps/cli/migrations
+          test -z "$(git ls-files --others --exclude-standard -- apps/api/dist apps/api/migrations apps/cli/dist apps/cli/migrations)"
 
   changelog:
     name: Changelog enforcement

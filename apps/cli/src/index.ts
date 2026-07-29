@@ -11,7 +11,7 @@
  * filesystem paths beyond what the user themselves passed on the command line.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import {
   backupDatabase,
   databasePath,
@@ -20,7 +20,7 @@ import {
   resolveDataDir,
   restoreDatabase,
 } from '@velograph/db';
-import { repairWorkout } from '@velograph/api';
+import { repairWorkout } from '../../api/src/analytics-service.ts';
 import { runImport, type ImportFile } from '@velograph/importers';
 import { systemTimeZone } from '@velograph/shared';
 
@@ -46,20 +46,34 @@ function collectFiles(paths: string[]): ImportFile[] {
         }
       }
     } else {
-      files.push({ name: p.split('/').pop() ?? p, data: readFileSync(p) });
+      files.push({ name: importFileName(p), data: readFileSync(p) });
     }
   }
   return files;
 }
 
+/** Return a base name for native and foreign-style path separators. */
+export function importFileName(path: string): string {
+  return basename(path.replaceAll('\\', '/'));
+}
+
 /** Pull `--data-dir <dir>` out of args, if present, returning the rest. */
-function extractDataDirOverride(args: string[]): { rest: string[]; dataDir: string | undefined } {
+function extractDataDirOverride(args: string[]): {
+  rest: string[];
+  dataDir: string | undefined;
+  valid: boolean;
+} {
   const rest = [...args];
-  const idx = rest.indexOf('--data-dir');
-  if (idx === -1) return { rest, dataDir: undefined };
+  const indexes = rest.flatMap((value, index) => (value === '--data-dir' ? [index] : []));
+  if (indexes.length === 0) return { rest, dataDir: undefined, valid: true };
+  if (indexes.length !== 1) return { rest, dataDir: undefined, valid: false };
+  const idx = indexes[0]!;
   const dataDir = rest[idx + 1];
+  if (dataDir === undefined || dataDir.trim() === '' || dataDir.startsWith('--')) {
+    return { rest, dataDir: undefined, valid: false };
+  }
   rest.splice(idx, 2);
-  return { rest, dataDir };
+  return { rest, dataDir, valid: true };
 }
 
 function runImportCmd(args: string[]): number {
@@ -181,8 +195,12 @@ async function runRestoreCmd(args: string[]): Promise<number> {
 export async function main(argv: string[]): Promise<number> {
   const args = [...argv];
   const cmd = args.shift();
-  const { rest, dataDir } = extractDataDirOverride(args);
-  if (dataDir) process.env['VELO_DATA_DIR'] = dataDir;
+  const { rest, dataDir, valid } = extractDataDirOverride(args);
+  if (!valid) {
+    console.log(USAGE);
+    return 2;
+  }
+  if (dataDir !== undefined) process.env['VELO_DATA_DIR'] = dataDir;
 
   switch (cmd) {
     case 'import':

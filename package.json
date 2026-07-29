@@ -15,6 +15,8 @@
     "lint": "eslint .",
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "vitest run",
+    "api:build": "pnpm --filter @velograph/api build",
+    "api:verify-package": "node scripts/verify-api-package.mjs",
     "cli:build": "pnpm --filter @velograph/cli build",
     "cli:verify-package": "node scripts/verify-cli-package.mjs",
     "velograph-import": "node apps/cli/dist/velograph-import.mjs",

@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { databasePath, openDatabase, Repository } from '@velograph/db';
-import { main } from './index.ts';
+import { importFileName, main } from './index.ts';
 
 // Every temp dir here is created outside the checkout (never under the repo)
 // via the OS temp directory, matching the repo's no-real-data-in-checkout rule.
@@ -20,14 +20,21 @@ const FIXTURES = join(
 );
 
 let dataDir: string;
+let originalDataDir: string | undefined;
 
 beforeEach(() => {
+  originalDataDir = process.env['VELO_DATA_DIR'];
   dataDir = mkdtempSync(join(tmpdir(), 'velo-cli-'));
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 afterEach(() => {
+  if (originalDataDir === undefined) {
+    delete process.env['VELO_DATA_DIR'];
+  } else {
+    process.env['VELO_DATA_DIR'] = originalDataDir;
+  }
   vi.restoreAllMocks();
   rmSync(dataDir, { recursive: true, force: true });
 });
@@ -51,9 +58,28 @@ function workoutCount(): number {
 }
 
 describe('velograph CLI', () => {
+  it('normalizes native and Windows-style direct-file paths to a base name', () => {
+    expect(importFileName('/tmp/invented/Outdoor Cycling-Heart Rate-20310102_080000.csv')).toBe(
+      'Outdoor Cycling-Heart Rate-20310102_080000.csv',
+    );
+    expect(
+      importFileName(String.raw`C:\invented\Outdoor Cycling-Heart Rate-20310102_080000.csv`),
+    ).toBe('Outdoor Cycling-Heart Rate-20310102_080000.csv');
+  });
+
   it('prints usage and exits 2 for no/unknown command', async () => {
     expect(await main([])).toBe(2);
     expect(await main(['bogus'])).toBe(2);
+  });
+
+  it('rejects a missing or empty --data-dir before touching the default directory', async () => {
+    const fallbackDataDir = join(dataDir, 'must-not-be-created');
+    process.env['VELO_DATA_DIR'] = fallbackDataDir;
+    const fixture = join(FIXTURES, 'Outdoor Cycling-Heart Rate-20310402_073000.csv');
+
+    expect(await main(['import', fixture, '--data-dir'])).toBe(2);
+    expect(await main(['import', fixture, '--data-dir', ''])).toBe(2);
+    expect(existsSync(fallbackDataDir)).toBe(false);
   });
 
   it('imports, deletes, and repairs a workout end to end', async () => {
