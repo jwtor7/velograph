@@ -10,7 +10,8 @@ import { parseStrictNumber } from './numeric.ts';
  *    entity expansion cannot occur.
  *  - XML is scanned without recovery: exact qualified close names, declared
  *    namespace prefixes, one GPX document element, and no trailing content.
- *  - Hard resource limits: input size, point count, element nesting depth.
+ *  - Hard resource limits: input size, point count, element nesting depth,
+ *    and total attributes.
  *  - Coordinates, timestamps, and elevations are range-validated; invalid
  *    points are dropped and counted, never guessed.
  *
@@ -18,18 +19,20 @@ import { parseStrictNumber } from './numeric.ts';
  * ele, time, and speed/course extensions), versioned via GPX_PARSER_VERSION so
  * files can be reprocessed after upgrades (IMP-010).
  */
-export const GPX_PARSER_VERSION = 'gpx-v3';
+export const GPX_PARSER_VERSION = 'gpx-v4';
 
 export interface GpxLimits {
   maxBytes: number;
   maxPoints: number;
   maxDepth: number;
+  maxAttributes: number;
 }
 
 export const DEFAULT_GPX_LIMITS: GpxLimits = {
   maxBytes: 50 * 1024 * 1024,
   maxPoints: 500_000,
   maxDepth: 32,
+  maxAttributes: 100_000,
 };
 
 export type GpxErrorCode =
@@ -50,14 +53,18 @@ export interface GpxResult {
   droppedPoints: number;
 }
 
-type NullableTimeRoutePoint = Omit<RoutePoint, 't'> & { t: number | null };
 type PointField = 'ele' | 'time' | 'speed' | 'course';
+
+interface NamespaceScope {
+  parent: NamespaceScope | null;
+  declarations: Map<string, string | null>;
+}
 
 interface XmlFrame {
   qName: string;
   local: string;
   namespaceUri: string | null;
-  namespaces: Map<string, string>;
+  namespaceScope: NamespaceScope;
 }
 
 interface ParsedStartTag {
@@ -88,6 +95,13 @@ const PREDEFINED_ENTITIES: Record<string, string> = {
   quot: '"',
   apos: "'",
 };
+const XML_SPACE_PATTERN = '[\\u0009\\u000a\\u000d\\u0020]';
+const XML_DECLARATION = new RegExp(
+  `^xml${XML_SPACE_PATTERN}+version${XML_SPACE_PATTERN}*=${XML_SPACE_PATTERN}*(?:"1\\.0"|'1\\.0')` +
+    `(?:${XML_SPACE_PATTERN}+encoding${XML_SPACE_PATTERN}*=${XML_SPACE_PATTERN}*(?:"[Uu][Tt][Ff]-8"|'[Uu][Tt][Ff]-8'))?` +
+    `(?:${XML_SPACE_PATTERN}+standalone${XML_SPACE_PATTERN}*=${XML_SPACE_PATTERN}*(?:"(?:yes|no)"|'(?:yes|no)'))?` +
+    `${XML_SPACE_PATTERN}*$`,
+);
 
 export function parseGpx(input: string, limits: GpxLimits = DEFAULT_GPX_LIMITS): GpxResult {
   validateLimits(limits);
@@ -98,18 +112,21 @@ export function parseGpx(input: string, limits: GpxLimits = DEFAULT_GPX_LIMITS):
     throw new GpxError('xml_doctype_rejected', 'DTD and entity declarations are not allowed');
   }
 
-  const segments: { points: NullableTimeRoutePoint[] }[] = [];
-  let current: NullableTimeRoutePoint[] | null = null;
-  let point:
-    (Partial<Omit<NullableTimeRoutePoint, 't'>> & Pick<NullableTimeRoutePoint, 't'>) | null = null;
+  const segments: RouteSegment[] = [];
+  let current: RoutePoint[] | null = null;
+  let point: (Partial<Omit<RoutePoint, 't'>> & Pick<RoutePoint, 't'>) | null = null;
   let dropped = 0;
   let totalPoints = 0;
   let sawRoot = false;
   let rootClosed = false;
   let sawXmlDeclaration = false;
   let textCapture: TextCapture | null = null;
+  const attributeBudget = { remaining: limits.maxAttributes };
   const stack: XmlFrame[] = [];
-  const baseNamespaces = new Map<string, string>([['xml', XML_NAMESPACE]]);
+  const baseNamespaceScope: NamespaceScope = {
+    parent: null,
+    declarations: new Map<string, string | null>([['xml', XML_NAMESPACE]]),
+  };
 
   const finishPoint = () => {
     if (!point) return;
@@ -251,6 +268,9 @@ export function parseGpx(input: string, limits: GpxLimits = DEFAULT_GPX_LIMITS):
         ) {
           throw new GpxError('malformed_xml', 'XML declaration is misplaced');
         }
+        if (!XML_DECLARATION.test(body)) {
+          throw new GpxError('malformed_xml', 'XML declaration is invalid');
+        }
         sawXmlDeclaration = true;
       }
       assertXmlCharacters(body);
@@ -281,8 +301,8 @@ export function parseGpx(input: string, limits: GpxLimits = DEFAULT_GPX_LIMITS):
     }
 
     const end = findStartTagEnd(input, cursor);
-    const parentNamespaces = stack.at(-1)?.namespaces ?? baseNamespaces;
-    const tag = parseStartTag(input.slice(cursor, end + 1), parentNamespaces);
+    const parentNamespaceScope = stack.at(-1)?.namespaceScope ?? baseNamespaceScope;
+    const tag = parseStartTag(input.slice(cursor, end + 1), parentNamespaceScope, attributeBudget);
     if (stack.length === 0) {
       if (sawRoot || rootClosed) throw new GpxError('malformed_xml', 'multiple root elements');
       if (!isGpxElement(tag.frame, 'gpx')) {
@@ -308,9 +328,7 @@ export function parseGpx(input: string, limits: GpxLimits = DEFAULT_GPX_LIMITS):
   if (stack.length !== 0 || textCapture || point || current) {
     throw new GpxError('malformed_xml', 'unclosed elements');
   }
-  // The database field is nullable and stores these explicit nulls. The shared
-  // RoutePoint type is aligned separately under issue #20.
-  return { segments: segments as unknown as RouteSegment[], droppedPoints: dropped };
+  return { segments, droppedPoints: dropped };
 }
 
 function findStartTagEnd(input: string, start: number): number {
@@ -330,7 +348,11 @@ function findStartTagEnd(input: string, start: number): number {
   throw new GpxError('malformed_xml', 'unterminated start tag');
 }
 
-function parseStartTag(token: string, parentNamespaces: Map<string, string>): ParsedStartTag {
+function parseStartTag(
+  token: string,
+  parentNamespaceScope: NamespaceScope,
+  attributeBudget: { remaining: number },
+): ParsedStartTag {
   const selfClosing = /\/>$/.test(token);
   const body = token.slice(1, selfClosing ? -2 : -1);
   const nameMatch = QNAME_AT_START.exec(body);
@@ -341,21 +363,26 @@ function parseStartTag(token: string, parentNamespaces: Map<string, string>): Pa
     throw new GpxError('malformed_xml', 'start tag is invalid');
   }
 
-  const { attributes, namespaces } = parseAttributes(remainder, parentNamespaces);
+  const { attributes, namespaceScope } = parseAttributes(
+    remainder,
+    parentNamespaceScope,
+    attributeBudget,
+  );
   const { prefix, local } = splitQName(qName);
   if (prefix === 'xmlns') throw new GpxError('malformed_xml', 'reserved prefix is invalid');
-  const namespaceUri = prefix ? namespaces.get(prefix) : (namespaces.get('') ?? null);
-  if (prefix && namespaceUri === undefined) {
+  const resolvedNamespaceUri = resolveNamespace(namespaceScope, prefix ?? '');
+  if (prefix && resolvedNamespaceUri === undefined) {
     throw new GpxError('malformed_xml', 'namespace prefix is not declared');
   }
-  validateAttributeNamespaces(attributes, namespaces);
+  const namespaceUri = resolvedNamespaceUri ?? null;
+  validateAttributeNamespaces(attributes, namespaceScope);
 
   return {
     frame: {
       qName,
       local,
       namespaceUri: namespaceUri ?? null,
-      namespaces,
+      namespaceScope,
     },
     attributes,
     selfClosing,
@@ -364,10 +391,15 @@ function parseStartTag(token: string, parentNamespaces: Map<string, string>): Pa
 
 function parseAttributes(
   source: string,
-  parentNamespaces: Map<string, string>,
-): { attributes: Map<string, string>; namespaces: Map<string, string> } {
+  parentNamespaceScope: NamespaceScope,
+  attributeBudget: { remaining: number },
+): { attributes: Map<string, string>; namespaceScope: NamespaceScope } {
   const attributes = new Map<string, string>();
-  const namespaces = new Map(parentNamespaces);
+  const declarations = new Map<string, string | null>();
+  const namespaceScope: NamespaceScope = {
+    parent: parentNamespaceScope,
+    declarations,
+  };
   let cursor = 0;
   while (cursor < source.length) {
     const whitespaceStart = cursor;
@@ -379,6 +411,10 @@ function parseAttributes(
 
     const nameMatch = QNAME_AT_START.exec(source.slice(cursor));
     if (!nameMatch) throw new GpxError('malformed_xml', 'attribute name is invalid');
+    if (attributeBudget.remaining === 0) {
+      throw new GpxError('gpx_limits_exceeded', 'too many attributes');
+    }
+    attributeBudget.remaining--;
     const qName = nameMatch[1]!;
     cursor += qName.length;
     while (cursor < source.length && isXmlSpace(source[cursor]!)) cursor++;
@@ -401,23 +437,22 @@ function parseAttributes(
     const value = decodeXmlText(rawValue);
     if (attributes.has(qName)) throw new GpxError('malformed_xml', 'duplicate attribute');
     attributes.set(qName, value);
-    applyNamespaceDeclaration(qName, value, namespaces);
+    applyNamespaceDeclaration(qName, value, declarations);
     cursor = valueEnd + 1;
   }
-  return { attributes, namespaces };
+  return { attributes, namespaceScope };
 }
 
 function applyNamespaceDeclaration(
   qName: string,
   value: string,
-  namespaces: Map<string, string>,
+  declarations: Map<string, string | null>,
 ): void {
   if (qName === 'xmlns') {
     if (value === XML_NAMESPACE || value === XMLNS_NAMESPACE) {
       throw new GpxError('malformed_xml', 'default namespace is reserved');
     }
-    if (value === '') namespaces.delete('');
-    else namespaces.set('', value);
+    declarations.set('', value === '' ? null : value);
     return;
   }
   if (!qName.startsWith('xmlns:')) return;
@@ -432,19 +467,19 @@ function applyNamespaceDeclaration(
   ) {
     throw new GpxError('malformed_xml', 'namespace declaration is invalid');
   }
-  namespaces.set(prefix, value);
+  declarations.set(prefix, value);
 }
 
 function validateAttributeNamespaces(
   attributes: Map<string, string>,
-  namespaces: Map<string, string>,
+  namespaceScope: NamespaceScope,
 ): void {
   const expandedNames = new Set<string>();
   for (const qName of attributes.keys()) {
     if (qName === 'xmlns' || qName.startsWith('xmlns:')) continue;
     const { prefix, local } = splitQName(qName);
     if (prefix === 'xmlns') throw new GpxError('malformed_xml', 'reserved prefix is invalid');
-    const namespaceUri = prefix ? namespaces.get(prefix) : '';
+    const namespaceUri = prefix ? resolveNamespace(namespaceScope, prefix) : '';
     if (prefix && namespaceUri === undefined) {
       throw new GpxError('malformed_xml', 'attribute namespace prefix is not declared');
     }
@@ -454,6 +489,17 @@ function validateAttributeNamespaces(
     }
     expandedNames.add(expandedName);
   }
+}
+
+function resolveNamespace(scope: NamespaceScope, prefix: string): string | undefined {
+  let current: NamespaceScope | null = scope;
+  while (current) {
+    if (current.declarations.has(prefix)) {
+      return current.declarations.get(prefix) ?? undefined;
+    }
+    current = current.parent;
+  }
+  return undefined;
 }
 
 function splitQName(qName: string): { prefix: string | null; local: string } {
@@ -520,9 +566,11 @@ function validateLimits(limits: GpxLimits): void {
     !Number.isSafeInteger(limits.maxBytes) ||
     !Number.isSafeInteger(limits.maxPoints) ||
     !Number.isSafeInteger(limits.maxDepth) ||
+    !Number.isSafeInteger(limits.maxAttributes) ||
     limits.maxBytes < 0 ||
     limits.maxPoints < 0 ||
-    limits.maxDepth < 0
+    limits.maxDepth < 0 ||
+    limits.maxAttributes < 0
   ) {
     throw new GpxError('gpx_limits_exceeded', 'GPX limits are invalid');
   }
@@ -574,7 +622,7 @@ function isXmlCodePoint(codePoint: number): boolean {
   );
 }
 
-function isValidPoint(p: Partial<NullableTimeRoutePoint>): p is NullableTimeRoutePoint {
+function isValidPoint(p: Partial<Omit<RoutePoint, 't'>> & Pick<RoutePoint, 't'>): p is RoutePoint {
   return (
     typeof p.lat === 'number' &&
     typeof p.lon === 'number' &&

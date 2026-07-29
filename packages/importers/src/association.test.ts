@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { associateWorkout, type WorkoutCandidate } from './association.ts';
+import type { ParsedFile } from '@velograph/shared';
+import { associateWorkout, sampleTimeRange, type WorkoutCandidate } from './association.ts';
 
 const minute = 60_000;
 const range = { start: 100 * minute, end: 140 * minute };
@@ -51,6 +52,25 @@ describe('corroborated workout association (IMP-005)', () => {
     ).toEqual({
       status: 'matched',
       workout: candidate(7, 100, 140),
+    });
+  });
+
+  it('derives a range from hundreds of thousands of route points without argument spreading', () => {
+    const points = Array.from({ length: 200_000 }, (_, index) => ({
+      t: index === 0 ? null : 10_000_000 + index,
+      lat: -48 + index / 10_000_000,
+      lon: -123 - index / 10_000_000,
+    }));
+    const file: ParsedFile = {
+      kind: 'route',
+      format: 'gpx',
+      workoutType: 'outdoor_cycling',
+      segments: [{ points }],
+    };
+
+    expect(sampleTimeRange(file)).toEqual({
+      start: 10_000_001,
+      end: 10_199_999,
     });
   });
 });

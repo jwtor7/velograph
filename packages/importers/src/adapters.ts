@@ -3,6 +3,7 @@ import type {
   MetricSample,
   ParsedFile,
   QuarantineCode,
+  RoutePoint,
   WorkoutType,
 } from '@velograph/shared';
 import { parseInstant } from '@velograph/shared';
@@ -208,17 +209,23 @@ function parseRouteCsvRows(
   const haIdx = header.findIndex((h) => h.startsWith('horizontalaccuracy'));
   const vaIdx = header.findIndex((h) => h.startsWith('verticalaccuracy'));
 
-  const points = [];
+  const points: RoutePoint[] = [];
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i]!;
     const t = parseRequiredInstant(row[tIdx], options);
     const lat = parseRequiredNumber(row[latIdx], { min: -90, max: 90 });
     const lon = parseRequiredNumber(row[lonIdx], { min: -180, max: 180 });
-    const p: Record<string, number> = { t, lat, lon };
+    const p: RoutePoint = { t, lat, lon };
     const opt = (idx: number, key: string, bounds: NumericBounds) => {
       if (idx !== -1) {
         const v = parseStrictNumber(row[idx], bounds);
-        if (v != null) p[key] = v;
+        if (v != null) {
+          if (key === 'ele') p.ele = v;
+          else if (key === 'speed') p.speed = v;
+          else if (key === 'course') p.course = v;
+          else if (key === 'hAcc') p.hAcc = v;
+          else p.vAcc = v;
+        }
       }
     };
     opt(altIdx, 'ele', { minExclusive: -500, maxExclusive: 10_000 });
@@ -226,7 +233,7 @@ function parseRouteCsvRows(
     opt(crsIdx, 'course', { min: 0, maxExclusive: 360 });
     opt(haIdx, 'hAcc', { min: 0, max: Number.MAX_SAFE_INTEGER });
     opt(vaIdx, 'vAcc', { min: 0, max: Number.MAX_SAFE_INTEGER });
-    points.push(p as unknown as import('@velograph/shared').RoutePoint);
+    points.push(p);
   }
   if (points.length === 0) throw new AdapterError('no_valid_samples', 'no valid route rows');
   points.sort((a, b) => (a.t ?? 0) - (b.t ?? 0));

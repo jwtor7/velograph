@@ -19,6 +19,22 @@ export interface WorkoutRow {
   quality_state: string;
 }
 
+export interface SourceFileRow {
+  id: number;
+  status: string;
+  parserVersion: string;
+}
+
+interface SourceFileWrite {
+  batchId: number;
+  originalName: string;
+  detectedType: string;
+  parserVersion: string;
+  status: 'imported' | 'skipped_duplicate' | 'quarantined';
+  errorCode?: QuarantineCode;
+  sizeBytes: number;
+}
+
 /** Typed query layer over the Velograph schema. */
 export class Repository {
   readonly db: Database;
@@ -46,21 +62,20 @@ export class Repository {
       .run(status, JSON.stringify(counts), batchId);
   }
 
-  findSourceFileByHash(sha256: string): { id: number; status: string } | undefined {
-    return this.db.prepare('SELECT id, status FROM source_files WHERE sha256 = ?').get(sha256) as
-      { id: number; status: string } | undefined;
+  findSourceFileByHash(sha256: string): SourceFileRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, status, parser_version AS parserVersion
+         FROM source_files WHERE sha256 = ?`,
+      )
+      .get(sha256) as SourceFileRow | undefined;
   }
 
-  insertSourceFile(row: {
-    batchId: number;
-    sha256: string;
-    originalName: string;
-    detectedType: string;
-    parserVersion: string;
-    status: 'imported' | 'skipped_duplicate' | 'quarantined';
-    errorCode?: QuarantineCode;
-    sizeBytes: number;
-  }): number {
+  insertSourceFile(
+    row: SourceFileWrite & {
+      sha256: string;
+    },
+  ): number {
     const r = this.db
       .prepare(
         `INSERT INTO source_files
@@ -78,6 +93,90 @@ export class Repository {
         row.sizeBytes,
       );
     return Number(r.lastInsertRowid);
+  }
+
+  /** Reuse the hash-unique inventory row when its parser version changes. */
+  updateSourceFile(sourceFileId: number, row: SourceFileWrite): void {
+    const result = this.db
+      .prepare(
+        `UPDATE source_files SET
+           batch_id = ?, original_name = ?, detected_type = ?, parser_version = ?,
+           status = ?, error_code = ?, size_bytes = ?
+         WHERE id = ?`,
+      )
+      .run(
+        row.batchId,
+        row.originalName,
+        row.detectedType,
+        row.parserVersion,
+        row.status,
+        row.errorCode ?? null,
+        row.sizeBytes,
+        sourceFileId,
+      );
+    if (result.changes !== 1) throw new Error('source_file_not_found');
+  }
+
+  /**
+   * Remove normalized rows owned by one source before a parser-version
+   * reprocessing pass. Empty workouts are retained temporarily so their
+   * previous time span can corroborate the replacement parse; callers must
+   * always invoke finalizeSourceFileReprocessing before commit.
+   */
+  detachSourceFileData(sourceFileId: number): number[] {
+    const rows = this.db
+      .prepare(
+        `SELECT workout_id AS id FROM metric_series WHERE source_file_id = ?
+         UNION
+         SELECT workout_id AS id FROM routes WHERE source_file_id = ?
+         ORDER BY id`,
+      )
+      .all(sourceFileId, sourceFileId) as { id: number }[];
+    const workoutIds = rows.map((row) => row.id);
+
+    this.db.prepare('DELETE FROM metric_series WHERE source_file_id = ?').run(sourceFileId);
+    this.db.prepare('DELETE FROM routes WHERE source_file_id = ?').run(sourceFileId);
+
+    const hasNormalizedData = this.db.prepare(
+      `SELECT 1 AS present FROM metric_series WHERE workout_id = ?
+       UNION ALL
+       SELECT 1 AS present FROM routes WHERE workout_id = ?
+       LIMIT 1`,
+    );
+    for (const workoutId of workoutIds) {
+      this.invalidateWorkoutDerivedOutputs(workoutId);
+      if (hasNormalizedData.get(workoutId, workoutId) !== undefined) {
+        this.recomputeWorkoutSpan(workoutId);
+      }
+    }
+    return workoutIds;
+  }
+
+  /**
+   * Complete a parser-version replacement by deleting any old workout that
+   * remained empty, or deriving the surviving workout span from current rows.
+   */
+  finalizeSourceFileReprocessing(workoutIds: readonly number[]): void {
+    const hasNormalizedData = this.db.prepare(
+      `SELECT 1 AS present FROM metric_series WHERE workout_id = ?
+       UNION ALL
+       SELECT 1 AS present FROM routes WHERE workout_id = ?
+       LIMIT 1`,
+    );
+    const deleteWorkout = this.db.prepare('DELETE FROM workouts WHERE id = ?');
+    for (const workoutId of workoutIds) {
+      if (hasNormalizedData.get(workoutId, workoutId) === undefined) {
+        deleteWorkout.run(workoutId);
+      } else {
+        this.recomputeWorkoutSpan(workoutId);
+      }
+    }
+  }
+
+  /** Inputs changed: cached deterministic and narrative outputs are no longer current. */
+  invalidateWorkoutDerivedOutputs(workoutId: number): void {
+    this.db.prepare('DELETE FROM analytics_snapshots WHERE workout_id = ?').run(workoutId);
+    this.db.prepare('DELETE FROM insight_runs WHERE workout_id = ?').run(workoutId);
   }
 
   /**
@@ -169,10 +268,10 @@ export class Repository {
     distanceM: number | null;
   }): number {
     let pointCount = 0;
-    let latMin = Infinity;
-    let latMax = -Infinity;
-    let lonMin = Infinity;
-    let lonMax = -Infinity;
+    let latMin = Number.POSITIVE_INFINITY;
+    let latMax = Number.NEGATIVE_INFINITY;
+    let lonMin = Number.POSITIVE_INFINITY;
+    let lonMax = Number.NEGATIVE_INFINITY;
     for (const segment of row.segments) {
       for (const point of segment.points) {
         pointCount++;
@@ -182,6 +281,7 @@ export class Repository {
         if (point.lon > lonMax) lonMax = point.lon;
       }
     }
+    if (pointCount === 0) throw new Error('route_has_no_points');
     const bounds = {
       latMin,
       latMax,

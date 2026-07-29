@@ -26,8 +26,8 @@ export interface MetricSample {
 }
 
 export interface RoutePoint {
-  /** Absolute instant, epoch ms UTC, when recorded. */
-  t?: number | null;
+  /** Absolute instant when recorded; some GPX points legitimately omit it. */
+  t: number | null;
   lat: number;
   lon: number;
   /** Elevation in metres, when recorded. */

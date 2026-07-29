@@ -92,6 +92,13 @@ describe('secure GPX parser (ROUTE-001/004/005)', () => {
     );
   });
 
+  it('enforces a document-wide attribute budget', () => {
+    const attributes = Array.from({ length: 12 }, (_, index) => ` a${index}="${index}"`).join('');
+    expect(() =>
+      parseGpx(`<gpx${attributes}/>`, { ...DEFAULT_GPX_LIMITS, maxAttributes: 10 }),
+    ).toThrowError(expect.objectContaining({ code: 'gpx_limits_exceeded' }));
+  });
+
   it('drops out-of-range coordinates instead of importing them', () => {
     const gpx = wrap(`<trkseg>${pt(-48.5, -123.5)}${pt(95, -123.5)}</trkseg>`);
     const res = parseGpx(gpx);
@@ -139,6 +146,23 @@ describe('secure GPX parser (ROUTE-001/004/005)', () => {
     expect(() => parseGpx('<gpx/>synthetic trailing content')).toThrowError(
       expect.objectContaining({ code: 'malformed_xml' }),
     );
+  });
+
+  it('accepts only a well-formed XML 1.0 UTF-8 declaration', () => {
+    expect(() =>
+      parseGpx('<?xml version="1.0" encoding="utf-8" standalone="yes"?><gpx/>'),
+    ).not.toThrow();
+    for (const declaration of [
+      '<?xml nope?>',
+      '<?xml version="2.0"?>',
+      '<?xml encoding="UTF-8" version="1.0"?>',
+      '<?xml version="1.0" standalone="maybe"?>',
+      '<?xml version="1.0" encoding="ISO-8859-1"?>',
+    ]) {
+      expect(() => parseGpx(`${declaration}<gpx/>`)).toThrowError(
+        expect.objectContaining({ code: 'malformed_xml' }),
+      );
+    }
   });
 
   it('rejects undeclared entities while accepting predefined and numeric references', () => {

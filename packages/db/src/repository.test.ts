@@ -60,11 +60,11 @@ describe('Repository.insertRoute', () => {
       segments: [
         {
           points: [
-            { lat: 43.1, lon: -79.9 },
-            { lat: 42.8, lon: -79.2 },
+            { t: null, lat: 43.1, lon: -79.9 },
+            { t: null, lat: 42.8, lon: -79.2 },
           ],
         },
-        { points: [{ lat: 43.4, lon: -80.1 }] },
+        { points: [{ t: null, lat: 43.4, lon: -80.1 }] },
       ],
     });
     const row = db
@@ -245,6 +245,52 @@ describe('Repository.recomputeWorkoutSpan', () => {
     const repo = new Repository(db);
     const workoutId = repo.createWorkout('outdoor_cycling', 1, 2, 'import');
     expect(repo.recomputeWorkoutSpan(workoutId)).toBe(false);
+    db.close();
+  });
+});
+
+describe('Repository.insertRoute', () => {
+  it('stores bounds for a large synthetic route without argument spreading', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const batchId = repo.createBatch('synthetic-test', 1);
+    const sourceFileId = repo.insertSourceFile({
+      batchId,
+      sha256: 'synthetic-large-route',
+      originalName: 'synthetic-route.gpx',
+      detectedType: 'route:gpx',
+      parserVersion: 'synthetic-v1',
+      status: 'imported',
+      sizeBytes: 1,
+    });
+    const workoutId = repo.createWorkout('outdoor_cycling', 1, 200_000, 'synthetic-test');
+    const points = Array.from({ length: 200_000 }, (_, index) => ({
+      t: index + 1,
+      lat: -48 + index / 10_000_000,
+      lon: -123 - index / 10_000_000,
+    }));
+
+    repo.transaction(() => {
+      repo.insertRoute({
+        workoutId,
+        sourceFileId,
+        format: 'gpx',
+        segments: [{ points }],
+        distanceM: null,
+      });
+    });
+
+    const stored = db
+      .prepare('SELECT point_count, bounds_json FROM routes WHERE workout_id = ?')
+      .get(workoutId) as { point_count: number; bounds_json: string };
+    expect(stored.point_count).toBe(200_000);
+    expect(JSON.parse(stored.bounds_json)).toEqual({
+      latMin: -48,
+      latMax: -47.9800001,
+      lonMin: -123.0199999,
+      lonMax: -123,
+    });
+    expect(repo.countRows('route_points')).toBe(200_000);
     db.close();
   });
 });

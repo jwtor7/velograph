@@ -210,6 +210,18 @@ is pre-1.0, and for the release procedure.
   closing-tag attributes, multiple roots, unknown entities, trailing content,
   mismatched, misnested, prematurely closed, and unclosed structures fail with
   the privacy-safe `malformed_xml` code (#15).
+- **Parser upgrades now replace prior normalized output transactionally.**
+  Matching content hashes are skipped only when the stored parser version is
+  current; otherwise the existing source inventory row is reused, dependent
+  metrics/routes are rebuilt, affected analytics and insight caches are
+  invalidated, and a failed new parse is quarantined without retaining stale
+  normalized data (#12).
+- **Large and partially timed GPX routes stay bounded and truthful.** Route
+  time ranges and geographic bounds are reduced in one pass rather than spread
+  into function arguments, untimed points remain nullable through database,
+  analytics, API, and web types, namespace scopes no longer clone inherited
+  maps, total XML attributes are capped, invalid UTF-8 is rejected, and XML
+  declarations must describe XML 1.0 UTF-8 input (#13, #15).
 - **"Choose export folder" could not select a folder.** The directory input carried
   `accept=".csv,.gpx,.zip"`; since a directory matches none of those extensions, the OS
   picker greyed folders out. Because Health Auto Export writes one CSV per metric, this

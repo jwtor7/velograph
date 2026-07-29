@@ -30,11 +30,16 @@ export function sampleTimeRange(file: ParsedFile): SampleTimeRange | null {
     if (file.samples.length === 0) return null;
     return { start: file.samples[0]!.t, end: file.samples[file.samples.length - 1]!.t };
   }
-  const times = file.segments
-    .flatMap((s) => s.points.map((p) => p.t))
-    .filter((t): t is number => t != null);
-  if (times.length === 0) return null;
-  return { start: Math.min(...times), end: Math.max(...times) };
+  let start = Number.POSITIVE_INFINITY;
+  let end = Number.NEGATIVE_INFINITY;
+  for (const segment of file.segments) {
+    for (const point of segment.points) {
+      if (point.t == null) continue;
+      if (point.t < start) start = point.t;
+      if (point.t > end) end = point.t;
+    }
+  }
+  return Number.isFinite(start) && Number.isFinite(end) ? { start, end } : null;
 }
 
 export function associateWorkout(

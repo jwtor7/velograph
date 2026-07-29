@@ -15,9 +15,16 @@ import {
   sampleTimeRange,
 } from './association.ts';
 import { GPX_PARSER_VERSION } from './gpx.ts';
-import { extractZip, ZIP_PARSER_VERSION, ZipError, type ZipLimits } from './zip.ts';
+import {
+  createZipDecodedBudget,
+  DEFAULT_ZIP_LIMITS,
+  extractZip,
+  ZIP_PARSER_VERSION,
+  ZipError,
+  type ZipLimits,
+} from './zip.ts';
 
-export const IMPORTER_VERSION = 'importer-v2';
+export const IMPORTER_VERSION = 'importer-v3';
 
 export interface ImportFile {
   name: string;
@@ -27,15 +34,6 @@ export interface ImportFile {
 export interface ImportResult extends ImportCounts {
   batchId: number;
   quarantinedFiles: { name: string; code: QuarantineCode }[];
-}
-
-export type ImportFileGroupLoader = () => readonly ImportFile[];
-export type ImportFileGroups = Iterable<ImportFileGroupLoader>;
-export interface RunImportOptions {
-  now?: number;
-  toleranceMs?: number;
-  timeZone?: string;
-  zipLimits?: ZipLimits;
 }
 
 interface PreparedImportFile extends ImportFile {
@@ -49,8 +47,9 @@ interface PreparedImportFile extends ImportFile {
  * IMP-008) without aborting the batch; a storage-level failure rolls back
  * everything including the batch row.
  *
- * Idempotency (IMP-003): files whose SHA-256 already exists are recorded as
- * skipped duplicates and contribute no workouts, samples, or route points.
+ * Idempotency (IMP-003/010): files whose SHA-256 and parser version already
+ * exist are skipped. When that version changes, the hash-unique inventory row
+ * is reused and its normalized rows are transactionally replaced.
  *
  * GPX is preferred for route geometry; a route CSV is only used when the
  * workout has no GPX route, and a GPX arriving later replaces a CSV route
@@ -59,28 +58,38 @@ interface PreparedImportFile extends ImportFile {
 export function runImport(
   db: Database,
   inputFiles: ImportFile[],
-  opts: RunImportOptions = {},
-): ImportResult {
-  return runImportGroups(db, [() => inputFiles], opts);
-}
-
-/**
- * Import a lazily produced sequence of file groups as one atomic batch.
- *
- * The iterable is consumed inside the transaction and only the current
- * association group's buffers are retained. This lets path-based imports
- * walk metadata first, then read/process one bounded ride group at a time
- * without weakening IMP-007: an I/O or parser-infrastructure failure in a
- * later group rolls back every earlier group in the confirmed import.
- */
-export function runImportGroups(
-  db: Database,
-  inputGroups: ImportFileGroups,
-  opts: RunImportOptions = {},
+  opts: { now?: number; toleranceMs?: number; timeZone?: string; zipLimits?: ZipLimits } = {},
 ): ImportResult {
   const repo = new Repository(db);
   const now = opts.now ?? Date.now();
   const toleranceMs = opts.toleranceMs ?? DEFAULT_ASSOCIATION_TOLERANCE_MS;
+
+  // Expand each selected ZIP independently. A malformed outer archive remains
+  // an inventory item so the transaction can durably quarantine it while
+  // valid sibling selections continue.
+  const files: PreparedImportFile[] = [];
+  const zipLimits = opts.zipLimits ?? DEFAULT_ZIP_LIMITS;
+  const zipDecodedBudget = createZipDecodedBudget(zipLimits.maxTotalBytes);
+  const orderedInputFiles = [...inputFiles].sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  );
+  for (const f of orderedInputFiles) {
+    if (f.name.toLowerCase().endsWith('.zip')) {
+      try {
+        files.push(...extractZip(f.data, zipLimits, zipDecodedBudget));
+      } catch (err) {
+        files.push({
+          ...f,
+          expansionError: err instanceof ZipError ? err.code : 'io_error',
+        });
+      }
+    } else {
+      files.push(f);
+    }
+  }
+  // Deterministic processing order regardless of selection order; GPX before
+  // route CSV within the same instant-window so CSV fallback logic is stable.
+  files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
   const counts: ImportCounts = {
     imported: 0,
@@ -94,162 +103,152 @@ export function runImportGroups(
   const batchId = repo.transaction(() => {
     const id = repo.createBatch(IMPORTER_VERSION, now);
 
-    const processGroup = (inputFiles: readonly ImportFile[]): void => {
-      // Expand each selected ZIP independently. A malformed outer archive
-      // remains an inventory item while valid sibling selections continue.
-      const files: PreparedImportFile[] = [];
-      for (const f of inputFiles) {
-        if (f.name.toLowerCase().endsWith('.zip')) {
-          try {
-            files.push(...extractZip(f.data, opts.zipLimits));
-          } catch (err) {
-            files.push({
-              ...f,
-              expansionError: err instanceof ZipError ? err.code : 'io_error',
-            });
-          }
-        } else {
-          files.push(f);
-        }
+    for (const file of files) {
+      const hash = sha256Hex(file.data);
+      const existing = repo.findSourceFileByHash(hash);
+      const safeName = sanitizeName(file.name);
+      const currentParserVersion = parserVersionForFile(file.name);
+      if (existing?.parserVersion === currentParserVersion) {
+        counts.skippedDuplicates++;
+        continue;
       }
-      files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-
-      for (const file of files) {
-        const hash = sha256Hex(file.data);
-        const existing = repo.findSourceFileByHash(hash);
-        const safeName = sanitizeName(file.name);
-        if (existing) {
-          counts.skippedDuplicates++;
-          continue;
-        }
-
-        const quarantine = (
-          code: QuarantineCode,
-          detectedType = 'unknown',
-          parserVersion = parserVersionForFile(file.name),
-        ) => {
-          repo.insertSourceFile({
-            batchId: id,
-            sha256: hash,
-            originalName: safeName,
-            detectedType,
-            parserVersion,
-            status: 'quarantined',
-            errorCode: code,
-            sizeBytes: file.data.length,
-          });
-          counts.quarantined++;
-          quarantinedFiles.push({ name: safeName, code });
-        };
-
-        if (file.expansionError) {
-          quarantine(file.expansionError, 'archive:zip', ZIP_PARSER_VERSION);
-          continue;
-        }
-
-        let parsed: ParsedFile;
-        let filenameTimestamps: number[];
-        try {
-          parsed = parseFile(file, opts.timeZone);
-          filenameTimestamps = parseHaeFilenameTimestamps(
-            file.name,
-            opts.timeZone ? { timeZone: opts.timeZone } : {},
-          );
-        } catch (err) {
-          const code: QuarantineCode =
-            err instanceof AdapterError
-              ? err.code
-              : err instanceof ZipError
-                ? err.code
-                : 'io_error';
-          quarantine(code);
-          continue;
-        }
-
-        const range = sampleTimeRange(parsed);
-        if (!range) {
-          quarantine('timestamps_invalid');
-          continue;
-        }
-
-        const detectedType =
-          parsed.kind === 'metric' ? `metric:${parsed.metric}` : `route:${parsed.format}`;
-        const candidates = repo.findCandidateWorkouts(
-          parsed.workoutType,
-          range.start,
-          range.end,
-          toleranceMs,
-        );
-        const association = associateWorkout(candidates, range, filenameTimestamps, toleranceMs);
-        if (association.status === 'ambiguous') {
-          quarantine('association_ambiguous', detectedType);
-          continue;
-        }
-        if (association.status === 'conflict') {
-          quarantine('association_conflict', detectedType);
-          continue;
-        }
-
-        const sourceFileId = repo.insertSourceFile({
+      const detachedWorkoutIds = existing ? repo.detachSourceFileData(existing.id) : [];
+      const persistSourceFile = (row: {
+        detectedType: string;
+        parserVersion: string;
+        status: 'imported' | 'quarantined';
+        errorCode?: QuarantineCode;
+      }): number => {
+        const source = {
           batchId: id,
-          sha256: hash,
           originalName: safeName,
-          detectedType,
-          parserVersion: parserVersionForFile(file.name),
-          status: 'imported',
+          detectedType: row.detectedType,
+          parserVersion: row.parserVersion,
+          status: row.status,
           sizeBytes: file.data.length,
-        });
-
-        let workoutId: number;
-        if (association.status === 'matched') {
-          workoutId = association.workout.id;
-          repo.extendWorkoutSpan(workoutId, range.start, range.end);
-          counts.workoutsUpdated++;
-        } else {
-          workoutId = repo.createWorkout(parsed.workoutType, range.start, range.end, 'import');
-          counts.workoutsCreated++;
+          ...(row.errorCode === undefined ? {} : { errorCode: row.errorCode }),
+        };
+        if (existing) {
+          repo.updateSourceFile(existing.id, source);
+          return existing.id;
         }
+        return repo.insertSourceFile({ ...source, sha256: hash });
+      };
+      const finalizeReprocessing = () => {
+        if (existing) repo.finalizeSourceFileReprocessing(detachedWorkoutIds);
+      };
 
-        if (parsed.kind === 'metric') {
-          repo.insertMetricSeries({
+      const quarantine = (
+        code: QuarantineCode,
+        detectedType = 'unknown',
+        parserVersion = currentParserVersion,
+      ) => {
+        persistSourceFile({
+          detectedType,
+          parserVersion,
+          status: 'quarantined',
+          errorCode: code,
+        });
+        finalizeReprocessing();
+        counts.quarantined++;
+        quarantinedFiles.push({ name: safeName, code });
+      };
+
+      if (file.expansionError) {
+        quarantine(file.expansionError, 'archive:zip', ZIP_PARSER_VERSION);
+        continue;
+      }
+
+      let parsed: ParsedFile;
+      let filenameTimestamps: number[];
+      try {
+        parsed = parseFile(file, opts.timeZone);
+        filenameTimestamps = parseHaeFilenameTimestamps(
+          file.name,
+          opts.timeZone ? { timeZone: opts.timeZone } : {},
+        );
+      } catch (err) {
+        const code: QuarantineCode =
+          err instanceof AdapterError ? err.code : err instanceof ZipError ? err.code : 'io_error';
+        quarantine(code);
+        continue;
+      }
+
+      const range = sampleTimeRange(parsed);
+      if (!range) {
+        quarantine('timestamps_invalid');
+        continue;
+      }
+
+      const detectedType =
+        parsed.kind === 'metric' ? `metric:${parsed.metric}` : `route:${parsed.format}`;
+      const candidates = repo.findCandidateWorkouts(
+        parsed.workoutType,
+        range.start,
+        range.end,
+        toleranceMs,
+      );
+      const association = associateWorkout(candidates, range, filenameTimestamps, toleranceMs);
+      if (association.status === 'ambiguous') {
+        quarantine('association_ambiguous', detectedType);
+        continue;
+      }
+      if (association.status === 'conflict') {
+        quarantine('association_conflict', detectedType);
+        continue;
+      }
+
+      const sourceFileId = persistSourceFile({
+        detectedType,
+        parserVersion: currentParserVersion,
+        status: 'imported',
+      });
+
+      let workoutId: number;
+      if (association.status === 'matched') {
+        workoutId = association.workout.id;
+        repo.invalidateWorkoutDerivedOutputs(workoutId);
+        repo.extendWorkoutSpan(workoutId, range.start, range.end);
+        counts.workoutsUpdated++;
+      } else {
+        workoutId = repo.createWorkout(parsed.workoutType, range.start, range.end, 'import');
+        counts.workoutsCreated++;
+      }
+
+      if (parsed.kind === 'metric') {
+        repo.insertMetricSeries({
+          workoutId,
+          sourceFileId,
+          metric: parsed.metric,
+          unit: CANONICAL_UNITS[parsed.metric],
+          source: parsed.source,
+          samples: parsed.samples,
+        });
+      } else {
+        const existingFormat = repo.workoutRouteFormat(workoutId);
+        if (existingFormat === undefined) {
+          repo.insertRoute({
             workoutId,
             sourceFileId,
-            metric: parsed.metric,
-            unit: CANONICAL_UNITS[parsed.metric],
-            source: parsed.source,
-            samples: parsed.samples,
+            format: parsed.format,
+            segments: parsed.segments,
+            distanceM: null,
           });
-        } else {
-          const existingFormat = repo.workoutRouteFormat(workoutId);
-          if (existingFormat === undefined) {
-            repo.insertRoute({
-              workoutId,
-              sourceFileId,
-              format: parsed.format,
-              segments: parsed.segments,
-              distanceM: null,
-            });
-          } else if (existingFormat === 'csv' && parsed.format === 'gpx') {
-            repo.deleteRoutesForWorkout(workoutId);
-            repo.insertRoute({
-              workoutId,
-              sourceFileId,
-              format: 'gpx',
-              segments: parsed.segments,
-              distanceM: null,
-            });
-          }
-          // gpx already present, or csv arriving when a route exists: keep the
-          // preferred geometry; the source file row preserves provenance.
+        } else if (existingFormat === 'csv' && parsed.format === 'gpx') {
+          repo.deleteRoutesForWorkout(workoutId);
+          repo.insertRoute({
+            workoutId,
+            sourceFileId,
+            format: 'gpx',
+            segments: parsed.segments,
+            distanceM: null,
+          });
         }
-        counts.imported++;
+        // gpx already present, or csv arriving when a route exists: keep the
+        // preferred geometry; the source file row preserves provenance.
       }
-    };
-
-    for (const loadGroup of inputGroups) {
-      // Once processGroup returns, no importer reference keeps that group's
-      // source buffers alive while the next loader runs.
-      processGroup(loadGroup());
+      finalizeReprocessing();
+      counts.imported++;
     }
 
     repo.finishBatch(id, 'committed', counts);
