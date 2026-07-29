@@ -12,17 +12,20 @@ import {
   loadWorkoutData,
   restoreDatabaseWithReport,
 } from '@velograph/db';
+import { DEFAULT_IMPORT_UPLOAD_LIMITS, type ImportUploadLimits } from '@velograph/shared';
 import {
   DEFAULT_MAX_GROUP_BYTES,
   DEFAULT_ZIP_LIMITS,
   confirmFolderImportPlan,
   FolderImportError,
+  ImportAbortedError,
   inventoryFiles,
   planFolderImport,
   previewImportFolder,
   readFolderFileGroups,
-  runImport,
-  runImportGroups,
+  runImportCancellable,
+  runImportGroupsCancellable,
+  throwIfImportAborted,
   type ImportFile,
 } from '@velograph/importers';
 import { APP_VERSION } from '@velograph/shared';
@@ -37,7 +40,6 @@ import {
 import { BasemapService, type BasemapTile } from './basemap.ts';
 
 export const API_VERSION = APP_VERSION;
-const MAX_IMPORT_BODY_BYTES = 600 * 1024 * 1024; // base64-encoded uploads
 const MAX_PATH_BODY_BYTES = 8 * 1024;
 const PATH_IMPORT_ZIP_LIMITS = {
   ...DEFAULT_ZIP_LIMITS,
@@ -78,9 +80,12 @@ export interface ApiOptions {
   now?: () => number;
   /** @internal Deterministic seam for restore/shutdown integration tests. */
   restoreDatabaseFn?: typeof restoreDatabaseWithReport;
+  /** Testable override; production uses the shared bounded upload contract. */
+  importUploadLimits?: ImportUploadLimits;
 }
 
 interface ApiRuntimeState {
+  importInProgress: boolean;
   activeRequests: number;
   databaseAvailable: boolean;
   restoreInProgress: boolean;
@@ -120,6 +125,7 @@ function waitForRequests(state: ApiRuntimeState): Promise<void> {
 export function createApiServer(opts: ApiOptions): VelographApiServer {
   const now = opts.now ?? Date.now;
   const state: ApiRuntimeState = {
+    importInProgress: false,
     activeRequests: 0,
     databaseAvailable: true,
     restoreInProgress: false,
@@ -169,8 +175,8 @@ export function createApiServer(opts: ApiOptions): VelographApiServer {
       send(res, 500, {
         error:
           error instanceof AnalyticsSnapshotConflictError
-            ? 'analytics_snapshot_conflict'
-            : 'internal_error',
+                  ? 'analytics_snapshot_conflict'
+                  : 'internal_error',
       });
     }
   });
@@ -324,6 +330,14 @@ function route(
     return;
   }
 
+  // A cancellable import intentionally keeps one SQLite transaction open
+  // across event-loop checkpoints. Do not let another request use that same
+  // connection and accidentally observe or join uncommitted work.
+  if (state.importInProgress) {
+    send(res, 503, { error: 'import_in_progress' });
+    return;
+  }
+
   if (method === 'GET' && path === '/api/workouts') {
     const repo = new Repository(db);
     const list = repo.listWorkouts().map((w) => {
@@ -432,28 +446,52 @@ function route(
   }
 
   if (method === 'POST' && path === '/api/import/inventory') {
-    return readJsonBody(req, MAX_IMPORT_BODY_BYTES)
+    const limits = opts.importUploadLimits ?? DEFAULT_IMPORT_UPLOAD_LIMITS;
+    const cancellation = createRequestCancellation(req, res);
+    return readJsonBody(req, limits.maxBodyBytes, cancellation.signal)
       .then((body) => {
-        const files = decodeFiles(body);
-        send(res, 200, { inventory: inventoryFiles(files) });
+        throwIfImportAborted(cancellation.signal);
+        const uploads = decodeUploadFiles(body, limits);
+        throwIfImportAborted(cancellation.signal);
+        const inventory = inventoryFiles(uploads.map((upload) => upload.file)).map(
+          ({ name, sizeBytes, classification, detectedType }, index) => ({
+            id: uploads[index]!.id,
+            name,
+            sizeBytes,
+            classification,
+            detectedType,
+          }),
+        );
+        send(res, 200, { inventory });
       })
-      .catch(() => send(res, 400, { error: 'invalid_body' }));
-    return;
+      .catch((err) => sendImportRequestError(res, err))
+      .finally(cancellation.dispose);
   }
 
   if (method === 'POST' && path === '/api/import') {
-    return readJsonBody(req, MAX_IMPORT_BODY_BYTES)
-      .then((body) => {
-        const files = decodeFiles(body);
-        if (files.length === 0) {
-          send(res, 400, { error: 'no_files' });
-          return;
+    const limits = opts.importUploadLimits ?? DEFAULT_IMPORT_UPLOAD_LIMITS;
+    const cancellation = createRequestCancellation(req, res);
+    return readJsonBody(req, limits.maxBodyBytes, cancellation.signal)
+      .then(async (body) => {
+        await yieldToRequestEvents();
+        throwIfImportAborted(cancellation.signal);
+        const files = decodeUploadFiles(body, limits).map((upload) => upload.file);
+        await yieldToRequestEvents();
+        throwIfImportAborted(cancellation.signal);
+        if (!beginImport(state, res)) return;
+        try {
+          const result = await runImportCancellable(db, files, {
+            now: now(),
+            timeZone: loadSettings(db).timeZone,
+            signal: cancellation.signal,
+          });
+          send(res, 200, { result });
+        } finally {
+          state.importInProgress = false;
         }
-        const result = runImport(db, files, { now: now(), timeZone: loadSettings(db).timeZone });
-        send(res, 200, { result });
       })
-      .catch(() => send(res, 400, { error: 'invalid_body' }));
-    return;
+      .catch((err) => sendImportRequestError(res, err))
+      .finally(cancellation.dispose);
   }
 
   // Path-based folder import (issue #51): the client posts a folder path
@@ -462,26 +500,35 @@ function route(
   // Never a folder that resolves inside this checkout (guardAgainstCheckout,
   // reused — not reimplemented — from @velograph/db).
   if (method === 'POST' && path === '/api/import/path/inventory') {
-    readJsonBody(req, MAX_PATH_BODY_BYTES)
-      .then((body) => {
+    const cancellation = createRequestCancellation(req, res);
+    return readJsonBody(req, MAX_PATH_BODY_BYTES, cancellation.signal)
+      .then(async (body) => {
+        await yieldToRequestEvents();
+        throwIfImportAborted(cancellation.signal);
         const p = readPathField(body);
         if (!p) {
           send(res, 400, { error: 'invalid_path' });
           return;
         }
         try {
-          send(res, 200, { preview: previewImportFolder(p) });
+          const preview = previewImportFolder(p);
+          await yieldToRequestEvents();
+          throwIfImportAborted(cancellation.signal);
+          send(res, 200, { preview });
         } catch (err) {
-          send(res, folderErrorStatus(err), { error: folderErrorCode(err) });
+          sendFolderImportError(res, err);
         }
       })
-      .catch(() => send(res, 400, { error: 'invalid_body' }));
-    return;
+      .catch((err) => sendFolderRequestError(res, err))
+      .finally(cancellation.dispose);
   }
 
   if (method === 'POST' && path === '/api/import/path') {
-    readJsonBody(req, MAX_PATH_BODY_BYTES)
-      .then((body) => {
+    const cancellation = createRequestCancellation(req, res);
+    return readJsonBody(req, MAX_PATH_BODY_BYTES, cancellation.signal)
+      .then(async (body) => {
+        await yieldToRequestEvents();
+        throwIfImportAborted(cancellation.signal);
         const p = readPathField(body);
         const confirmationToken = readConfirmationToken(body);
         if (!p) {
@@ -503,22 +550,30 @@ function route(
             });
             return;
           }
-          const result = runImportGroups(db, readFolderFileGroups(plan), {
-            now: now(),
-            timeZone: loadSettings(db).timeZone,
-            zipLimits: PATH_IMPORT_ZIP_LIMITS,
-          });
-          send(res, 200, {
-            result,
-            skipped: plan.skipped,
-            truncated: plan.truncated,
-          });
+          await yieldToRequestEvents();
+          throwIfImportAborted(cancellation.signal);
+          if (!beginImport(state, res)) return;
+          try {
+            const result = await runImportGroupsCancellable(db, readFolderFileGroups(plan), {
+              now: now(),
+              timeZone: loadSettings(db).timeZone,
+              zipLimits: PATH_IMPORT_ZIP_LIMITS,
+              signal: cancellation.signal,
+            });
+            send(res, 200, {
+              result,
+              skipped: plan.skipped,
+              truncated: plan.truncated,
+            });
+          } finally {
+            state.importInProgress = false;
+          }
         } catch (err) {
-          send(res, folderErrorStatus(err), { error: folderErrorCode(err) });
+          sendFolderImportError(res, err);
         }
       })
-      .catch(() => send(res, 400, { error: 'invalid_body' }));
-    return;
+      .catch((err) => sendFolderRequestError(res, err))
+      .finally(cancellation.dispose);
   }
 
   // Export the database to a user-chosen path via SQLite's backup API
@@ -698,15 +753,192 @@ function folderErrorStatus(err: unknown): number {
   return err instanceof FolderImportError ? 400 : 500;
 }
 
-function decodeFiles(body: unknown): ImportFile[] {
-  const list = (body as { files?: { name?: unknown; dataBase64?: unknown }[] }).files;
-  if (!Array.isArray(list)) return [];
-  const out: ImportFile[] = [];
-  for (const f of list) {
-    if (typeof f?.name !== 'string' || typeof f?.dataBase64 !== 'string') continue;
-    out.push({ name: f.name, data: Buffer.from(f.dataBase64, 'base64') });
+function sendFolderImportError(res: ServerResponse, err: unknown): void {
+  if (err instanceof ImportAbortedError) {
+    send(res, 499, { error: err.code });
+    return;
   }
-  return out;
+  send(res, folderErrorStatus(err), { error: folderErrorCode(err) });
+}
+
+function sendFolderRequestError(res: ServerResponse, err: unknown): void {
+  if (err instanceof ImportAbortedError) {
+    send(res, 499, { error: err.code });
+    return;
+  }
+  if (err instanceof ImportRequestError && err.code === 'invalid_json') {
+    send(res, 400, { error: 'invalid_body' });
+    return;
+  }
+  send(res, 400, { error: 'invalid_body' });
+}
+
+class ImportRequestError extends Error {
+  readonly status: number;
+  readonly code: string;
+
+  constructor(status: number, code: string) {
+    super(code);
+    this.name = 'ImportRequestError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+interface RequestCancellation {
+  signal: AbortSignal;
+  dispose: () => void;
+}
+
+function beginImport(runtime: ApiRuntimeState, res: ServerResponse): boolean {
+  if (runtime.importInProgress) {
+    send(res, 503, { error: 'import_in_progress' });
+    return false;
+  }
+  runtime.importInProgress = true;
+  return true;
+}
+
+/**
+ * Translate either side of a disconnected loopback request into one signal
+ * that the body reader and transactional importer can observe.
+ */
+function createRequestCancellation(req: IncomingMessage, res: ServerResponse): RequestCancellation {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const abortIncompleteRequest = () => {
+    if (!req.complete) abort();
+  };
+  const abortIncompleteResponse = () => {
+    if (!res.writableEnded) abort();
+  };
+  req.once('aborted', abort);
+  req.once('close', abortIncompleteRequest);
+  res.once('close', abortIncompleteResponse);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      req.off('aborted', abort);
+      req.off('close', abortIncompleteRequest);
+      res.off('close', abortIncompleteResponse);
+    },
+  };
+}
+
+function yieldToRequestEvents(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+interface DecodedUpload {
+  id: string;
+  file: ImportFile;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function decodedBase64Length(value: string): number | null {
+  if (
+    value.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+  ) {
+    return null;
+  }
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  if (value.endsWith('==') && (alphabet.indexOf(value.at(-3) ?? '') & 0x0f) !== 0) {
+    return null;
+  }
+  if (
+    !value.endsWith('==') &&
+    value.endsWith('=') &&
+    (alphabet.indexOf(value.at(-2) ?? '') & 0x03) !== 0
+  ) {
+    return null;
+  }
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  return (value.length / 4) * 3 - padding;
+}
+
+/**
+ * Validate the complete request before decoding any file. No mixed request can
+ * partially import, and all limits are checked from encoded lengths before a
+ * potentially large output buffer is allocated.
+ */
+function decodeUploadFiles(body: unknown, limits: ImportUploadLimits): DecodedUpload[] {
+  if (!isRecord(body) || !hasExactKeys(body, ['files']) || !Array.isArray(body.files)) {
+    throw new ImportRequestError(400, 'invalid_import_payload');
+  }
+  if (body.files.length === 0) throw new ImportRequestError(400, 'no_files');
+  if (body.files.length > limits.maxFiles) {
+    throw new ImportRequestError(413, 'import_file_count_exceeded');
+  }
+
+  const descriptors: { id: string; name: string; dataBase64: string; decodedBytes: number }[] = [];
+  const ids = new Set<string>();
+  let totalDecodedBytes = 0;
+  for (const value of body.files) {
+    if (!isRecord(value) || !hasExactKeys(value, ['id', 'name', 'dataBase64'])) {
+      throw new ImportRequestError(400, 'invalid_import_payload');
+    }
+    const { id, name, dataBase64 } = value;
+    if (
+      typeof id !== 'string' ||
+      id.length === 0 ||
+      id.length > limits.maxIdLength ||
+      !/^[A-Za-z0-9_-]+$/.test(id) ||
+      typeof name !== 'string' ||
+      name.length === 0 ||
+      name.length > limits.maxNameLength ||
+      Buffer.byteLength(name, 'utf8') > limits.maxNameLength ||
+      /[\/\\\0]/.test(name) ||
+      typeof dataBase64 !== 'string'
+    ) {
+      throw new ImportRequestError(400, 'invalid_import_payload');
+    }
+    if (ids.has(id)) throw new ImportRequestError(400, 'duplicate_file_id');
+    ids.add(id);
+
+    const decodedBytes = decodedBase64Length(dataBase64);
+    if (decodedBytes === null) throw new ImportRequestError(400, 'invalid_base64');
+    if (decodedBytes > limits.maxFileBytes) {
+      throw new ImportRequestError(413, 'import_file_too_large');
+    }
+    totalDecodedBytes += decodedBytes;
+    if (
+      !Number.isSafeInteger(totalDecodedBytes) ||
+      totalDecodedBytes > limits.maxTotalDecodedBytes
+    ) {
+      throw new ImportRequestError(413, 'import_total_size_exceeded');
+    }
+    descriptors.push({ id, name, dataBase64, decodedBytes });
+  }
+
+  return descriptors.map(({ id, name, dataBase64, decodedBytes }) => {
+    const data = Buffer.from(dataBase64, 'base64');
+    if (data.length !== decodedBytes || data.toString('base64') !== dataBase64) {
+      throw new ImportRequestError(400, 'invalid_base64');
+    }
+    return { id, file: { name, data } };
+  });
+}
+
+function sendImportRequestError(res: ServerResponse, err: unknown): void {
+  if (err instanceof ImportAbortedError) {
+    send(res, 499, { error: err.code });
+    return;
+  }
+  if (err instanceof ImportRequestError) {
+    send(res, err.status, { error: err.code });
+    return;
+  }
+  send(res, 500, { error: 'import_failed' });
 }
 
 /** Rolling 7/28/90-day + weekly aggregates for the dashboard (ANA-007 subset). */
@@ -756,39 +988,74 @@ function buildTrends(db: Database, now: () => number) {
   };
 }
 
-function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> {
+function readJsonBody(
+  req: IncomingMessage,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     let settled = false;
+    const cleanup = () => {
+      signal?.removeEventListener('abort', rejectAborted);
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('aborted', onAborted);
+      req.off('close', onClose);
+      req.off('error', onError);
+    };
     const rejectOnce = (error: Error) => {
       if (settled) return;
       settled = true;
+      cleanup();
       reject(error);
     };
-    req.on('data', (c: Buffer) => {
-      size += c.length;
+    const rejectAborted = () => rejectOnce(new ImportAbortedError());
+    const onData = (chunk: Buffer) => {
+      if (settled) return;
+      size += chunk.length;
       if (size > maxBytes) {
-        rejectOnce(new Error('body_too_large'));
-        req.destroy();
+        chunks.length = 0;
+        req.resume();
+        rejectOnce(new ImportRequestError(413, 'import_body_too_large'));
         return;
       }
-      chunks.push(c);
-    });
-    req.on('end', () => {
+      chunks.push(chunk);
+    };
+    const onEnd = () => {
       if (settled) return;
       try {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         settled = true;
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
-      } catch (e) {
-        reject(e);
+        cleanup();
+        resolve(body);
+      } catch {
+        rejectOnce(new ImportRequestError(400, 'invalid_json'));
       }
-    });
-    req.on('aborted', () => rejectOnce(new Error('request_aborted')));
-    req.on('close', () => {
+    };
+    const onAborted = () => rejectOnce(new Error('request_aborted'));
+    const onClose = () => {
       if (!req.complete) rejectOnce(new Error('request_closed'));
-    });
-    req.on('error', (error) => rejectOnce(error));
+    };
+    const onError = (error: Error) => rejectOnce(error);
+
+    if (signal?.aborted) {
+      rejectAborted();
+      return;
+    }
+    signal?.addEventListener('abort', rejectAborted, { once: true });
+    const declared = req.headers['content-length'];
+    if (typeof declared === 'string' && /^\d+$/.test(declared) && Number(declared) > maxBytes) {
+      req.resume();
+      rejectOnce(new ImportRequestError(413, 'import_body_too_large'));
+      return;
+    }
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('aborted', onAborted);
+    req.on('close', onClose);
+    req.on('error', onError);
   });
 }
 

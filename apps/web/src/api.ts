@@ -154,10 +154,34 @@ export interface ImportResultBody {
   batchId: number;
   imported: number;
   skippedDuplicates: number;
+  skipped: number;
+  skippedByCode: {
+    unmodelled_metric: number;
+    non_cycling_workout: number;
+  };
   quarantined: number;
   workoutsCreated: number;
   workoutsUpdated: number;
   quarantinedFiles: { name: string; code: string }[];
+}
+
+export interface UploadFileBody {
+  id: string;
+  name: string;
+  dataBase64: string;
+}
+
+export interface ImportInventoryItem {
+  id: string;
+  name: string;
+  sizeBytes: number;
+  classification:
+    | 'recognized'
+    | 'unsupported'
+    | 'duplicate_in_selection'
+    | 'unmodelled_metric'
+    | 'non_cycling_workout';
+  detectedType: string | null;
 }
 
 export interface DeleteResultBody {
@@ -243,20 +267,32 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ settings }),
     }),
-  importFiles: (files: { name: string; dataBase64: string }[]) =>
+  importInventory: (files: UploadFileBody[], signal?: AbortSignal) =>
+    request<{ inventory: ImportInventoryItem[] }>('/api/import/inventory', {
+      method: 'POST',
+      body: JSON.stringify({ files }),
+      ...(signal ? { signal } : {}),
+    }),
+  importFiles: (files: UploadFileBody[], signal?: AbortSignal) =>
     request<{ result: ImportResultBody }>('/api/import', {
       method: 'POST',
       body: JSON.stringify({ files }),
+      ...(signal ? { signal } : {}),
     }),
-  importPathPreview: (path: string) =>
+  importPathPreview: (path: string, signal?: AbortSignal) =>
     request<{ preview: FolderPreviewBody }>('/api/import/path/inventory', {
       method: 'POST',
       body: JSON.stringify({ path }),
+      ...(signal ? { signal } : {}),
     }),
-  importPath: (path: string, confirmationToken: string) =>
+  importPath: (path: string, confirmationToken: string, signal?: AbortSignal) =>
     request<{ result: ImportResultBody; skipped: FolderSkipItem[]; truncated: boolean }>(
       '/api/import/path',
-      { method: 'POST', body: JSON.stringify({ path, confirmationToken }) },
+      {
+        method: 'POST',
+        body: JSON.stringify({ path, confirmationToken }),
+        ...(signal ? { signal } : {}),
+      },
     ),
   deleteWorkout: (id: number) =>
     request<DeleteResultBody>(`/api/workouts/${id}`, { method: 'DELETE' }),

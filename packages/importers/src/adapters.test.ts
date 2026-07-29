@@ -15,6 +15,49 @@ describe('Health Auto Export CSV header contracts (IMP-004)', () => {
     if (parsed.kind !== 'metric') return;
     expect(parsed.metric).toBe('distance');
     expect(parsed.samples).toHaveLength(2);
+    expect(parsed.samples.map((sample) => sample.value)).toEqual([400, 500]);
+  });
+
+  it('converts every supported distance and energy unit to canonical SI', () => {
+    const distanceM = parseHaeCsv(
+      'Outdoor Cycling-Cycling Distance-20320710_113000.csv',
+      ['Date/Time,Cycling Distance (m)', '2032-07-10T15:30:00Z,400'].join('\n'),
+    );
+    const energyKj = parseHaeCsv(
+      'Outdoor Cycling-Active Energy-20320710_113000.csv',
+      ['Date/Time,Active Energy (kJ)', '2032-07-10T15:30:00Z,1.5'].join('\n'),
+    );
+    const energyJ = parseHaeCsv(
+      'Outdoor Cycling-Active Energy-20320710_113000.csv',
+      ['Date/Time,Active Energy (J)', '2032-07-10T15:30:00Z,1500'].join('\n'),
+    );
+    const energyKcal = parseHaeCsv(
+      'Outdoor Cycling-Active Energy-20320710_113000.csv',
+      ['Date/Time,Active Energy (kcal)', '2032-07-10T15:30:00Z,2'].join('\n'),
+    );
+
+    for (const parsed of [distanceM, energyKj, energyJ, energyKcal]) {
+      expect(parsed.kind).toBe('metric');
+    }
+    expect(distanceM.kind === 'metric' ? distanceM.samples[0]!.value : null).toBe(400);
+    expect(energyKj.kind === 'metric' ? energyKj.samples[0]!.value : null).toBe(1500);
+    expect(energyJ.kind === 'metric' ? energyJ.samples[0]!.value : null).toBe(1500);
+    expect(energyKcal.kind === 'metric' ? energyKcal.samples[0]!.value : null).toBe(8368);
+  });
+
+  it.each([
+    ['Cycling Distance', '1'],
+    ['Cycling Distance (mi)', '1'],
+    ['Active Energy', '1'],
+    ['Active Energy (Wh)', '1'],
+  ])('rejects missing or unsupported canonical-unit contract: %s', (header, value) => {
+    const label = header.startsWith('Cycling') ? 'Cycling Distance' : 'Active Energy';
+    expect(() =>
+      parseHaeCsv(
+        `Outdoor Cycling-${label}-20320710_113000.csv`,
+        [`Date/Time,${header}`, `2032-07-10T15:30:00Z,${value}`].join('\n'),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'unit_unsupported' }));
   });
 
   it('accepts heart-rate count/min aggregate columns', () => {
@@ -90,4 +133,40 @@ describe('Health Auto Export CSV header contracts (IMP-004)', () => {
     expect(parsed.segments[0]!.points[0]).not.toHaveProperty('ele');
     expect(parsed.segments[0]!.points[0]).not.toHaveProperty('speed');
   });
+
+  it('converts route feet and km/h columns to metres and m/s', () => {
+    const lat = [-48, 75].join('.');
+    const lon = [-123, 25].join('.');
+    const parsed = parseHaeCsv(
+      'Outdoor Cycling-Route-20320710_113000.csv',
+      [
+        'Timestamp,Latitude,Longitude,Altitude (ft),Speed (km/h),Horizontal Accuracy (ft)',
+        `2032-07-10T15:30:00Z,${lat},${lon},100,36,10`,
+      ].join('\n'),
+    );
+
+    expect(parsed.kind).toBe('route');
+    if (parsed.kind !== 'route') return;
+    expect(parsed.segments[0]!.points[0]).toMatchObject({
+      ele: 30.48,
+      speed: 10,
+      hAcc: 3.048,
+    });
+  });
+
+  it.each(['Altitude', 'Altitude (yd)', 'Speed', 'Speed (mph)'])(
+    'rejects missing or unsupported route units: %s',
+    (header) => {
+      const lat = [-48, 75].join('.');
+      const lon = [-123, 25].join('.');
+      expect(() =>
+        parseHaeCsv(
+          'Outdoor Cycling-Route-20320710_113000.csv',
+          [`Timestamp,Latitude,Longitude,${header}`, `2032-07-10T15:30:00Z,${lat},${lon},1`].join(
+            '\n',
+          ),
+        ),
+      ).toThrowError(expect.objectContaining({ code: 'unit_unsupported' }));
+    },
+  );
 });

@@ -1,9 +1,10 @@
-import type { ImportCounts, ParsedFile, QuarantineCode } from '@velograph/shared';
+import type { ImportCounts, ImportSkipCode, ParsedFile, QuarantineCode } from '@velograph/shared';
 import { CANONICAL_UNITS, sha256Hex } from '@velograph/shared';
 import { Repository, type Database } from '@velograph/db';
 import {
   AdapterError,
   ADAPTER_VERSION,
+  classifyImportFileName,
   parseHaeCsv,
   parseHaeFilenameTimestamps,
   parseHaeGpx,
@@ -24,7 +25,7 @@ import {
   type ZipLimits,
 } from './zip.ts';
 
-export const IMPORTER_VERSION = 'importer-v3';
+export const IMPORTER_VERSION = 'importer-v4';
 
 export interface ImportFile {
   name: string;
@@ -36,8 +37,36 @@ export interface ImportResult extends ImportCounts {
   quarantinedFiles: { name: string; code: QuarantineCode }[];
 }
 
+export type ImportFileGroupLoader = () => readonly ImportFile[];
+export type ImportFileGroups = Iterable<ImportFileGroupLoader>;
+
+export interface RunImportOptions {
+  now?: number;
+  toleranceMs?: number;
+  timeZone?: string;
+  zipLimits?: ZipLimits;
+  /**
+   * Cooperative cancellation for browser/API imports. Every observed abort
+   * escapes the SQLite transaction so no partial batch can commit.
+   */
+  signal?: AbortSignal;
+}
+
 interface PreparedImportFile extends ImportFile {
   expansionError?: QuarantineCode;
+}
+
+export class ImportAbortedError extends Error {
+  readonly code = 'import_cancelled';
+
+  constructor() {
+    super('import cancelled');
+    this.name = 'ImportAbortedError';
+  }
+}
+
+export function throwIfImportAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new ImportAbortedError();
 }
 
 /**
@@ -61,52 +90,144 @@ interface PreparedImportFile extends ImportFile {
 export function runImport(
   db: Database,
   inputFiles: ImportFile[],
-  opts: { now?: number; toleranceMs?: number; timeZone?: string; zipLimits?: ZipLimits } = {},
+  opts: RunImportOptions = {},
 ): ImportResult {
+  return runImportGroups(db, [() => inputFiles], opts);
+}
+
+/**
+ * Import lazily loaded association groups inside the same atomic transaction.
+ * Only the current group's bytes and ZIP expansion budget are retained. A
+ * loose-file import is one group, so every selected archive still shares one
+ * decoded-byte cap; path import resets that cap only after releasing the prior
+ * bounded ride group.
+ */
+export function runImportGroups(
+  db: Database,
+  inputGroups: ImportFileGroups,
+  opts: RunImportOptions = {},
+): ImportResult {
+  const steps = runImportSteps(db, inputGroups, opts);
+  return new Repository(db).transaction(() => consumeImportSteps(steps));
+}
+
+/**
+ * Cancellable variant for the loopback API. The same atomic transaction stays
+ * open while bounded checkpoints yield to the Node event loop, allowing a
+ * disconnected browser request to update its AbortSignal before the next file
+ * or group is processed.
+ */
+export async function runImportCancellable(
+  db: Database,
+  inputFiles: ImportFile[],
+  opts: RunImportOptions = {},
+): Promise<ImportResult> {
+  return runImportGroupsCancellable(db, [() => inputFiles], opts);
+}
+
+export async function runImportGroupsCancellable(
+  db: Database,
+  inputGroups: ImportFileGroups,
+  opts: RunImportOptions = {},
+): Promise<ImportResult> {
+  throwIfImportAborted(opts.signal);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const steps = runImportSteps(db, inputGroups, opts);
+    for (;;) {
+      const step = steps.next();
+      if (step.done) {
+        db.exec('COMMIT');
+        return step.value;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  } catch (err) {
+    if (db.inTransaction) db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function consumeImportSteps(steps: Generator<void, ImportResult>): ImportResult {
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+function* importCheckpoint(signal: AbortSignal | undefined): Generator<void, void> {
+  throwIfImportAborted(signal);
+  yield;
+  throwIfImportAborted(signal);
+}
+
+function* runImportSteps(
+  db: Database,
+  inputGroups: ImportFileGroups,
+  opts: RunImportOptions,
+): Generator<void, ImportResult> {
+  throwIfImportAborted(opts.signal);
   const repo = new Repository(db);
   const now = opts.now ?? Date.now();
   const toleranceMs = opts.toleranceMs ?? DEFAULT_ASSOCIATION_TOLERANCE_MS;
 
-  // Expand each selected ZIP independently. A malformed outer archive remains
-  // an inventory item so the transaction can durably quarantine it while
-  // valid sibling selections continue.
-  const files: PreparedImportFile[] = [];
   const zipLimits = opts.zipLimits ?? DEFAULT_ZIP_LIMITS;
-  const zipDecodedBudget = createZipDecodedBudget(zipLimits.maxTotalBytes);
-  const orderedInputFiles = [...inputFiles].sort((a, b) =>
-    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-  );
-  for (const f of orderedInputFiles) {
-    if (f.name.toLowerCase().endsWith('.zip')) {
-      try {
-        files.push(...extractZip(f.data, zipLimits, zipDecodedBudget));
-      } catch (err) {
-        files.push({
-          ...f,
-          expansionError: err instanceof ZipError ? err.code : 'io_error',
-        });
-      }
-    } else {
-      files.push(f);
-    }
-  }
-  // Deterministic processing order regardless of selection order; GPX before
-  // route CSV within the same instant-window so CSV fallback logic is stable.
-  files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
   const counts: ImportCounts = {
     imported: 0,
     skippedDuplicates: 0,
+    skipped: 0,
+    skippedByCode: {
+      unmodelled_metric: 0,
+      non_cycling_workout: 0,
+    },
     quarantined: 0,
     workoutsCreated: 0,
     workoutsUpdated: 0,
   };
   const quarantinedFiles: { name: string; code: QuarantineCode }[] = [];
 
-  const batchId = repo.transaction(() => {
-    const id = repo.createBatch(IMPORTER_VERSION, now);
+  yield* importCheckpoint(opts.signal);
+  const id = repo.createBatch(IMPORTER_VERSION, now);
+
+  function* processGroup(inputFiles: readonly ImportFile[]): Generator<void, void> {
+    yield* importCheckpoint(opts.signal);
+    // A malformed archive remains an inventory item so valid siblings can
+    // continue. Sorting makes processing deterministic across selection
+    // order and keeps each folder group bounded in memory.
+    const files: PreparedImportFile[] = [];
+    const zipDecodedBudget = createZipDecodedBudget(zipLimits.maxTotalBytes);
+    const orderedInputFiles = [...inputFiles].sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+    );
+    for (const f of orderedInputFiles) {
+      yield* importCheckpoint(opts.signal);
+      if (f.name.toLowerCase().endsWith('.zip')) {
+        try {
+          files.push(...extractZip(f.data, zipLimits, zipDecodedBudget));
+          yield* importCheckpoint(opts.signal);
+        } catch (err) {
+          if (err instanceof ImportAbortedError) throw err;
+          files.push({
+            ...f,
+            expansionError: err instanceof ZipError ? err.code : 'io_error',
+          });
+        }
+      } else {
+        files.push(f);
+      }
+    }
+    files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
     for (const file of files) {
+      yield* importCheckpoint(opts.signal);
+      const candidate = classifyImportFileName(file.name);
+      if (candidate.kind === 'unmodelled_metric' || candidate.kind === 'non_cycling_workout') {
+        const code: ImportSkipCode = candidate.kind;
+        counts.skipped++;
+        counts.skippedByCode[code]++;
+        continue;
+      }
       const hash = sha256Hex(file.data);
       const existing = repo.findSourceFileByHash(hash);
       const safeName = sanitizeName(file.name);
@@ -288,13 +409,21 @@ export function runImport(
       }
       if (existing) repo.finalizeSourceFileReprocessing(detachedWorkoutIds);
       counts.imported++;
+      yield* importCheckpoint(opts.signal);
     }
+  }
 
-    repo.finishBatch(id, 'committed', counts);
-    return id;
-  });
+  for (const loadGroup of inputGroups) {
+    yield* importCheckpoint(opts.signal);
+    const group = loadGroup();
+    yield* importCheckpoint(opts.signal);
+    yield* processGroup(group);
+  }
 
-  return { batchId, ...counts, quarantinedFiles };
+  yield* importCheckpoint(opts.signal);
+  repo.finishBatch(id, 'committed', counts);
+  yield* importCheckpoint(opts.signal);
+  return { batchId: id, ...counts, quarantinedFiles };
 }
 
 function parseFile(file: ImportFile, timeZone?: string): ParsedFile {

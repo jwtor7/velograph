@@ -37,9 +37,9 @@ Observed input families that v1 must support:
 |---|---|
 | Heart rate and heart-rate recovery CSV | Date/time; minimum, maximum, and average beats per minute; context; source |
 | Cycling cadence CSV | Date/time; cadence; source |
-| Cycling distance CSV | Date/time; distance in kilometres; source |
-| Active and resting energy CSV | Date/time; energy in kilojoules; source |
-| Route CSV | Timestamp; latitude; longitude; altitude; vertical and horizontal accuracy; speed; course |
+| Cycling distance CSV | Date/time; distance with explicit `km` or `m` header; source |
+| Active and resting energy CSV | Date/time; energy with explicit `kJ`, `J`, or `kcal` header; source |
+| Route CSV | Timestamp; latitude; longitude; altitude/accuracy in `m` or `ft`; speed in `m/s` or `km/h`; course in `deg` |
 | GPX route | Track, segment, track point, time, elevation, and optional speed/course/accuracy extensions |
 | Optional supporting metrics | Steps, walking/running distance, flights climbed, and future Health Auto Export metrics |
 
@@ -117,7 +117,7 @@ A privacy-conscious cyclist who records rides with Apple Health, exports them th
 
 1. The user drags in a folder/ZIP, selects multiple files, or uses the local CLI importer.
 2. Velograph inventories files without changing the source.
-3. It shows recognized, unsupported, duplicate, ambiguous, and invalid files.
+3. It shows recognized, unsupported, duplicate, unmodelled-metric, and non-cycling files.
 4. The user confirms the import.
 5. Velograph hashes and parses the files, associates them with workouts, validates data, writes one transaction, and calculates analytics.
 6. The result summarizes imported, updated, skipped, and quarantined records without exposing sensitive values in logs.
@@ -159,7 +159,7 @@ Priority labels: **P0** is required for the first usable release; **P1** is requ
 | IMP-005 | P0 | Associate files using workout type, filename timestamp, internal sample times, and tolerance checks. Never rely on filename alone. |
 | IMP-006 | P0 | Prefer GPX for route geometry, use route CSV as a fallback, and preserve provenance. |
 | IMP-007 | P0 | Commit each confirmed import atomically; a parser failure must not leave a partially imported workout. |
-| IMP-008 | P0 | Quarantine unsupported or malformed files with a safe, actionable error that contains no sample values. |
+| IMP-008 | P0 | Quarantine malformed or unsupported in-scope files with a safe, actionable error that contains no sample values. Treat well-formed unmodelled cycling metrics and non-cycling workouts as aggregate normal skips without persisting their hashes or filenames. |
 | IMP-009 | P0 | Preserve raw files only when the user enables “retain source files.” Default: store hashes, metadata, and normalized data, not duplicate raw files. |
 | IMP-010 | P1 | Let users reprocess existing imports after a parser or analytics-engine upgrade. |
 | IMP-011 | P1 | Support export and deletion of one ride, one import batch, or all local data. |
@@ -423,7 +423,7 @@ Git history is not an acceptable deletion mechanism. Sensitive data found after 
 |---|---|
 | Offline behavior | Import, browse, calculate, compare, map, chart, export, back up, and restore with external networking blocked |
 | Performance | Import a synthetic 100-workout corpus with one million metric/route samples in under 3 minutes on a documented reference laptop |
-| UI responsiveness | Open an already imported ride in under 1 second at p95 on the reference corpus; long imports run as cancellable jobs |
+| UI responsiveness | Open an already imported ride in under 1 second at p95 on the reference corpus; long web imports expose cancellation and propagate abort/disconnect signals into the atomic importer |
 | Reliability | Re-importing identical files creates no duplicate workouts or samples |
 | Reproducibility | Recalculation with identical input/settings/versions produces byte-equivalent analytics JSON |
 | Accessibility | Keyboard navigation, visible focus, semantic labels, colour-independent status cues, and WCAG 2.2 AA contrast |

@@ -30,6 +30,21 @@ is pre-1.0, and for the release procedure.
   together, owns both foreground processes, and stops both on exit. The Vite proxy rewrites
   only its configured loopback Origin and Host for API requests, preserving the API's strict
   DNS-rebinding and cross-origin checks. CI now also proves the production web build (#25).
+- **Loose-file imports now require an exact server review before confirmation.** Browser
+  selections keep a unique identity for every `File`, including distinct files with the same
+  name and size, then call `POST /api/import/inventory` and display recognized, duplicate,
+  unsupported, unmodelled-metric, and non-cycling classifications. Confirmation is bound to
+  that ordered selection. Browser encoding is sequential and the browser/API share practical
+  file-count, per-file, decoded-total, and encoded-body limits; large exports are directed to
+  path import. The API validates the complete exact-key schema and canonical base64 before
+  decoding or writing, rejects mixed invalid requests atomically, returns stable value-free
+  errors, and uses HTTP 413 for every limit breach (#23, #26).
+- **Web imports are cancellable end to end.** File review/encoding, path preview, loose-file
+  import, and path import expose explicit Cancel controls backed by request-scoped
+  `AbortController`s. The API converts aborted/incomplete loopback requests and disconnected
+  responses into the importer signal. The transactional importer checks that signal between
+  bounded groups/files and before commit; an observed cancellation throws out the complete
+  batch rather than preserving partial workouts.
 - **Path-based folder import.** The web client can import a Health Auto Export folder by
   path instead of routing every file through the browser as base64: paste the folder path,
   preview the files it finds (grouped by ride — workout type + the filename's trailing
@@ -182,6 +197,18 @@ is pre-1.0, and for the release procedure.
   Explicit zone-share percentage representations remain supported without allowing unrelated
   metrics with colliding values to validate a claim (#34, #35).
 
+- **CSV units are explicit, converted, and versioned.** `hae-csv-v3` converts distance `km`/`m`,
+  energy `kJ`/`J`/`kcal`, route altitude/accuracy `m`/`ft`, and route speed `m/s`/`km/h` to
+  canonical SI before persistence. Route course accepts `deg`. Generic or unsupported
+  distance, energy, altitude, speed, accuracy, or course headers now quarantine with
+  `unit_unsupported` instead of silently treating their values as kilometres, kilojoules,
+  metres, or metres per second (IMP-004).
+- **Out-of-scope Health Auto Export files are normal aggregate skips.** Unmodelled cycling
+  metrics and non-cycling workouts increment value-free skip codes without storing hashes,
+  filenames, warnings, or quarantine rows, so a future adapter can import those same bytes.
+  Malformed in-scope files still quarantine. GPX parsing now requires an explicit cycling
+  filename and can never default a Running or other non-cycling route to outdoor cycling
+  (#53).
 - **The `webkitdirectory` folder picker could not be confirmed on macOS.** Removing its
   `accept` attribute (#49) was necessary but not sufficient — the OS picker still could not
   be confirmed from inside the target folder on macOS, reported as still unusable against a

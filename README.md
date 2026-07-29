@@ -77,12 +77,31 @@ path into the "Import from a folder path" field and preview it before confirming
 reads the folder directly from disk — the same way the CLI does, recursively, bounded by a
 file-count/total-size cap — rather than uploading every file through the browser as base64,
 which does not scale to a real export (a single route GPX alone runs a couple of megabytes,
-and a folder holds dozens of files across many rides). The preview groups files by ride
-(workout type + the filename's trailing timestamp) so it's obvious which companion files
-belong together before anything is imported. The multi-file picker and loose-file
-drag-and-drop still work exactly as before; dropping a folder (where the browser supports
-`webkitGetAsEntry`) reads its files into that same picker, since browsers do not expose a
-dropped folder's real filesystem path to a web page — only pasting the path does that.
+and a folder holds dozens of files across many rides). Confirmation revalidates the selected
+tree and reads one bounded ride group at a time while keeping the whole confirmed import
+atomic; it never holds the entire folder in memory. The preview groups files by ride (workout
+type + the filename's trailing timestamp) so it's obvious which companion files belong
+together before anything is imported. The multi-file picker and loose-file drag-and-drop
+remain useful for small selections: each exact file is reviewed by the local API before the
+Confirm button appears, duplicate/unsupported/out-of-scope status is shown, and files with the
+same name and size remain distinct. Browser uploads enforce count, per-file, aggregate decoded,
+and encoded-request limits and encode one file at a time; use folder path import when a selection
+exceeds them. Dropping a folder (where the browser supports `webkitGetAsEntry`) reads its files
+into that same picker, since browsers do not expose a dropped folder's real filesystem path to a
+web page — only pasting the path does that.
+
+The versioned CSV adapter accepts units only when the header states them explicitly. Distance
+supports `km` and `m`; energy supports `kJ`, `J`, and `kcal`; route altitude and accuracy support
+`m` and `ft`; route speed supports `m/s` and `km/h`; and route course supports `deg`. Values are
+converted to canonical metres, joules, metres per second, and degrees before storage. A generic
+`Distance`, `Energy`, `Altitude`, or `Speed` header — or any unsupported unit — is quarantined
+with the value-free `unit_unsupported` code rather than guessed.
+
+Every web review, folder scan, and confirmed import has a visible Cancel action. Cancellation
+stops browser file encoding or aborts the loopback request; the API propagates request/response
+disconnects into the importer. The importer observes that signal at bounded file/group
+checkpoints and before commit, and an observed cancellation rolls the complete SQLite
+transaction back.
 
 ### Managing the local server
 

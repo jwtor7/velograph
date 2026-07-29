@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Canonical types, units, and helpers shared across Velograph packages",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./import-limits": "./src/import-limits.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

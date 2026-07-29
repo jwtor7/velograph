@@ -6,7 +6,13 @@ import { zipSync } from 'fflate';
 import { loadWorkoutData, openDatabase, Repository } from '@velograph/db';
 import { sha256Hex } from '@velograph/shared';
 import { DEFAULT_GPX_LIMITS } from './gpx.ts';
-import { runImport, runImportGroups, type ImportFile } from './importer.ts';
+import {
+  ImportAbortedError,
+  runImport,
+  runImportGroups,
+  runImportGroupsCancellable,
+  type ImportFile,
+} from './importer.ts';
 
 const SYNTHETIC_ROOT = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -54,10 +60,164 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     expect(formats).toEqual([{ source_format: 'gpx' }]);
     expect(
       db.prepare('SELECT importer_version FROM import_batches WHERE id = ?').get(result.batchId),
-    ).toEqual({ importer_version: 'importer-v3' });
+    ).toEqual({ importer_version: 'importer-v4' });
     expect(
       db.prepare('SELECT DISTINCT parser_version FROM source_files ORDER BY parser_version').all(),
-    ).toEqual([{ parser_version: 'gpx-v4' }, { parser_version: 'hae-csv-v2' }]);
+    ).toEqual([{ parser_version: 'gpx-v5' }, { parser_version: 'hae-csv-v3' }]);
+    db.close();
+  });
+
+  it('consumes lazy association groups as one deterministic atomic batch', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const groups = new Map<string, ImportFile[]>();
+    for (const file of fixtureFiles()) {
+      const stamp = /-(\d{8}_\d{6})\.(?:csv|gpx)$/i.exec(file.name)?.[1] ?? file.name;
+      const group = groups.get(stamp) ?? [];
+      group.push(file);
+      groups.set(stamp, group);
+    }
+
+    const requested: string[] = [];
+    function* source(): Generator<() => ImportFile[]> {
+      for (const stamp of [...groups.keys()].sort()) {
+        yield () => {
+          requested.push(stamp);
+          return groups.get(stamp)!;
+        };
+      }
+    }
+
+    const result = runImportGroups(db, source(), { now: FIXED_NOW });
+    expect(requested).toEqual([...groups.keys()].sort());
+    expect(result.batchId).toBeGreaterThan(0);
+    expect(result.imported).toBe(18);
+    const batches = db.prepare('SELECT COUNT(*) AS count FROM import_batches').get() as {
+      count: number;
+    };
+    expect(batches.count).toBe(1);
+    expect(repo.countRows('workouts')).toBe(3);
+    db.close();
+  });
+
+  it('rolls back earlier lazy groups when a later read fails (IMP-007)', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const firstFile = fixtureFiles()[0]!;
+    function* failingSource(): Generator<() => ImportFile[]> {
+      yield () => [firstFile];
+      yield () => {
+        throw new Error('synthetic read failure');
+      };
+    }
+
+    expect(() => runImportGroups(db, failingSource(), { now: FIXED_NOW })).toThrow(
+      'synthetic read failure',
+    );
+    const batches = db.prepare('SELECT COUNT(*) AS count FROM import_batches').get() as {
+      count: number;
+    };
+    const sourceFiles = db.prepare('SELECT COUNT(*) AS count FROM source_files').get() as {
+      count: number;
+    };
+    expect(batches.count).toBe(0);
+    expect(sourceFiles.count).toBe(0);
+    expect(repo.countRows('workouts')).toBe(0);
+    expect(repo.countRows('metric_series')).toBe(0);
+    db.close();
+  });
+
+  it('does not create a batch when the import signal is already aborted', () => {
+    const db = openDatabase(':memory:');
+    const controller = new AbortController();
+    controller.abort();
+
+    expect(() =>
+      runImport(db, [fixtureFiles()[0]!], {
+        now: FIXED_NOW,
+        signal: controller.signal,
+      }),
+    ).toThrow(ImportAbortedError);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM import_batches').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM source_files').get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it('rolls back completed groups when cancellation is observed before the next group', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const controller = new AbortController();
+    const files = fixtureFiles();
+    function* cancellableSource(): Generator<() => ImportFile[]> {
+      yield () => [files[0]!];
+      yield () => {
+        controller.abort();
+        return [files[1]!];
+      };
+    }
+
+    expect(() =>
+      runImportGroups(db, cancellableSource(), {
+        now: FIXED_NOW,
+        signal: controller.signal,
+      }),
+    ).toThrow(ImportAbortedError);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM import_batches').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM source_files').get()).toEqual({ count: 0 });
+    expect(repo.countRows('workouts')).toBe(0);
+    expect(repo.countRows('metric_series')).toBe(0);
+    db.close();
+  });
+
+  it('yields cancellable import checkpoints to the event loop and rolls back', async () => {
+    const db = openDatabase(':memory:');
+    const controller = new AbortController();
+    const pending = runImportGroupsCancellable(
+      db,
+      [() => [fixtureFiles()[0]!], () => [fixtureFiles()[1]!]],
+      {
+        now: FIXED_NOW,
+        signal: controller.signal,
+      },
+    );
+    setTimeout(() => controller.abort(), 0);
+
+    await expect(pending).rejects.toBeInstanceOf(ImportAbortedError);
+    expect(db.inTransaction).toBe(false);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM import_batches').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM source_files').get()).toEqual({ count: 0 });
+    expect(new Repository(db).countRows('workouts')).toBe(0);
+    db.close();
+  });
+
+  it('releases the ZIP decoded-byte budget between lazy path groups', () => {
+    const db = openDatabase(':memory:');
+    const first = zipSync({ 'synthetic-first.txt': Buffer.from('A'.repeat(60_000)) }, { level: 9 });
+    const second = zipSync(
+      { 'synthetic-second.txt': Buffer.from('B'.repeat(60_000)) },
+      { level: 9 },
+    );
+
+    const result = runImportGroups(
+      db,
+      [
+        () => [{ name: 'synthetic-first.zip', data: first }],
+        () => [{ name: 'synthetic-second.zip', data: second }],
+      ],
+      {
+        now: FIXED_NOW,
+        zipLimits: {
+          maxEntries: 10,
+          maxEntryBytes: 80_000,
+          maxTotalBytes: 100_000,
+        },
+      },
+    );
+
+    expect(result.quarantinedFiles).toEqual([
+      { name: 'synthetic-first.txt', code: 'unsupported_file_type' },
+      { name: 'synthetic-second.txt', code: 'unsupported_file_type' },
+    ]);
     db.close();
   });
 
@@ -160,6 +320,11 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     expect(second).toMatchObject({
       imported: 1,
       skippedDuplicates: 0,
+      skipped: 0,
+      skippedByCode: {
+        unmodelled_metric: 0,
+        non_cycling_workout: 0,
+      },
       quarantined: 0,
       workoutsCreated: 0,
       workoutsUpdated: 1,
@@ -191,7 +356,7 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     ).toEqual({
       id: source.id,
       batch_id: second.batchId,
-      parser_version: 'hae-csv-v2',
+      parser_version: 'hae-csv-v3',
       status: 'imported',
       error_code: null,
     });
@@ -261,6 +426,11 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     repo.finishBatch(legacyBatchId, 'committed', {
       imported: 1,
       skippedDuplicates: 0,
+      skipped: 0,
+      skippedByCode: {
+        unmodelled_metric: 0,
+        non_cycling_workout: 0,
+      },
       quarantined: 0,
       workoutsCreated: 1,
       workoutsUpdated: 0,
@@ -306,7 +476,7 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     ).toEqual({
       source_file_id: sourceFileId,
       batch_id: result.batchId,
-      attempted_parser_version: 'gpx-v4',
+      attempted_parser_version: 'gpx-v5',
       error_code: 'timestamps_invalid',
       created_at: FIXED_NOW + 1000,
     });
@@ -378,7 +548,7 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
         .get(),
     ).toEqual({
       source_file_id: source.id,
-      attempted_parser_version: 'hae-csv-v2',
+      attempted_parser_version: 'hae-csv-v3',
       error_code: 'association_ambiguous',
     });
     db.close();

@@ -1,19 +1,23 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ApiError,
   api,
   type FolderPreviewBody,
   type FolderSkipItem,
+  type ImportInventoryItem,
   type ImportResultBody,
 } from '../api.ts';
+import {
+  createPickedFiles,
+  encodePickedFilesSequentially,
+  inventoryMatchesSelection,
+  isAbortError,
+  validateImportSelection,
+  type ImportSelectionError,
+  type PickedImportFile,
+} from './import-files.ts';
 import { requestCurrentFolderPreview } from './import-preview.ts';
-
-interface Picked {
-  name: string;
-  size: number;
-  file: File;
-}
 
 const ACCEPT = '.csv,.gpx,.zip';
 const STALE_FOLDER_PREVIEW_CODES = new Set([
@@ -22,6 +26,41 @@ const STALE_FOLDER_PREVIEW_CODES = new Set([
   'path_not_found',
   'not_a_directory',
 ]);
+
+function selectionErrorMessage(code: ImportSelectionError): string {
+  if (code === 'import_file_count_exceeded') {
+    return 'Too many files for browser upload. Use folder path import for a large export.';
+  }
+  if (code === 'import_file_too_large') {
+    return 'A selected file is too large for browser upload. Use folder path import instead.';
+  }
+  return 'The selected files are too large for browser upload. Use folder path import instead.';
+}
+
+function uploadErrorMessage(err: unknown): string {
+  if (isAbortError(err) || (err instanceof ApiError && err.code === 'import_cancelled')) {
+    return 'Import cancelled.';
+  }
+  if (!(err instanceof ApiError)) {
+    return 'Import failed. Check that the local API is running, then try again.';
+  }
+  if (
+    err.code === 'import_body_too_large' ||
+    err.code === 'import_file_count_exceeded' ||
+    err.code === 'import_file_too_large' ||
+    err.code === 'import_total_size_exceeded'
+  ) {
+    return 'This selection exceeds the safe browser-upload limit. Use folder path import instead.';
+  }
+  if (
+    err.code === 'invalid_import_payload' ||
+    err.code === 'invalid_base64' ||
+    err.code === 'duplicate_file_id'
+  ) {
+    return 'The file review expired or became invalid. Clear the selection and choose the files again.';
+  }
+  return 'Import failed. Check that the local API is running, then try again.';
+}
 
 /**
  * Recursively read every file entry under a dropped `FileSystemEntry`
@@ -70,13 +109,18 @@ function readEntryFiles(entry: FileSystemEntry): Promise<File[]> {
 
 /** Import screen (IMP-001, journey 7.2): inventory, confirm, value-free result. */
 export function ImportPage() {
-  const [picked, setPicked] = useState<Picked[]>([]);
+  const [picked, setPicked] = useState<PickedImportFile[]>([]);
+  const [inventory, setInventory] = useState<ImportInventoryItem[] | null>(null);
+  const [inventoryBusy, setInventoryBusy] = useState(false);
   const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResultBody | null>(null);
   const [resultSkipped, setResultSkipped] = useState<FolderSkipItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const nextFileIdRef = useRef(1);
+  const selectionVersionRef = useRef(0);
+  const fileOperationRef = useRef<AbortController | null>(null);
 
   const [folderPath, setFolderPath] = useState('');
   const folderPathRef = useRef('');
@@ -84,19 +128,41 @@ export function ImportPage() {
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [pathBusy, setPathBusy] = useState(false);
+  const pathOperationRef = useRef<AbortController | null>(null);
+  const fileOperationBusy = busy || inventoryBusy;
+  const pathOperationBusy = previewBusy || pathBusy;
+
+  useEffect(
+    () => () => {
+      fileOperationRef.current?.abort();
+      pathOperationRef.current?.abort();
+    },
+    [],
+  );
 
   const addFiles = (files: FileList | File[]) => {
-    const list = [...files].filter((f) => /\.(csv|gpx|zip)$/i.test(f.name));
+    if (fileOperationBusy || pathOperationBusy) {
+      setError(
+        'Wait for the current review, scan, or import to finish before changing the selection.',
+      );
+      return;
+    }
     setPicked((prev) => {
-      const seen = new Set(prev.map((p) => p.name + p.size));
-      const merged = [...prev];
-      for (const f of list) {
-        if (!seen.has(f.name + f.size)) merged.push({ name: f.name, size: f.size, file: f });
+      const created = createPickedFiles(files, nextFileIdRef.current);
+      const merged = [...prev, ...created.files];
+      const validation = validateImportSelection(merged);
+      if (validation) {
+        setError(selectionErrorMessage(validation));
+        return prev;
       }
+      nextFileIdRef.current = created.nextId;
+      selectionVersionRef.current++;
+      setInventory(null);
+      setInventoryBusy(false);
+      setError(null);
       return merged;
     });
     setResult(null);
-    setError(null);
   };
 
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
@@ -115,29 +181,82 @@ export function ImportPage() {
     addFiles(e.dataTransfer.files);
   };
 
+  const reviewFiles = async () => {
+    if (pathOperationBusy) {
+      setError('Wait for the folder operation to finish before reviewing files.');
+      return;
+    }
+    const selected = picked;
+    const validation = validateImportSelection(selected);
+    if (validation) {
+      setError(selectionErrorMessage(validation));
+      return;
+    }
+    const version = selectionVersionRef.current;
+    const controller = new AbortController();
+    fileOperationRef.current = controller;
+    setInventoryBusy(true);
+    setError(null);
+    try {
+      const files = await encodePickedFilesSequentially(selected, { signal: controller.signal });
+      const response = await api.importInventory(files, controller.signal);
+      if (
+        version !== selectionVersionRef.current ||
+        !inventoryMatchesSelection(selected, response.inventory)
+      ) {
+        return;
+      }
+      setInventory(response.inventory);
+    } catch (err) {
+      if (version === selectionVersionRef.current) {
+        setError(uploadErrorMessage(err));
+      }
+    } finally {
+      if (fileOperationRef.current === controller) fileOperationRef.current = null;
+      if (version === selectionVersionRef.current) {
+        setInventoryBusy(false);
+      }
+    }
+  };
+
   const runImport = async () => {
+    if (pathOperationBusy) {
+      setError('Wait for the folder operation to finish before importing files.');
+      return;
+    }
+    if (!inventory || !inventoryMatchesSelection(picked, inventory)) {
+      setInventory(null);
+      setError('Review the current file selection before confirming the import.');
+      return;
+    }
+    const controller = new AbortController();
+    fileOperationRef.current = controller;
     setBusy(true);
     setError(null);
     try {
-      const files = await Promise.all(
-        picked.map(async (p) => ({
-          name: p.name,
-          dataBase64: await toBase64(p.file),
-        })),
-      );
-      const res = await api.importFiles(files);
+      const files = await encodePickedFilesSequentially(picked, { signal: controller.signal });
+      const res = await api.importFiles(files, controller.signal);
       setResult(res.result);
       setResultSkipped([]);
       setPicked([]);
-    } catch {
-      setError('Import failed. Check that the local API is running, then try again.');
+      setInventory(null);
+      selectionVersionRef.current++;
+    } catch (err) {
+      setError(uploadErrorMessage(err));
     } finally {
+      if (fileOperationRef.current === controller) fileOperationRef.current = null;
       setBusy(false);
     }
   };
 
   const loadPreview = async () => {
+    if (fileOperationBusy) {
+      setPreviewError('Wait for the file operation to finish before scanning a folder.');
+      return;
+    }
     const requestedPath = folderPath.trim();
+    const controller = new AbortController();
+    pathOperationRef.current = controller;
     setPreviewBusy(true);
     setPreviewError(null);
     setResult(null);
@@ -145,7 +264,7 @@ export function ImportPage() {
       const res = await requestCurrentFolderPreview(
         requestedPath,
         () => folderPathRef.current,
-        api.importPathPreview,
+        (path) => api.importPathPreview(path, controller.signal),
       );
       if (res.status === 'stale') return;
       setPreview(res.preview);
@@ -156,18 +275,31 @@ export function ImportPage() {
       } else if (res.preview.rides.length === 0 && res.preview.ungrouped.length === 0) {
         setPreviewError('No importable .csv/.gpx/.zip files were found in that folder.');
       }
-    } catch {
+    } catch (err) {
       setPreview(null);
-      setPreviewError(
-        'Could not read that folder. Check the path, that it exists, and that it is outside ' +
-          'the Velograph source checkout.',
-      );
+      if (isAbortError(err) || (err instanceof ApiError && err.code === 'import_cancelled')) {
+        setPreviewError('Folder scan cancelled.');
+      } else {
+        setPreviewError(
+          'Could not read that folder. Check the path, that it exists, and that it is outside ' +
+            'the Velograph source checkout.',
+        );
+      }
     } finally {
-      setPreviewBusy(false);
+      if (pathOperationRef.current === controller) {
+        pathOperationRef.current = null;
+        setPreviewBusy(false);
+      }
     }
   };
 
   const confirmPathImport = async () => {
+    if (fileOperationBusy) {
+      setPreviewError('Wait for the file operation to finish before importing a folder.');
+      return;
+    }
+    const controller = new AbortController();
+    pathOperationRef.current = controller;
     setPathBusy(true);
     setPreviewError(null);
     try {
@@ -177,14 +309,20 @@ export function ImportPage() {
         );
         return;
       }
-      const res = await api.importPath(folderPath.trim(), preview.confirmationToken);
+      const res = await api.importPath(
+        folderPath.trim(),
+        preview.confirmationToken,
+        controller.signal,
+      );
       setResult(res.result);
       setResultSkipped(res.skipped);
       setPreview(null);
       folderPathRef.current = '';
       setFolderPath('');
     } catch (err) {
-      if (err instanceof ApiError && STALE_FOLDER_PREVIEW_CODES.has(err.code)) {
+      if (isAbortError(err) || (err instanceof ApiError && err.code === 'import_cancelled')) {
+        setPreviewError('Import cancelled.');
+      } else if (err instanceof ApiError && STALE_FOLDER_PREVIEW_CODES.has(err.code)) {
         setPreview(null);
         setPreviewError('The folder changed after preview. Preview it again before importing.');
       } else if (err instanceof ApiError && err.code === 'folder_limits_exceeded') {
@@ -195,9 +333,30 @@ export function ImportPage() {
         setPreviewError('Import failed. Check that the local API is running, then try again.');
       }
     } finally {
-      setPathBusy(false);
+      if (pathOperationRef.current === controller) {
+        pathOperationRef.current = null;
+        setPathBusy(false);
+      }
     }
   };
+
+  const clearPickedFiles = () => {
+    selectionVersionRef.current++;
+    setPicked([]);
+    setInventory(null);
+    setInventoryBusy(false);
+    setError(null);
+  };
+
+  const removePickedFile = (id: string) => {
+    selectionVersionRef.current++;
+    setPicked((current) => current.filter((file) => file.id !== id));
+    setInventory(null);
+    setInventoryBusy(false);
+    setError(null);
+  };
+
+  const inventoryById = new Map(inventory?.map((item) => [item.id, item]) ?? []);
 
   return (
     <div className="stack">
@@ -216,8 +375,11 @@ export function ImportPage() {
         className={`dropzone ${drag ? 'drag' : ''}`}
         role="button"
         tabIndex={0}
-        onClick={() => inputRef.current?.click()}
-        onKeyDown={(e) => e.key === 'Enter' && inputRef.current?.click()}
+        aria-disabled={fileOperationBusy || pathOperationBusy}
+        onClick={() => !fileOperationBusy && !pathOperationBusy && inputRef.current?.click()}
+        onKeyDown={(e) =>
+          e.key === 'Enter' && !fileOperationBusy && !pathOperationBusy && inputRef.current?.click()
+        }
         onDragOver={(e) => {
           e.preventDefault();
           setDrag(true);
@@ -239,6 +401,7 @@ export function ImportPage() {
           <button
             type="button"
             className="btn"
+            disabled={fileOperationBusy || pathOperationBusy}
             onClick={(e) => {
               e.stopPropagation();
               inputRef.current?.click();
@@ -253,33 +416,108 @@ export function ImportPage() {
           type="file"
           accept={ACCEPT}
           multiple
+          disabled={fileOperationBusy || pathOperationBusy}
           hidden
-          onChange={(e) => e.target.files && addFiles(e.target.files)}
+          onChange={(e) => {
+            if (e.target.files) addFiles(e.target.files);
+            e.currentTarget.value = '';
+          }}
         />
       </div>
 
       {picked.length > 0 && (
         <div className="card">
-          <h2 className="card-title">Ready to import ({picked.length} files)</h2>
+          <h2 className="card-title">Selected files ({picked.length})</h2>
+          <p className="muted" style={{ marginTop: 0, fontSize: 12 }}>
+            Review asks the local API to identify every exact file before import. Distinct files are
+            preserved even when their names and sizes match.
+          </p>
           <table className="data">
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Status</th>
+                <th style={{ textAlign: 'right' }}>Size</th>
+                <th>
+                  <span className="sr-only">Actions</span>
+                </th>
+              </tr>
+            </thead>
             <tbody>
               {picked.map((p) => (
-                <tr key={p.name + p.size}>
+                <tr key={p.id}>
                   <td>{p.name}</td>
+                  <td>
+                    {inventoryById.has(p.id) ? (
+                      <>
+                        <span
+                          className={`badge ${
+                            inventoryById.get(p.id)!.classification === 'recognized' ? '' : 'warn'
+                          }`}
+                        >
+                          {inventoryById.get(p.id)!.classification.replaceAll('_', ' ')}
+                        </span>
+                        {inventoryById.get(p.id)!.detectedType && (
+                          <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
+                            {inventoryById
+                              .get(p.id)!
+                              .detectedType!.replaceAll('_', ' ')
+                              .replaceAll(':', ' · ')}
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="muted">Awaiting review</span>
+                    )}
+                  </td>
                   <td className="muted" style={{ textAlign: 'right' }}>
                     {(p.size / 1024).toFixed(1)} KB
+                  </td>
+                  <td style={{ textAlign: 'right' }}>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => removePickedFile(p.id)}
+                      disabled={fileOperationBusy || pathOperationBusy}
+                      aria-label={`Remove ${p.name}`}
+                    >
+                      Remove
+                    </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
           <div className="row" style={{ marginTop: 12 }}>
-            <button className="btn primary" onClick={runImport} disabled={busy}>
-              {busy ? 'Importing…' : 'Confirm import'}
-            </button>
-            <button className="btn" onClick={() => setPicked([])} disabled={busy}>
+            {inventory ? (
+              <button
+                className="btn primary"
+                onClick={runImport}
+                disabled={fileOperationBusy || pathOperationBusy}
+              >
+                {busy ? 'Importing…' : 'Confirm import'}
+              </button>
+            ) : (
+              <button
+                className="btn primary"
+                onClick={reviewFiles}
+                disabled={fileOperationBusy || pathOperationBusy}
+              >
+                {inventoryBusy ? 'Reviewing…' : 'Review files'}
+              </button>
+            )}
+            <button
+              className="btn"
+              onClick={clearPickedFiles}
+              disabled={fileOperationBusy || pathOperationBusy}
+            >
               Clear
             </button>
+            {(busy || inventoryBusy) && (
+              <button className="btn" onClick={() => fileOperationRef.current?.abort()}>
+                {busy ? 'Cancel import' : 'Cancel review'}
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -304,6 +542,7 @@ export function ImportPage() {
             type="text"
             placeholder="/path/to/Health Auto Export"
             value={folderPath}
+            disabled={fileOperationBusy || pathOperationBusy}
             onChange={(e) => {
               folderPathRef.current = e.target.value;
               setFolderPath(e.target.value);
@@ -315,10 +554,15 @@ export function ImportPage() {
           <button
             className="btn"
             onClick={loadPreview}
-            disabled={previewBusy || pathBusy || !folderPath.trim()}
+            disabled={fileOperationBusy || pathOperationBusy || !folderPath.trim()}
           >
             {previewBusy ? 'Scanning…' : 'Preview folder'}
           </button>
+          {previewBusy && (
+            <button className="btn" onClick={() => pathOperationRef.current?.abort()}>
+              Cancel scan
+            </button>
+          )}
         </div>
         {previewError && (
           <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--vg-ch-hr)' }}>
@@ -387,12 +631,17 @@ export function ImportPage() {
               <button
                 className="btn primary"
                 onClick={confirmPathImport}
-                disabled={pathBusy || preview.totalFiles === 0 || preview.truncated}
+                disabled={
+                  fileOperationBusy || pathBusy || preview.totalFiles === 0 || preview.truncated
+                }
               >
                 {pathBusy ? 'Importing…' : `Confirm import (${preview.totalFiles} files)`}
               </button>
-              <button className="btn" onClick={() => setPreview(null)} disabled={pathBusy}>
-                Cancel
+              <button
+                className="btn"
+                onClick={() => (pathBusy ? pathOperationRef.current?.abort() : setPreview(null))}
+              >
+                {pathBusy ? 'Cancel import' : 'Cancel'}
               </button>
             </div>
           </div>
@@ -412,6 +661,10 @@ export function ImportPage() {
               <div className="kpi-value">{result.skippedDuplicates}</div>
             </div>
             <div className="kpi">
+              <div className="kpi-label">Out-of-scope skipped</div>
+              <div className="kpi-value">{result.skipped}</div>
+            </div>
+            <div className="kpi">
               <div className="kpi-label">Quarantined</div>
               <div className="kpi-value">{result.quarantined}</div>
             </div>
@@ -422,6 +675,14 @@ export function ImportPage() {
               </div>
             </div>
           </div>
+          {result.skipped > 0 && (
+            <p className="muted" style={{ margin: '12px 0 0', fontSize: 12 }}>
+              {result.skippedByCode.unmodelled_metric} unmodelled cycling metric
+              {result.skippedByCode.unmodelled_metric === 1 ? '' : 's'} ·{' '}
+              {result.skippedByCode.non_cycling_workout} non-cycling workout file
+              {result.skippedByCode.non_cycling_workout === 1 ? '' : 's'}
+            </p>
+          )}
           {result.quarantinedFiles.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <h3 className="card-title">Quarantined files</h3>
@@ -453,16 +714,4 @@ export function ImportPage() {
       )}
     </div>
   );
-}
-
-function toBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const url = reader.result as string;
-      resolve(url.slice(url.indexOf(',') + 1));
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
 }

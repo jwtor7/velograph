@@ -19,7 +19,7 @@ import { parseStrictNumber } from './numeric.ts';
  * ele, time, and speed/course extensions), versioned via GPX_PARSER_VERSION so
  * files can be reprocessed after upgrades (IMP-010).
  */
-export const GPX_PARSER_VERSION = 'gpx-v4';
+export const GPX_PARSER_VERSION = 'gpx-v5';
 
 export interface GpxLimits {
   maxBytes: number;

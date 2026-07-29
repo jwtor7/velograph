@@ -72,6 +72,7 @@ export type ParsedFile = ParsedMetricFile | ParsedRouteFile;
 export type QuarantineCode =
   | 'unsupported_file_type'
   | 'unrecognized_headers'
+  | 'unit_unsupported'
   | 'empty_file'
   | 'malformed_csv'
   | 'malformed_xml'
@@ -86,9 +87,14 @@ export type QuarantineCode =
   | 'zip_limits_exceeded'
   | 'io_error';
 
+/** Normal, value-free reasons why a well-formed export file is not imported. */
+export type ImportSkipCode = 'unmodelled_metric' | 'non_cycling_workout';
+
 export interface ImportCounts {
   imported: number;
   skippedDuplicates: number;
+  skipped: number;
+  skippedByCode: Record<ImportSkipCode, number>;
   quarantined: number;
   workoutsCreated: number;
   workoutsUpdated: number;

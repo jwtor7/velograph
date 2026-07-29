@@ -1,6 +1,6 @@
 import { inflateRawSync } from 'node:zlib';
 
-export const ZIP_PARSER_VERSION = 'zip-v1';
+export const ZIP_PARSER_VERSION = 'zip-v2';
 
 /**
  * Guarded ZIP extraction (PRD §12.3). Entries are extracted to memory only —
@@ -23,6 +23,17 @@ export const DEFAULT_ZIP_LIMITS: ZipLimits = {
   maxEntryBytes: 256 * 1024 * 1024,
   maxTotalBytes: 512 * 1024 * 1024,
 };
+
+export interface ZipDecodedBudget {
+  remainingBytes: number;
+}
+
+export function createZipDecodedBudget(maxBytes: number): ZipDecodedBudget {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new ZipError('zip_limits_exceeded', 'decoded-byte budget is invalid');
+  }
+  return { remainingBytes: maxBytes };
+}
 
 export type ZipErrorCode = 'zip_entry_rejected' | 'zip_limits_exceeded' | 'io_error';
 
@@ -54,6 +65,7 @@ interface PreparedZipEntry {
   localOffset: number;
   dataOffset: number;
   compression: number;
+  crc: number;
   compressedBytes: number;
   declaredBytes: number;
   inflate: boolean;
@@ -62,6 +74,12 @@ interface PreparedZipEntry {
 interface ZipExtractionHooks {
   onEntryStart?: (name: string) => void;
   onChunk?: (name: string, bytes: number) => void;
+}
+
+function isDecodedBudget(
+  value: ZipDecodedBudget | ZipExtractionHooks | undefined,
+): value is ZipDecodedBudget {
+  return value !== undefined && 'remainingBytes' in value;
 }
 
 function viewOf(data: Uint8Array): DataView {
@@ -121,6 +139,16 @@ function skippedBeforeInflation(name: string): boolean {
 }
 
 function prepareZip(zipData: Uint8Array, limits: ZipLimits): PreparedZipEntry[] {
+  if (
+    !Number.isSafeInteger(limits.maxEntries) ||
+    !Number.isSafeInteger(limits.maxEntryBytes) ||
+    !Number.isSafeInteger(limits.maxTotalBytes) ||
+    limits.maxEntries < 0 ||
+    limits.maxEntryBytes < 0 ||
+    limits.maxTotalBytes < 0
+  ) {
+    throw new ZipError('zip_limits_exceeded', 'zip limits are invalid');
+  }
   if (zipData.length < 22) throw new ZipError('io_error', 'zip could not be read');
   const view = viewOf(zipData);
   const eocd = findEndOfCentralDirectory(zipData, view);
@@ -255,6 +283,7 @@ function prepareZip(zipData: Uint8Array, limits: ZipLimits): PreparedZipEntry[] 
       localOffset,
       dataOffset: localHeaderEnd,
       compression,
+      crc,
       compressedBytes,
       declaredBytes,
       inflate,
@@ -269,9 +298,29 @@ function prepareZip(zipData: Uint8Array, limits: ZipLimits): PreparedZipEntry[] 
 export function extractZip(
   zipData: Uint8Array,
   limits: ZipLimits = DEFAULT_ZIP_LIMITS,
-  hooks?: ZipExtractionHooks,
+  control?: ZipDecodedBudget | ZipExtractionHooks,
+  additionalHooks?: ZipExtractionHooks,
 ): ZipEntry[] {
   const prepared = prepareZip(zipData, limits);
+  const budget = isDecodedBudget(control) ? control : undefined;
+  const hooks: ZipExtractionHooks | undefined = budget
+    ? additionalHooks
+    : (control as ZipExtractionHooks | undefined);
+  const declaredTotal = prepared.reduce(
+    (total, entry) => total + (entry.inflate ? entry.declaredBytes : 0),
+    0,
+  );
+  if (
+    budget &&
+    (!Number.isSafeInteger(budget.remainingBytes) ||
+      budget.remainingBytes < 0 ||
+      declaredTotal > budget.remainingBytes)
+  ) {
+    throw new ZipError('zip_limits_exceeded', 'decompressed size exceeds shared limit');
+  }
+  // Reserve before inflation so multiple archives cannot each consume the
+  // full batch allowance, even when an archive later fails integrity checks.
+  if (budget) budget.remainingBytes -= declaredTotal;
   const entries: ZipEntry[] = [];
   let actualTotal = 0;
 
@@ -312,7 +361,7 @@ export function extractZip(
       }
     }
 
-    if (data.length !== expected.declaredBytes) {
+    if (data.length !== expected.declaredBytes || crc32(data) !== expected.crc) {
       throw new ZipError('zip_entry_rejected', 'entry output does not match its declared size');
     }
     actualTotal += data.length;
@@ -321,4 +370,21 @@ export function extractZip(
   }
 
   return entries.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+const CRC32_TABLE = new Uint32Array(256);
+for (let index = 0; index < CRC32_TABLE.length; index++) {
+  let value = index;
+  for (let bit = 0; bit < 8; bit++) {
+    value = (value & 1) !== 0 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  }
+  CRC32_TABLE[index] = value >>> 0;
+}
+
+function crc32(data: Uint8Array): number {
+  let value = 0xffffffff;
+  for (const byte of data) {
+    value = CRC32_TABLE[(value ^ byte) & 0xff]! ^ (value >>> 8);
+  }
+  return (value ^ 0xffffffff) >>> 0;
 }

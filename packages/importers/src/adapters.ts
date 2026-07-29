@@ -17,7 +17,7 @@ import { parseStrictNumber, type NumericBounds } from './numeric.ts';
  * (IMP-010). Header matching is tolerant of spacing/case but never guesses:
  * unrecognized headers quarantine the file rather than half-importing it.
  */
-export const ADAPTER_VERSION = 'hae-csv-v2';
+export const ADAPTER_VERSION = 'hae-csv-v3';
 
 export class AdapterError extends Error {
   readonly code: QuarantineCode;
@@ -39,6 +39,58 @@ export interface FilenameInfo {
 export interface AdapterOptions {
   /** IANA timezone for Health Auto Export CSV wall times that omit an offset. */
   timeZone?: string;
+}
+
+type CandidateKind =
+  'supported' | 'unmodelled_metric' | 'non_cycling_workout' | 'archive' | 'unsupported';
+
+export interface ImportCandidateClassification {
+  kind: CandidateKind;
+  detectedType: string | null;
+}
+
+const SUPPORTED_CYCLING_LABELS = new Set([
+  'heartrate',
+  'cyclingcadence',
+  'cyclingdistance',
+  'activeenergy',
+  'route',
+]);
+
+const normalizeLabel = (label: string) => label.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * Classify only from the value-free filename before parsing or persistence.
+ * Well-formed but out-of-scope HAE files are normal aggregate skips; malformed
+ * or unrelated filenames still flow to quarantine.
+ */
+export function classifyImportFileName(name: string): ImportCandidateClassification {
+  const trimmed = name.trim();
+  if (/\.zip$/i.test(trimmed)) {
+    return { kind: 'archive', detectedType: 'archive:zip' };
+  }
+  const match = /^(.+?)-(.+?)-(\d{8}_\d{6})\.(csv|gpx)$/i.exec(trimmed);
+  if (!match) return { kind: 'unsupported', detectedType: null };
+
+  const workoutLabel = match[1]!.trim().toLowerCase();
+  const metricLabel = match[2]!.trim();
+  const format = match[4]!.toLowerCase();
+  const cycling =
+    workoutLabel === 'outdoor cycling'
+      ? 'outdoor_cycling'
+      : workoutLabel === 'indoor cycling'
+        ? 'indoor_cycling'
+        : null;
+  if (!cycling) {
+    return { kind: 'non_cycling_workout', detectedType: 'skip:non_cycling_workout' };
+  }
+  if (!SUPPORTED_CYCLING_LABELS.has(normalizeLabel(metricLabel))) {
+    return { kind: 'unmodelled_metric', detectedType: 'skip:unmodelled_metric' };
+  }
+  return {
+    kind: 'supported',
+    detectedType: `${cycling}:${normalizeLabel(metricLabel)}:${format}`,
+  };
 }
 
 /** Classify a Health Auto Export-shaped filename. Returns null when unrecognized. */
@@ -120,15 +172,33 @@ const CSV_SHAPES: CsvShape[] = [
   },
   {
     metric: 'distance',
-    value: ['cyclingdistancekm', 'distancekm', 'distance'],
+    value: ['cyclingdistancekm', 'distancekm'],
     bounds: { min: 0, max: Number.MAX_SAFE_INTEGER / 1000 },
     toCanonical: (v) => v * 1000, // km → m
   },
   {
+    metric: 'distance',
+    value: ['cyclingdistancem', 'distancem'],
+    bounds: { min: 0, max: Number.MAX_SAFE_INTEGER },
+    toCanonical: (v) => v,
+  },
+  {
     metric: 'energy',
-    value: ['activeenergykj', 'energykj', 'activeenergy', 'energy'],
+    value: ['activeenergykj', 'energykj'],
     bounds: { min: 0, max: Number.MAX_SAFE_INTEGER / 1000 },
     toCanonical: (v) => v * 1000, // kJ → J
+  },
+  {
+    metric: 'energy',
+    value: ['activeenergyj', 'energyj'],
+    bounds: { min: 0, max: Number.MAX_SAFE_INTEGER },
+    toCanonical: (v) => v,
+  },
+  {
+    metric: 'energy',
+    value: ['activeenergykcal', 'energykcal'],
+    bounds: { min: 0, max: Number.MAX_SAFE_INTEGER / 4184 },
+    toCanonical: (v) => v * 4184, // thermochemical kcal → J
   },
 ];
 
@@ -158,7 +228,23 @@ export function parseHaeCsv(name: string, text: string, options: AdapterOptions 
   }
 
   const shape = CSV_SHAPES.find((s) => idx(s.value) !== -1);
-  if (!shape) throw new AdapterError('unrecognized_headers', 'no known metric column');
+  if (!shape) {
+    const unitSensitiveHeader = header.some(
+      (h) =>
+        h === 'distance' ||
+        h.startsWith('distance') ||
+        h === 'cyclingdistance' ||
+        h.startsWith('cyclingdistance') ||
+        h === 'energy' ||
+        h.startsWith('energy') ||
+        h === 'activeenergy' ||
+        h.startsWith('activeenergy'),
+    );
+    if (unitSensitiveHeader) {
+      throw new AdapterError('unit_unsupported', 'metric unit unsupported or missing');
+    }
+    throw new AdapterError('unrecognized_headers', 'no known metric column');
+  }
   const vIdx = idx(shape.value);
   const minIdx = shape.min ? idx(shape.min) : -1;
   const maxIdx = shape.max ? idx(shape.max) : -1;
@@ -203,11 +289,25 @@ function parseRouteCsvRows(
   const tIdx = col('timestamp');
   const latIdx = col('latitude');
   const lonIdx = col('longitude');
-  const altIdx = header.findIndex((h) => h.startsWith('altitude'));
-  const spdIdx = header.findIndex((h) => h.startsWith('speed'));
-  const crsIdx = header.findIndex((h) => h.startsWith('course'));
-  const haIdx = header.findIndex((h) => h.startsWith('horizontalaccuracy'));
-  const vaIdx = header.findIndex((h) => h.startsWith('verticalaccuracy'));
+  const altitude = resolveUnitColumn(header, 'altitude', {
+    altitudem: 1,
+    altitudeft: 0.3048,
+  });
+  const speed = resolveUnitColumn(header, 'speed', {
+    'speedm/s': 1,
+    'speedkm/h': 1 / 3.6,
+  });
+  const course = resolveUnitColumn(header, 'course', {
+    coursedeg: 1,
+  });
+  const horizontalAccuracy = resolveUnitColumn(header, 'horizontalaccuracy', {
+    horizontalaccuracym: 1,
+    horizontalaccuracyft: 0.3048,
+  });
+  const verticalAccuracy = resolveUnitColumn(header, 'verticalaccuracy', {
+    verticalaccuracym: 1,
+    verticalaccuracyft: 0.3048,
+  });
 
   const points: RoutePoint[] = [];
   for (let i = 1; i < rows.length; i++) {
@@ -216,23 +316,26 @@ function parseRouteCsvRows(
     const lat = parseRequiredNumber(row[latIdx], { min: -90, max: 90 });
     const lon = parseRequiredNumber(row[lonIdx], { min: -180, max: 180 });
     const p: RoutePoint = { t, lat, lon };
-    const opt = (idx: number, key: string, bounds: NumericBounds) => {
-      if (idx !== -1) {
-        const v = parseStrictNumber(row[idx], bounds);
-        if (v != null) {
-          if (key === 'ele') p.ele = v;
-          else if (key === 'speed') p.speed = v;
-          else if (key === 'course') p.course = v;
-          else if (key === 'hAcc') p.hAcc = v;
-          else p.vAcc = v;
+    const opt = (
+      column: UnitColumn | null,
+      key: 'ele' | 'speed' | 'course' | 'hAcc' | 'vAcc',
+      bounds: NumericBounds,
+    ) => {
+      if (column) {
+        const raw = parseStrictNumber(row[column.index]);
+        if (raw != null) {
+          const value = raw * column.toCanonicalFactor;
+          if (Number.isFinite(value) && isWithinBounds(value, bounds)) {
+            p[key] = value;
+          }
         }
       }
     };
-    opt(altIdx, 'ele', { minExclusive: -500, maxExclusive: 10_000 });
-    opt(spdIdx, 'speed', { min: 0, maxExclusive: 150 });
-    opt(crsIdx, 'course', { min: 0, maxExclusive: 360 });
-    opt(haIdx, 'hAcc', { min: 0, max: Number.MAX_SAFE_INTEGER });
-    opt(vaIdx, 'vAcc', { min: 0, max: Number.MAX_SAFE_INTEGER });
+    opt(altitude, 'ele', { minExclusive: -500, maxExclusive: 10_000 });
+    opt(speed, 'speed', { min: 0, maxExclusive: 150 });
+    opt(course, 'course', { min: 0, maxExclusive: 360 });
+    opt(horizontalAccuracy, 'hAcc', { min: 0, max: Number.MAX_SAFE_INTEGER });
+    opt(verticalAccuracy, 'vAcc', { min: 0, max: Number.MAX_SAFE_INTEGER });
     points.push(p);
   }
   if (points.length === 0) throw new AdapterError('no_valid_samples', 'no valid route rows');
@@ -254,10 +357,56 @@ function parseRouteCsvRows(
   return { kind: 'route', format: 'csv', workoutType: info.workoutType, segments };
 }
 
+interface UnitColumn {
+  index: number;
+  toCanonicalFactor: number;
+}
+
+/**
+ * Resolve exactly one unit-bearing optional route column. A generic or
+ * unsupported unit must fail closed because route values are persisted in SI.
+ */
+function resolveUnitColumn(
+  header: string[],
+  family: string,
+  supported: Readonly<Record<string, number>>,
+): UnitColumn | null {
+  const candidates = header
+    .map((value, index) => ({ value, index }))
+    .filter(({ value }) => value === family || value.startsWith(family));
+  if (candidates.length === 0) return null;
+  if (candidates.length !== 1) {
+    throw new AdapterError('unrecognized_headers', `ambiguous ${family} column`);
+  }
+  const candidate = candidates[0]!;
+  const factor = supported[candidate.value];
+  if (factor === undefined) {
+    throw new AdapterError('unit_unsupported', `${family} unit unsupported or missing`);
+  }
+  return { index: candidate.index, toCanonicalFactor: factor };
+}
+
+function isWithinBounds(value: number, bounds: NumericBounds): boolean {
+  if (bounds.min != null && value < bounds.min) return false;
+  if (bounds.max != null && value > bounds.max) return false;
+  if (bounds.minExclusive != null && value <= bounds.minExclusive) return false;
+  if (bounds.maxExclusive != null && value >= bounds.maxExclusive) return false;
+  return true;
+}
+
 /** Parse a GPX file into the same normalized route form. */
 export function parseHaeGpx(name: string, text: string): ParsedFile {
   const info = parseHaeFilename(name);
-  const workoutType: WorkoutType = info?.workoutType ?? 'outdoor_cycling';
+  const looseCycling =
+    /^(Outdoor|Indoor) Cycling-(?:Heart Rate|Cycling Cadence|Cycling Distance|Active Energy|Route)-.+\.gpx$/i.exec(
+      name.trim(),
+    );
+  if ((!info || classifyImportFileName(name).kind !== 'supported') && !looseCycling) {
+    throw new AdapterError('unsupported_file_type', 'filename not recognized');
+  }
+  const workoutType: WorkoutType =
+    info?.workoutType ??
+    (looseCycling![1]!.toLowerCase() === 'indoor' ? 'indoor_cycling' : 'outdoor_cycling');
   try {
     const { segments } = parseGpx(text);
     if (segments.length === 0) throw new AdapterError('no_valid_samples', 'no track points');

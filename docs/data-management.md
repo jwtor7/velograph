@@ -102,6 +102,64 @@ an unexpected storage error rolls every mutation back. Initial imports remain di
 malformed source has no last-known-good state, so its canonical `source_files` row is created with
 `status = 'quarantined'` as before.
 
+## Import skip versus store policy
+
+The importer classifies a value-free filename before hashing, parsing, or persistence:
+
+- A supported cycling metric or route continues through parsing, association, and storage.
+- A well-formed Health Auto Export filename for an unmodelled cycling metric is a normal
+  `unmodelled_metric` skip.
+- A well-formed Health Auto Export filename for Running or another non-cycling workout is a
+  normal `non_cycling_workout` skip. A GPX route never defaults to cycling when the filename does
+  not explicitly identify Indoor or Outdoor Cycling.
+- An unrelated, malformed, or supported-but-invalid file continues through the in-scope error
+  path and is quarantined with a stable, value-free code.
+
+Normal skips are returned only as aggregate counts. They do not create `source_files` rows,
+quarantine entries, warnings, or filename-bearing result items. In particular, the content hash
+is not stored: adding support for that metric or workout later allows the exact same file to be
+imported rather than being suppressed as a duplicate. Quarantine remains the durable record for a
+file Velograph was expected to understand but could not parse safely.
+
+## Canonical input-unit contract
+
+`hae-csv-v3` matches explicit, normalized headers and converts accepted values before persistence:
+
+| Input family                       | Accepted header units | Stored unit |
+| ---------------------------------- | --------------------- | ----------- |
+| Heart rate                         | `bpm`, `count/min`    | `bpm`       |
+| Cycling cadence                    | `rpm`, `count/min`    | `rpm`       |
+| Cycling distance                   | `km`, `m`             | `m`         |
+| Active energy                      | `kJ`, `J`, `kcal`     | `J`         |
+| Route altitude                     | `m`, `ft`             | `m`         |
+| Route horizontal/vertical accuracy | `m`, `ft`             | `m`         |
+| Route speed                        | `m/s`, `km/h`         | `m/s`       |
+| Route course                       | `deg`                 | `deg`       |
+
+The kilometre, kilojoule, thermochemical kilocalorie, foot, and kilometre-per-hour conversions
+are deterministic code. Unit-bearing families never inherit a default: a generic header such as
+`Distance`, `Energy`, `Altitude`, or `Speed`, an unsupported unit, or two competing columns fails
+closed before samples are stored. Missing or unsupported units use the stable, value-free
+`unit_unsupported` quarantine code. Changing this interpretation requires another adapter version,
+which makes existing content hashes eligible for safe parser-version reprocessing.
+
+## Import cancellation and rollback
+
+Browser file encoding is sequential and receives the same `AbortSignal` as its subsequent
+loopback request. The Import page exposes Cancel controls while reviewing files, scanning a path,
+or importing either source. On the server, an aborted request, an incomplete request close, or a
+response close before completion aborts one request-scoped controller. That signal is passed
+through `runImport`/`runImportGroups`.
+
+The SQLite transaction checks cancellation before loading each lazy group, while expanding and
+processing files, and immediately before it marks the batch committed. API imports yield to the
+event loop at those bounded checkpoints while keeping other database requests out of the open
+transaction. An observed abort throws `ImportAbortedError`, so SQLite rolls back the batch row,
+sources, normalized data, and workouts together. Folder imports remain bounded to one association
+group at a time, making those checkpoints practical without retaining the full export. Contract
+tests cover cancellation before work, after an earlier group has written inside the
+still-uncommitted transaction, and after a loopback client disconnects.
+
 ## Backup / restore
 
 `packages/db/src/backup.ts`:

@@ -158,7 +158,9 @@ describe('loopback API', () => {
       '2031-09-01T07:30:00Z,130,Synth Watch X1',
     ].join('\n');
     const payload = JSON.stringify({
-      files: [{ name, dataBase64: Buffer.from(csv).toString('base64') }],
+      files: [
+        { id: 'synthetic-heart-rate', name, dataBase64: Buffer.from(csv).toString('base64') },
+      ],
     });
     const headers = { 'Content-Type': 'application/json', 'x-velograph-request': '1' };
     const first = (await (
@@ -178,8 +180,9 @@ describe('loopback API', () => {
     const csv = readFileSync(join(HARDENING_FIXTURES, name));
     const payload = JSON.stringify({
       files: [
-        { name, dataBase64: csv.toString('base64') },
+        { id: 'synthetic-cadence', name, dataBase64: csv.toString('base64') },
         {
+          id: 'synthetic-malformed-zip',
           name: 'malformed-synthetic.zip',
           dataBase64: Buffer.from('not a zip').toString('base64'),
         },
