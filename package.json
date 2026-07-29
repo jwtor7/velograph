@@ -5,7 +5,7 @@
   "description": "Velograph — local-first cycling analytics for Apple Health exports",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20 <27"
   },
   "packageManager": "pnpm@11.17.0",
   "scripts": {
@@ -15,6 +15,9 @@
     "lint": "eslint .",
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "vitest run",
+    "cli:build": "pnpm --filter @velograph/cli build",
+    "cli:verify-package": "node scripts/verify-cli-package.mjs",
+    "velograph-import": "node apps/cli/dist/velograph-import.mjs",
     "app:start": "node scripts/app.mjs start",
     "app:stop": "node scripts/app.mjs stop",
     "app:status": "node scripts/app.mjs status",

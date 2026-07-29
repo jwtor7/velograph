@@ -5,19 +5,31 @@
   "type": "module",
   "description": "Velograph local import CLI",
   "bin": {
-    "velograph-import": "./src/index.ts"
+    "velograph-import": "./dist/velograph-import.mjs"
+  },
+  "files": [
+    "dist",
+    "migrations"
+  ],
+  "engines": {
+    "node": ">=20 <27"
   },
   "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "pnpm run build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "better-sqlite3": "^12.2.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.1.0",
     "@velograph/api": "workspace:*",
     "@velograph/db": "workspace:*",
     "@velograph/importers": "workspace:*",
-    "@velograph/shared": "workspace:*"
-  },
-  "devDependencies": {
-    "@types/node": "^24.1.0",
+    "@velograph/shared": "workspace:*",
+    "esbuild": "^0.28.1",
     "typescript": "^5.9.2"
   }
 }

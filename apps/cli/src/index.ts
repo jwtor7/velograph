@@ -1,11 +1,10 @@
-#!/usr/bin/env node
 /**
  * Velograph CLI (IMP-002; issue #38 delete/backup/restore/repair parity):
- *   node apps/cli/src/index.ts import <path...> [--data-dir <dir>]
- *   node apps/cli/src/index.ts delete <workoutId> [--data-dir <dir>]
- *   node apps/cli/src/index.ts backup <destPath> [--data-dir <dir>]
- *   node apps/cli/src/index.ts restore <backupPath> [--data-dir <dir>]
- *   node apps/cli/src/index.ts repair <workoutId> [--data-dir <dir>]
+ *   velograph-import import <path...> [--data-dir <dir>]
+ *   velograph-import delete <workoutId> [--data-dir <dir>]
+ *   velograph-import backup <destPath> [--data-dir <dir>]
+ *   velograph-import restore <backupPath> [--data-dir <dir>]
+ *   velograph-import repair <workoutId> [--data-dir <dir>]
  *
  * Accepts CSV/GPX files, directories (scanned one level, non-recursive), and
  * ZIP archives. Prints counts and error codes only — never sample values or
@@ -13,7 +12,6 @@
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import {
   backupDatabase,
   databasePath,
@@ -201,10 +199,4 @@ export async function main(argv: string[]): Promise<number> {
       console.log(USAGE);
       return 2;
   }
-}
-
-// Only run as a side effect when invoked directly (`node index.ts ...`), not
-// when imported — e.g. by tests exercising `main()` in-process.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main(process.argv.slice(2)).then((code) => process.exit(code));
 }

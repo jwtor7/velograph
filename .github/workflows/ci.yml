@@ -44,6 +44,26 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  cli-package:
+    name: CLI package (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 26]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm cli:verify-package
+      - name: Built CLI artifact is current
+        run: |
+          git diff --exit-code -- apps/cli/dist/velograph-import.mjs apps/cli/migrations
+          test -z "$(git ls-files --others --exclude-standard -- apps/cli/dist apps/cli/migrations)"
+
   changelog:
     name: Changelog enforcement
     if: github.event_name == 'pull_request'

@@ -21,6 +21,11 @@ is pre-1.0, and for the release procedure.
 
 ### Fixed
 
+- **The declared CLI is now executable on every supported Node major.** The package bin
+  targets a bundled JavaScript artifact instead of TypeScript source, carries its ordered
+  migrations and direct native runtime dependency, and has clean-install execution coverage
+  on Node 20 and Node 26. Its top-level failure boundary emits only a stable, value-free code
+  rather than native stacks or local paths (#11).
 - **"Choose export folder" could not select a folder.** The directory input carried
   `accept=".csv,.gpx,.zip"`; since a directory matches none of those extensions, the OS
   picker greyed folders out. Because Health Auto Export writes one CSV per metric, this

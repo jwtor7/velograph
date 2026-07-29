@@ -108,6 +108,8 @@ compose.override.yaml
 # Lockfiles (pnpm-lock.yaml) are deliberately committed — never ignore them.
 node_modules/
 dist/
+!apps/cli/dist/
+!apps/cli/dist/velograph-import.mjs
 build/
 coverage/
 *.tsbuildinfo

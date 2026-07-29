@@ -28,6 +28,10 @@ pnpm install                            # install workspace dependencies
 pnpm --filter @velograph/web build      # build the web client (required before the API can serve it)
 ```
 
+Velograph supports Node 20 through Node 26. The repository includes the same built
+JavaScript CLI artifact that ships in the package; CI clean-installs and invokes it on Node
+20 and Node 26.
+
 ### Try it with the synthetic fixtures
 
 **Do not import the synthetic fixtures into a data directory that holds real rides.**
@@ -37,7 +41,7 @@ walkthrough at an explicit throwaway directory instead, so it can't touch real d
 
 ```bash
 export VELO_DATA_DIR=$(mktemp -d)                        # throwaway directory for this demo
-node apps/cli/src/index.ts import fixtures/synthetic/rides
+pnpm velograph-import import fixtures/synthetic/rides
 pnpm app:start
 ```
 
@@ -59,7 +63,7 @@ inside this checkout; a `VELO_DATA_DIR` that resolves inside a git checkout is r
 startup.
 
 ```bash
-node apps/cli/src/index.ts import /path/to/your/health-auto-export
+pnpm velograph-import import /path/to/your/health-auto-export
 pnpm app:start
 ```
 
@@ -94,7 +98,11 @@ pnpm lint         # eslint
 pnpm typecheck    # tsc --noEmit across every workspace package
 pnpm format       # prettier --check
 node scripts/privacy-scan.mjs --all   # privacy/data-leak scan
+pnpm cli:verify-package               # clean-install and invoke the packaged CLI
 ```
+
+`pnpm cli:build` regenerates `apps/cli/dist/velograph-import.mjs` and its packaged migration
+files. CI fails if the committed executable artifact is stale.
 
 ## Project layout
 
