@@ -2,6 +2,10 @@ import { createServer, request } from 'node:http';
 
 const internalPort = Number(process.env['VELO_INTERNAL_PORT'] ?? 5124);
 const proxyPort = Number(process.env['VELO_PROXY_PORT'] ?? 5123);
+const proxyHost = process.env['VELO_PROXY_HOST'] ?? '127.0.0.1';
+if (!new Set(['127.0.0.1', '0.0.0.0']).has(proxyHost)) {
+  throw new Error('proxy_configuration_invalid');
+}
 
 function internalOrigin(origin) {
   if (!origin) return origin;
@@ -44,7 +48,7 @@ const proxy = createServer((clientRequest, clientResponse) => {
   clientRequest.pipe(upstream);
 });
 
-proxy.listen(proxyPort, '0.0.0.0');
+proxy.listen(proxyPort, proxyHost);
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => proxy.close(() => process.exit(0)));

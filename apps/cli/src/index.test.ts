@@ -1,10 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  truncateSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { databasePath, openDatabase, Repository } from '@velograph/db';
+import { DEFAULT_MAX_GROUP_BYTES } from '@velograph/importers';
 import { main, portableBasename } from './index.ts';
 
 // Every temp dir here is created outside the checkout (never under the repo)
@@ -102,6 +114,97 @@ describe('velograph CLI', () => {
     // instead of being skipped as a duplicate (issue #38 idempotency).
     expect(await main(['import', ...files, '--data-dir', dataDir])).toBe(0);
     expect(workoutCount()).toBe(before);
+  });
+
+  it('routes folder imports through bounded recursive planning without following outside links', async () => {
+    const source = mkdtempSync(join(tmpdir(), 'velo-cli-folder-'));
+    const outside = mkdtempSync(join(tmpdir(), 'velo-cli-outside-'));
+    try {
+      const nested = join(source, 'nested');
+      mkdirSync(nested);
+      for (const name of readdirSync(FIXTURES).filter((file) => /\.(csv|gpx)$/.test(file))) {
+        copyFileSync(join(FIXTURES, name), join(nested, name));
+      }
+      const outsideName = 'Outdoor Cycling-Heart Rate-20390101_010101.csv';
+      const outsidePath = join(outside, outsideName);
+      writeFileSync(outsidePath, 'invented malformed private source');
+      try {
+        symlinkSync(outsidePath, join(nested, outsideName));
+      } catch {
+        // Filesystems without symlink support still exercise recursive planning.
+      }
+
+      expect(await main(['import', source, '--data-dir', dataDir])).toBe(0);
+      expect(workoutCount()).toBeGreaterThan(0);
+      expect(JSON.stringify(vi.mocked(console.log).mock.calls)).not.toContain(outsideName);
+      expect(JSON.stringify(vi.mocked(console.log).mock.calls)).not.toContain(source);
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('never prints quarantined source filenames', async () => {
+    const source = mkdtempSync(join(tmpdir(), 'velo-cli-quarantine-'));
+    try {
+      const sensitiveLookingName = 'Outdoor Cycling-Heart Rate-20390101_010101.csv';
+      const path = join(source, sensitiveLookingName);
+      writeFileSync(path, 'invented malformed private source');
+
+      expect(await main(['import', path, '--data-dir', dataDir])).toBe(0);
+      const output = JSON.stringify(vi.mocked(console.log).mock.calls);
+      expect(output).toContain('quarantined');
+      expect(output).not.toContain(sensitiveLookingName);
+      expect(output).not.toContain(source);
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a symbolic path before reading it', async () => {
+    const source = mkdtempSync(join(tmpdir(), 'velo-cli-symbolic-source-'));
+    const aliasRoot = mkdtempSync(join(tmpdir(), 'velo-cli-symbolic-alias-'));
+    const alias = join(aliasRoot, 'synthetic-folder-alias');
+    try {
+      try {
+        symlinkSync(source, alias);
+      } catch {
+        return;
+      }
+      expect(await main(['import', alias, '--data-dir', dataDir])).toBe(1);
+      const output = JSON.stringify([
+        ...vi.mocked(console.log).mock.calls,
+        ...vi.mocked(console.error).mock.calls,
+      ]);
+      expect(output).toContain('Import failed: import_failed');
+      expect(output).not.toContain(alias);
+      expect(output).not.toContain(source);
+    } finally {
+      rmSync(aliasRoot, { recursive: true, force: true });
+      rmSync(source, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an oversized direct file before reading or mutating import state', async () => {
+    const source = mkdtempSync(join(tmpdir(), 'velo-cli-oversized-'));
+    try {
+      const name = 'Outdoor Cycling-Heart Rate-20390101_010101.csv';
+      const path = join(source, name);
+      writeFileSync(path, '');
+      truncateSync(path, DEFAULT_MAX_GROUP_BYTES + 1);
+
+      expect(await main(['import', path, '--data-dir', dataDir])).toBe(1);
+      expect(workoutCount()).toBe(0);
+      const output = JSON.stringify([
+        ...vi.mocked(console.log).mock.calls,
+        ...vi.mocked(console.error).mock.calls,
+      ]);
+      expect(output).toContain('Import failed: import_failed');
+      expect(output).not.toContain(name);
+      expect(output).not.toContain(source);
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+    }
   });
 
   it('reports not-found (exit 1) for delete/repair on an unknown id', async () => {

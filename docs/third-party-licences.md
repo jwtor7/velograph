@@ -8,7 +8,7 @@ not grant any right to use Velograph itself.
 
 [`third-party-licenses.json`](../third-party-licenses.json) is the reviewed,
 machine-readable inventory. Each entry pins the package or embedded component
-name, exact version, declared and selected SPDX identifiers, runtime scope,
+name, exact version, declared and selected SPDX identifiers, API/CLI/web runtime scope,
 authoritative source file, normalized text byte count, and SHA-256. The
 deduplicated normalized texts live in
 [`third_party_licenses/`](../third_party_licenses/), and
@@ -17,7 +17,8 @@ deterministically from those two inputs.
 
 The web package inventory deliberately covers its complete production
 dependency graph. This includes a facade or transitive module even when the
-current Rollup build tree-shakes all of its bytes. Two contributions require
+current Rollup build tree-shakes all of its bytes. Leaflet `1.9.4` is an
+unconditional required runtime/artifact dependency in this inventory. Two contributions require
 additional evidence:
 
 - Vite injects its module-preload polyfill into the browser bundle even though
@@ -26,7 +27,7 @@ additional evidence:
   hashes every emitted JavaScript, stylesheet, font, and HTML file. The
   artifact gate verifies that complete file set plus the compiled polyfill and
   includes Vite's authoritative installed notice file.
-- `better-sqlite3` embeds SQLite. The workspace gate extracts SQLite's
+- `better-sqlite3` embeds SQLite in both Node runtimes. The workspace gate extracts SQLite's
   `blessing` text and exact version from the installed amalgamation header. The
   production-deployment gate also verifies that the retained native addon
   loads and reports the reviewed SQLite version.
@@ -59,7 +60,7 @@ deployment, follows nested package links, verifies every physically retained
 production package and the native SQLite evidence, then reconstructs the final
 web artifact from image layers and requires exact notices at both
 `/app/api/THIRD_PARTY_NOTICES.md` and
-`/app/web/dist/THIRD_PARTY_NOTICES.md` in each final image platform.
+`/app/api/dist/web/THIRD_PARTY_NOTICES.md` in each final image platform.
 
 The canonical notice covers application-owned dependencies. The final image
 also retains the official Node distribution licence at `/usr/local/LICENSE`

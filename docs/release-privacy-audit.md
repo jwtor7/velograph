@@ -49,6 +49,13 @@ completed. Any different archive or development package fails the build. One
 locked public `bindings@1.5.0` source comment has a hash-gated false-positive
 waiver; changed bytes are scanned normally.
 
+Worktree, staged, and history failures identify entries with per-process salted
+opaque digests rather than raw paths because a Health Auto Export-shaped
+filename can itself contain sensitive activity and time evidence. A handle is
+stable only within one report, preventing cross-run correlation or practical
+date/time dictionary guessing. Use the rule and line to locate candidates
+locally; never paste candidate paths into public CI notes.
+
 The history command walks all refs available locally. CI checks out complete
 history before running it. For a full forensic audit, fetch every retained
 branch/tag and audit the repository mirror; refs deleted from every available
@@ -57,7 +64,8 @@ remote cannot be rediscovered by a normal checkout.
 ## CI workflow
 
 `release-governance.yml` performs the worktree/history audit, a native image
-build followed by application-layer audit, and an independent
+build followed by application-layer audit and a synthetic published-ingress
+smoke test with clean shutdown, and an independent
 multi-architecture Buildx build with SBOM/provenance attestations. CI audits
 that exact OCI archive, records its SHA-256 plus image index, and retains the
 three files together for 14 days. CI does not publish an image or mount source
@@ -69,7 +77,7 @@ including whiteouts and file/directory replacements. They re-verify the final
 web artifact's complete hashed file set and package provenance, require the
 native Node and `tini` notices, and require the canonical notice bytes at
 `/app/api/THIRD_PARTY_NOTICES.md` and
-`/app/web/dist/THIRD_PARTY_NOTICES.md`. A notice that existed only in an
+`/app/api/dist/web/THIRD_PARTY_NOTICES.md`. A notice that existed only in an
 overwritten layer does not pass.
 
 ## Operator checklist

@@ -38,8 +38,10 @@ The supported Compose configuration has one service and one Docker-managed
 local data volume. The API stays on the container loopback interface. A tiny
 in-container HTTP relay is needed because Docker port forwarding cannot reach a
 process bound to that interface directly; it rewrites the public loopback
-Host/Origin to the internal loopback API and is published only as
-`127.0.0.1:5123` on the host.
+Host/Origin to the internal loopback API. The image relay itself defaults to
+container loopback, making bare wildcard Docker publication inert. Supported
+Compose explicitly opts the relay into the container network only while
+publishing it as `127.0.0.1:5123` on the host.
 
 The runtime filesystem is read-only except for the data volume and a bounded
 temporary filesystem. Capabilities are dropped and privilege escalation is
@@ -55,8 +57,9 @@ fixtures, and Git metadata. No image is an acceptable backup of user data.
 
 Before public release, retain the CI run links or equivalent local evidence for:
 
-1. clean frozen-lockfile verification on Node 20.19 and Node 26, including a
-   packaged web-artifact audit on the minimum runtime;
+1. clean frozen-lockfile verification on Node 20.19 and Node 26, including
+   deterministic runtime builds, audited packaged web evidence, and clean-installed
+   API/CLI tarballs on both runtimes;
 2. deterministic tests, typecheck, lint, formatting, and worktree privacy scan;
 3. all-ref Git-history privacy audit, including the release commit and tags;
 4. multi-architecture (`linux/amd64`, `linux/arm64`) build with SBOM and
@@ -65,8 +68,10 @@ Before public release, retain the CI run links or equivalent local evidence for:
    archive checksum and platform manifest digests; and
 6. a clean runtime dependency gate, exact final web file/package evidence,
    byte-exact application notices, and native Node/`tini` notices in every
-   image platform; and
-7. independent review of the SBOM, dependencies, project licence status, and this
+   image platform;
+7. a native image smoke test through published loopback ingress, Docker healthy
+   state, dual-child supervision, and clean coordinated shutdown; and
+8. independent review of the SBOM, dependencies, project licence status, and this
    threat model.
 
 Do not mark a release secure solely because a local build succeeds. The exact

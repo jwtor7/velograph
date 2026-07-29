@@ -13,12 +13,19 @@ is pre-1.0, and for the release procedure.
 
 - **Production API and CLI packages** now run from checked-in esbuild bundles instead of
   TypeScript source. The API package contains the complete offline web build, and both packages
-  carry byte-identical migrations and dependency notices. Clean-install verifiers exercise
+  carry byte-identical migrations and dependency notices. The API uses the audited web packager
+  for local builds and tarball prepack, so its embedded client retains exact file hashes,
+  package-module evidence, and canonical notices; its only external runtime dependencies are
+  pinned to the exact reviewed versions. Clean-install verifiers exercise
   import, repair, backup, restore, web assets, health/version reporting, migration adoption,
   signal shutdown, and value-free failures on Node 20 and 26. The local app supervisor now
   proves health, PID, and command identity before declaring readiness or signaling a process,
-  rejects malformed host/port configuration before opening storage, and cleans up its exact
-  child on startup failure or timeout (#11).
+  rejects malformed host/port configuration before opening storage, cleans up its exact child
+  on startup failure or timeout, and routes detached output through an owner-only sink that keeps
+  only the current and one previous hard-capped generation while rejecting symlink, replacement,
+  or non-regular log targets. API builds, prepack, and local lifecycle commands share one
+  direct Node packaging orchestrator, so development tests preserve the canonical web notice and
+  module evidence and no lifecycle build recursively resolves a package-manager shim (#11).
 - **Portable, self-verifying backups.** Every new SQLite backup carries a versioned manifest with
   the Velograph app version, current schema migration, included/excluded categories, and
   deterministic SHA-256 table checksums. Restore verifies the manifest, checksums, SQLite
@@ -98,10 +105,15 @@ is pre-1.0, and for the release procedure.
   (the same guard `VELO_DATA_DIR` and database backups use). New endpoints:
   `POST /api/import/path/inventory` (preview) and `POST /api/import/path` (import), both
   loopback-only with the same CSRF header and hardened headers as every other mutating route.
-  Folder drag-and-drop (`webkitGetAsEntry`) reads a dropped folder's files into the existing
-  multi-file list, since browsers do not expose a dropped folder's real filesystem path to a
-  page — only pasting the path does. The existing multi-file picker and loose-file
-  drag-and-drop are unchanged (#51).
+  Folder drag-and-drop (`webkitGetAsEntry`) progressively uses a local desktop runtime's
+  nonstandard absolute `File.path` only when every dropped file maps to one root through an exact,
+  independently built relative suffix. A verified root populates the path field and immediately
+  starts the same disk-backed preview; standard browsers, absent paths, and inconsistent roots
+  visibly fall back to the bounded loose-file list. Virtual `entry.fullPath` values are never
+  trusted as filesystem paths. CLI directory imports now use the same bounded recursive planner
+  and lazy, identity-revalidated readers; symbolic input paths fail closed, direct files have
+  descriptor/identity and size checks, and quarantine summaries expose codes and counts without
+  source filenames (#51).
 - **`pnpm app:dev`**: the foreground counterpart to `app:start` — builds the web client,
   runs the API in the foreground of the current terminal, opens the browser once it answers,
   and shuts down cleanly on Ctrl-C (SIGINT) or SIGTERM. Shutdown is redundant on purpose: the
@@ -112,11 +124,9 @@ is pre-1.0, and for the release procedure.
   forwards SIGTERM to the child and force-kills it after a grace period as a second layer.
   For the case neither of those can help — the wrapper is SIGKILLed, crashes, or a shell/shim
   around it swallows the signal instead of forwarding it — the API independently polls its
-  spawning process's liveness and shuts itself down the moment it's gone, so a killed wrapper
-  can never leave the port held. Verified directly: a real pty-delivered Ctrl-C, a `SIGTERM`
-  to the wrapper, and a `SIGKILL` to the wrapper were each confirmed (via `lsof`) to leave the
-  port free with no process alive. One command starts everything; killing it — by any of
-  these means — tears everything down. The background commands
+  spawning process's liveness and shuts itself down when it's gone. Automated lifecycle and
+  parent-death regressions cover signal forwarding, bounded escalation, child cleanup, and
+  listener release without claiming an unretained manual PTY result. The background commands
   (`app:start`/`app:stop`/`app:status`/`app:restart`) are unchanged and remain the right
   choice for a server that should outlive the current shell (#51).
 - **Release governance and portable container delivery**: a loopback-only
@@ -132,13 +142,16 @@ is pre-1.0, and for the release procedure.
   client and API production deployment. Security reporting, contribution
   rules, threat model, privacy incident response, and release audit procedures
   are documented. A fail-closed runtime licence gate now verifies exact
-  web/API dependency closures, installed SPDX metadata and authoritative
+  web/API/CLI dependency closures, installed SPDX metadata and authoritative
   texts, Vite and embedded SQLite evidence, all emitted browser file hashes
   and package provenance, canonical notices in browser/API artifacts, final
   web-artifact lineage, and native Node/`tini` notice placement for every
-  container platform;
-  selecting an open-source licence for Velograph remains an explicit
-  maintainer decision (#60).
+  container platform. The container supervises both the API and ingress proxy, probes health
+  through published ingress, allows 25 seconds for coordinated shutdown, and is smoke-tested
+  in CI with an empty synthetic data mount. The image relay defaults to container loopback; the
+  supported Compose and CI paths explicitly enable container-network ingress only alongside a
+  loopback-only host publication. The packaged API web tree is the sole runtime copy;
+  selecting a project licence for Velograph remains an explicit maintainer decision.
 - **Local server lifecycle commands**: `pnpm app:start`, `app:stop`, `app:status`, and
   `app:restart`. `app:start` builds the web client, refuses to start when a server already
   holds the port, and waits for the API to actually answer before reporting success.
@@ -233,8 +246,16 @@ is pre-1.0, and for the release procedure.
 - **AI insight output now fails closed against its declared schema and cited evidence.**
   Runtime validation rejects unexpected root, section, and finding properties with value-free
   errors, and numeric claims can match only facts authorized by the finding's cited metric IDs.
+  Explicit textual units must also match the cited fact's canonical unit, so equal values from
+  seconds, heart rate, distance, or another dimension cannot validate each other.
   Explicit zone-share percentage representations remain supported without allowing unrelated
   metrics with colliding values to validate a claim (#34, #35).
+- **Privacy gate failures no longer republish sensitive filenames.** Worktree, staged, and
+  all-ref history reports and the generated-runtime verifier now use per-run salted opaque file
+  handles while retaining the value-free rule and line needed for local investigation. The
+  handles remain consistent only within one report and cannot be correlated or
+  dictionary-guessed across public CI runs. Web licence-evidence mismatches omit output paths,
+  and CLI quarantine output likewise emits only a stable code and count.
 
 - **CSV inputs are bounded, kind-checked, converted, and versioned.** `hae-csv-v4` requires the
   filename metric label to agree with the recognized metric or route headers before any row is

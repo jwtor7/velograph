@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 // apps/cli/src/index.ts
-import { readFileSync as readFileSync2, readdirSync as readdirSync2, statSync as statSync2 } from "node:fs";
-import { basename as basename3, join as join5 } from "node:path";
-import { pathToFileURL } from "node:url";
+import { closeSync as closeSync3, fstatSync as fstatSync3, lstatSync as lstatSync5, openSync as openSync3, readSync as readSync2 } from "node:fs";
+import { basename as basename3 } from "node:path";
+import { pathToFileURL as pathToFileURL2 } from "node:url";
 
 // packages/db/src/database.ts
 import DatabaseConstructor from "better-sqlite3";
@@ -796,7 +796,7 @@ function loadWorkoutData(db, workoutId) {
     });
     metrics[key] = [...metrics[key] ?? [], ...samples].sort((a, b) => a.t - b.t);
   }
-  const route = [];
+  const route2 = [];
   const routeRows = db.prepare("SELECT id FROM routes WHERE workout_id = ? ORDER BY id").all(workoutId);
   const loadRoutePoints = db.prepare(
     `SELECT segment, t_utc, lat, lon, ele_m, speed_ms, course_deg
@@ -807,7 +807,7 @@ function loadWorkoutData(db, workoutId) {
     let currentSeg;
     for (const p of points) {
       if (p.segment !== currentSeg) {
-        route.push({ points: [] });
+        route2.push({ points: [] });
         currentSeg = p.segment;
       }
       const point = {
@@ -818,13 +818,13 @@ function loadWorkoutData(db, workoutId) {
       if (p.ele_m != null) point.ele = p.ele_m;
       if (p.speed_ms != null) point.speed = p.speed_ms;
       if (p.course_deg != null) point.course = p.course_deg;
-      route[route.length - 1].points.push(point);
+      route2[route2.length - 1].points.push(point);
     }
   }
   return {
     workout: { id: w.id, type: w.type, startUtc: w.start_utc, endUtc: w.end_utc },
     metrics,
-    route
+    route: route2
   };
 }
 function saveAnalyticsSnapshot(db, row) {
@@ -854,6 +854,14 @@ function saveAnalyticsSnapshot(db, row) {
     }
     return "existing";
   })();
+}
+function getAnalyticsSnapshot(db, workoutId, formulaVersion, settingsHash, inputHash) {
+  const r = db.prepare(
+    `SELECT result_json FROM analytics_snapshots
+       WHERE workout_id = ? AND scope = 'workout' AND formula_version = ?
+         AND settings_hash = ? AND input_hash = ?`
+  ).get(workoutId, formulaVersion, settingsHash, inputHash);
+  return r?.result_json;
 }
 
 // packages/db/src/backup.ts
@@ -2238,6 +2246,11 @@ async function restoreDatabaseWithReport(liveDb, dbPath, backupPath, options = {
   }
 }
 
+// apps/api/src/server.ts
+import { createServer } from "node:http";
+import { existsSync as existsSync4, readFileSync as readFileSync2, statSync as statSync4 } from "node:fs";
+import { extname, join as join6, normalize } from "node:path";
+
 // packages/importers/src/csv.ts
 var DEFAULT_CSV_LIMITS = {
   maxBytes: 32 * 1024 * 1024,
@@ -3606,12 +3619,75 @@ var ImportAbortedError = class extends Error {
 function throwIfImportAborted(signal) {
   if (signal?.aborted) throw new ImportAbortedError();
 }
-function runImport(db, inputFiles, opts = {}) {
-  return runImportGroups(db, [() => inputFiles], opts);
-}
 function runImportGroups(db, inputGroups, opts = {}) {
   const steps = runImportSteps(db, inputGroups, opts);
   return new Repository(db).transaction(() => consumeImportSteps(steps));
+}
+async function runImportCancellable(db, inputFiles, opts = {}) {
+  return runImportGroupsCancellable(db, [() => inputFiles], opts);
+}
+async function runImportGroupsCancellable(db, inputGroups, opts = {}) {
+  throwIfImportAborted(opts.signal);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const steps = runImportSteps(db, inputGroups, opts);
+    for (; ; ) {
+      const step = steps.next();
+      if (step.done) {
+        db.exec("COMMIT");
+        return step.value;
+      }
+      await new Promise((resolve5) => setTimeout(resolve5, 0));
+    }
+  } catch (err) {
+    if (db.inTransaction) db.exec("ROLLBACK");
+    throw err;
+  }
+}
+async function preflightImportCancellable(db, inputFiles, opts = {}) {
+  return preflightImportGroupsCancellable(db, [() => inputFiles], opts);
+}
+async function preflightImportGroupsCancellable(db, inputGroups, opts = {}) {
+  throwIfImportAborted(opts.signal);
+  const records = [];
+  const recordByOrigin = /* @__PURE__ */ new WeakMap();
+  function* observedGroups() {
+    for (const loadGroup of inputGroups) {
+      yield () => loadGroup().map((file) => {
+        const wrapped = { name: file.name, data: file.data };
+        const record = {
+          name: wrapped.name,
+          sizeBytes: wrapped.data.byteLength,
+          outcomes: []
+        };
+        records.push(record);
+        recordByOrigin.set(wrapped, record);
+        return wrapped;
+      });
+    }
+  }
+  const internalOptions = {
+    ...opts,
+    onFileOutcome: (outcome) => {
+      recordByOrigin.get(outcome.origin)?.outcomes.push(outcome);
+    }
+  };
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const steps = runImportSteps(db, observedGroups(), internalOptions);
+    for (; ; ) {
+      const step = steps.next();
+      if (step.done) break;
+      await new Promise((resolve5) => setTimeout(resolve5, 0));
+    }
+    db.exec("ROLLBACK");
+  } catch (error) {
+    if (db.inTransaction) db.exec("ROLLBACK");
+    throw error;
+  }
+  return records.map(
+    (record) => summarizePreflightItem(record.name, record.sizeBytes, record.outcomes)
+  );
 }
 function consumeImportSteps(steps) {
   for (; ; ) {
@@ -3892,6 +3968,43 @@ function preflightClassificationForQuarantine(code) {
   if (code === "unsupported_file_type") return "unsupported";
   return "invalid";
 }
+function summarizePreflightItem(name, sizeBytes, observed) {
+  const outcomes = /* @__PURE__ */ new Map();
+  for (const item of observed) {
+    const key = `${item.classification}\0${item.code ?? ""}\0${item.detectedType ?? ""}`;
+    const existing = outcomes.get(key);
+    if (existing) {
+      existing.count++;
+    } else {
+      outcomes.set(key, {
+        classification: item.classification,
+        code: item.code,
+        detectedType: item.detectedType,
+        count: 1
+      });
+    }
+  }
+  if (outcomes.size === 0) {
+    outcomes.set("unsupported\0unsupported_file_type\0", {
+      classification: "unsupported",
+      code: "unsupported_file_type",
+      detectedType: null,
+      count: 1
+    });
+  }
+  const summarized = [...outcomes.values()];
+  const classifications = new Set(summarized.map((outcome) => outcome.classification));
+  const detectedTypes = new Set(
+    summarized.map((outcome) => outcome.detectedType).filter((value) => value !== null)
+  );
+  return {
+    name,
+    sizeBytes,
+    classification: classifications.size === 1 ? summarized[0].classification : "mixed",
+    detectedType: detectedTypes.size === 1 ? [...detectedTypes][0] : null,
+    outcomes: summarized
+  };
+}
 function* parseFileSteps(file, timeZone, signal) {
   const lower = file.name.toLowerCase();
   if (lower.endsWith(".gpx")) {
@@ -3996,8 +4109,581 @@ function sanitizeName(name) {
 }
 
 // packages/importers/src/folder.ts
+import {
+  closeSync as closeSync2,
+  fstatSync as fstatSync2,
+  lstatSync as lstatSync3,
+  openSync as openSync2,
+  opendirSync,
+  readSync,
+  realpathSync as realpathSync3,
+  statSync as statSync2
+} from "node:fs";
+import { join as join5, relative, resolve as resolve3, sep } from "node:path";
+var DEFAULT_MAX_FILES = 5e3;
 var DEFAULT_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
 var DEFAULT_MAX_GROUP_BYTES = 64 * 1024 * 1024;
+var DEFAULT_MAX_VISITED_ENTRIES = 2e4;
+var DEFAULT_MAX_DIRECTORIES = 2e3;
+var DEFAULT_MAX_DEPTH = 32;
+var IMPORTABLE_EXTENSION = /\.(csv|gpx|zip)$/i;
+var PLANNED_ENTRY_CHANGE_CODES = /* @__PURE__ */ new Set(["EISDIR", "ELOOP", "ENOENT", "ENOTDIR", "ESTALE"]);
+var FolderImportError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.name = "FolderImportError";
+    this.code = code;
+  }
+};
+var toPosix = (path) => path.split(sep).join("/");
+function identityOf(stats) {
+  return {
+    device: stats.dev,
+    inode: stats.ino,
+    sizeBytes: stats.size,
+    modifiedMs: stats.mtimeMs,
+    changedMs: stats.ctimeMs
+  };
+}
+function sameIdentity(expected, actual, includeContentMetadata = true) {
+  return expected.device === actual.device && expected.inode === actual.inode && (!includeContentMetadata || expected.sizeBytes === actual.sizeBytes && expected.modifiedMs === actual.modifiedMs && expected.changedMs === actual.changedMs);
+}
+function checkNotInsideCheckout(dir) {
+  try {
+    guardAgainstCheckout(dir);
+  } catch (err) {
+    throw new FolderImportError(
+      "inside_checkout",
+      err instanceof Error ? err.message : "path resolves inside a git checkout"
+    );
+  }
+}
+function insideCanonicalRoot(canonicalRoot, candidate) {
+  return candidate === canonicalRoot || candidate.startsWith(canonicalRoot + sep);
+}
+function isPlannedEntryChange(error) {
+  return error !== null && typeof error === "object" && "code" in error && typeof error.code === "string" && PLANNED_ENTRY_CHANGE_CODES.has(error.code);
+}
+function walkImportFolder(rootPath, opts = {}, testHooks = {}) {
+  const maxFiles = opts.maxFiles ?? DEFAULT_MAX_FILES;
+  const maxTotalBytes = opts.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
+  const maxVisitedEntries = opts.maxVisitedEntries ?? DEFAULT_MAX_VISITED_ENTRIES;
+  const maxDirectories = opts.maxDirectories ?? DEFAULT_MAX_DIRECTORIES;
+  const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
+  const root = resolve3(rootPath);
+  checkNotInsideCheckout(root);
+  let rootStats;
+  try {
+    rootStats = statSync2(root);
+  } catch {
+    throw new FolderImportError("path_not_found", "path does not exist");
+  }
+  if (!rootStats.isDirectory()) {
+    throw new FolderImportError("not_a_directory", "path is not a directory");
+  }
+  let canonicalRoot;
+  try {
+    canonicalRoot = realpathSync3(root);
+  } catch {
+    throw new FolderImportError("path_not_found", "path does not exist");
+  }
+  checkNotInsideCheckout(canonicalRoot);
+  const rootIdentity = identityOf(rootStats);
+  const rootExpectation = {
+    canonicalPath: canonicalRoot,
+    identity: rootIdentity,
+    followSymbolicPath: true
+  };
+  const manifestEntries = [];
+  const files = [];
+  const skipped = [];
+  let visitedEntries = 0;
+  let visitedDirectories = 0;
+  let totalBytes = 0;
+  let truncated = false;
+  let traversalStopped = false;
+  const relativeToRoot = (path) => toPosix(relative(root, path)) || ".";
+  const directoryChanged = () => new FolderImportError("path_changed", "folder changed during traversal");
+  function readDirectoryState(dirPath, followSymbolicPath) {
+    try {
+      const canonicalBefore = realpathSync3(dirPath);
+      const stats = followSymbolicPath ? statSync2(dirPath) : lstatSync3(dirPath);
+      const canonicalAfter = realpathSync3(dirPath);
+      if (canonicalBefore !== canonicalAfter || !stats.isDirectory() || !insideCanonicalRoot(canonicalRoot, canonicalAfter)) {
+        throw directoryChanged();
+      }
+      return {
+        canonicalPath: canonicalAfter,
+        identity: identityOf(stats),
+        followSymbolicPath
+      };
+    } catch (err) {
+      if (err instanceof FolderImportError) throw err;
+      throw directoryChanged();
+    }
+  }
+  function revalidateDirectory(dirPath, expected) {
+    const actual = readDirectoryState(dirPath, expected.followSymbolicPath);
+    if (actual.canonicalPath !== expected.canonicalPath || !sameIdentity(expected.identity, actual.identity, false)) {
+      throw directoryChanged();
+    }
+  }
+  function captureNestedDirectory(dirPath, entryStats) {
+    const captured = readDirectoryState(dirPath, false);
+    if (!sameIdentity(identityOf(entryStats), captured.identity, false)) {
+      throw directoryChanged();
+    }
+    return captured;
+  }
+  function addManifestEntry(fullPath, kind, stats, target) {
+    manifestEntries.push({
+      relativePath: relativeToRoot(fullPath),
+      kind,
+      ...identityOf(stats),
+      ...target ? {
+        canonicalTarget: target.canonicalPath,
+        targetIdentity: identityOf(target.stats)
+      } : {}
+    });
+  }
+  function addFile(fullPath, symbolicLink, target) {
+    let canonicalPath;
+    let targetStats;
+    try {
+      canonicalPath = target?.canonicalPath ?? realpathSync3(fullPath);
+      targetStats = target?.stats ?? statSync2(fullPath);
+    } catch {
+      skipped.push({ relativePath: relativeToRoot(fullPath), reason: "unreadable" });
+      return;
+    }
+    if (!insideCanonicalRoot(canonicalRoot, canonicalPath)) {
+      skipped.push({ relativePath: relativeToRoot(fullPath), reason: "symlink_outside_tree" });
+      return;
+    }
+    if (!targetStats.isFile()) {
+      skipped.push({ relativePath: relativeToRoot(fullPath), reason: "not_a_regular_file" });
+      return;
+    }
+    if (files.length >= maxFiles) {
+      skipped.push({ relativePath: relativeToRoot(fullPath), reason: "max_files_exceeded" });
+      truncated = true;
+      return;
+    }
+    if (totalBytes + targetStats.size > maxTotalBytes) {
+      skipped.push({ relativePath: relativeToRoot(fullPath), reason: "max_total_bytes_exceeded" });
+      truncated = true;
+      return;
+    }
+    totalBytes += targetStats.size;
+    files.push({
+      relativePath: relativeToRoot(fullPath),
+      absolutePath: fullPath,
+      canonicalPath,
+      symbolicLink,
+      ...identityOf(targetStats)
+    });
+  }
+  function stopForEntryLimit(fullPath) {
+    skipped.push({ relativePath: relativeToRoot(fullPath), reason: "max_entries_exceeded" });
+    truncated = true;
+    traversalStopped = true;
+  }
+  function walk(dirPath, depth, expected) {
+    if (traversalStopped) return;
+    if (depth > maxDepth) {
+      skipped.push({ relativePath: relativeToRoot(dirPath), reason: "max_depth_exceeded" });
+      truncated = true;
+      return;
+    }
+    if (visitedDirectories >= maxDirectories) {
+      skipped.push({
+        relativePath: relativeToRoot(dirPath),
+        reason: "max_directories_exceeded"
+      });
+      truncated = true;
+      return;
+    }
+    revalidateDirectory(dirPath, expected);
+    testHooks.beforeDirectoryOpen?.(relativeToRoot(dirPath));
+    revalidateDirectory(dirPath, expected);
+    let dir;
+    try {
+      dir = opendirSync(dirPath);
+      visitedDirectories++;
+    } catch (err) {
+      if (isPlannedEntryChange(err)) throw directoryChanged();
+      skipped.push({ relativePath: relativeToRoot(dirPath), reason: "unreadable" });
+      return;
+    }
+    try {
+      for (; ; ) {
+        const entry = dir.readSync();
+        if (!entry) break;
+        const fullPath = join5(dirPath, entry.name);
+        if (visitedEntries >= maxVisitedEntries) {
+          stopForEntryLimit(fullPath);
+          return;
+        }
+        visitedEntries++;
+        let entryStats;
+        try {
+          entryStats = lstatSync3(fullPath);
+        } catch {
+          skipped.push({ relativePath: relativeToRoot(fullPath), reason: "unreadable" });
+          continue;
+        }
+        if (entryStats.isSymbolicLink()) {
+          let targetStats;
+          let canonicalTarget;
+          try {
+            canonicalTarget = realpathSync3(fullPath);
+            targetStats = statSync2(fullPath);
+            addManifestEntry(fullPath, "symlink", entryStats, {
+              canonicalPath: canonicalTarget,
+              stats: targetStats
+            });
+          } catch {
+            addManifestEntry(fullPath, "symlink", entryStats);
+            skipped.push({ relativePath: relativeToRoot(fullPath), reason: "unreadable" });
+            continue;
+          }
+          if (!insideCanonicalRoot(canonicalRoot, canonicalTarget)) {
+            skipped.push({
+              relativePath: relativeToRoot(fullPath),
+              reason: "symlink_outside_tree"
+            });
+            continue;
+          }
+          if (targetStats.isDirectory()) {
+            skipped.push({
+              relativePath: relativeToRoot(fullPath),
+              reason: "symlink_directory_skipped"
+            });
+            continue;
+          }
+          if (!targetStats.isFile()) {
+            skipped.push({ relativePath: relativeToRoot(fullPath), reason: "not_a_regular_file" });
+            continue;
+          }
+          if (!IMPORTABLE_EXTENSION.test(entry.name)) {
+            skipped.push({
+              relativePath: relativeToRoot(fullPath),
+              reason: "unsupported_file_type"
+            });
+            continue;
+          }
+          addFile(fullPath, true, { canonicalPath: canonicalTarget, stats: targetStats });
+          continue;
+        }
+        if (entryStats.isDirectory()) {
+          const childExpectation = captureNestedDirectory(fullPath, entryStats);
+          addManifestEntry(fullPath, "directory", entryStats);
+          walk(fullPath, depth + 1, childExpectation);
+          if (traversalStopped) return;
+          continue;
+        }
+        if (entryStats.isFile()) {
+          addManifestEntry(fullPath, "file", entryStats);
+          if (IMPORTABLE_EXTENSION.test(entry.name)) {
+            addFile(fullPath, false);
+          } else {
+            skipped.push({
+              relativePath: relativeToRoot(fullPath),
+              reason: "unsupported_file_type"
+            });
+          }
+          continue;
+        }
+        addManifestEntry(fullPath, "other", entryStats);
+        skipped.push({ relativePath: relativeToRoot(fullPath), reason: "not_a_regular_file" });
+      }
+    } finally {
+      try {
+        dir.closeSync();
+      } catch {
+      }
+      revalidateDirectory(dirPath, expected);
+    }
+  }
+  walk(root, 0, rootExpectation);
+  files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  manifestEntries.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  skipped.sort(
+    (a, b) => a.relativePath.localeCompare(b.relativePath) || a.reason.localeCompare(b.reason)
+  );
+  return {
+    root,
+    canonicalRoot,
+    rootDevice: rootIdentity.device,
+    rootInode: rootIdentity.inode,
+    manifestEntries,
+    files,
+    skipped,
+    visitedEntries,
+    visitedDirectories,
+    totalBytes,
+    truncated
+  };
+}
+function fileName(file) {
+  return file.relativePath.split("/").pop() ?? file.relativePath;
+}
+function groupFor(file) {
+  const name = fileName(file);
+  if (/\.zip$/i.test(name)) {
+    return {
+      groupKey: `zip:${file.relativePath}`,
+      kind: "zip_archive"
+    };
+  }
+  const info = parseHaeFilename(name);
+  if (!info) {
+    return {
+      groupKey: `unrecognized:${file.relativePath}`,
+      kind: "unrecognized_filename"
+    };
+  }
+  const stampHint = info.stampHint ?? "";
+  return {
+    groupKey: `ride:${info.workoutType}:${stampHint}`,
+    kind: "ride",
+    workoutType: info.workoutType,
+    stampHint
+  };
+}
+function compareGroups(a, b) {
+  const rank = (group) => group.kind === "ride" ? 0 : group.kind === "zip_archive" ? 1 : 2;
+  const rankDifference = rank(a) - rank(b);
+  if (rankDifference !== 0) return rankDifference;
+  if (a.kind === "ride" && b.kind === "ride") {
+    const stampDifference = (a.stampHint ?? "").localeCompare(b.stampHint ?? "");
+    if (stampDifference !== 0) return stampDifference;
+    const typeDifference = (a.workoutType ?? "").localeCompare(b.workoutType ?? "");
+    if (typeDifference !== 0) return typeDifference;
+  }
+  return a.groupKey.localeCompare(b.groupKey);
+}
+function planFolderImport(rootPath, opts = {}) {
+  const walk = walkImportFolder(rootPath, opts);
+  const maxGroupBytes = opts.maxGroupBytes ?? DEFAULT_MAX_GROUP_BYTES;
+  const limits = {
+    maxFiles: opts.maxFiles ?? DEFAULT_MAX_FILES,
+    maxTotalBytes: opts.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES,
+    maxGroupBytes,
+    maxVisitedEntries: opts.maxVisitedEntries ?? DEFAULT_MAX_VISITED_ENTRIES,
+    maxDirectories: opts.maxDirectories ?? DEFAULT_MAX_DIRECTORIES,
+    maxDepth: opts.maxDepth ?? DEFAULT_MAX_DEPTH
+  };
+  const byKey = /* @__PURE__ */ new Map();
+  for (const file of walk.files) {
+    const identity = groupFor(file);
+    const group = byKey.get(identity.groupKey) ?? {
+      ...identity,
+      files: [],
+      totalBytes: 0
+    };
+    group.files.push(file);
+    group.totalBytes += file.sizeBytes;
+    byKey.set(group.groupKey, group);
+  }
+  const skipped = [...walk.skipped];
+  const groups = [];
+  let truncated = walk.truncated;
+  for (const group of byKey.values()) {
+    group.files.sort((a, b) => {
+      const nameDifference = fileName(a).localeCompare(fileName(b));
+      return nameDifference || a.relativePath.localeCompare(b.relativePath);
+    });
+    if (group.totalBytes > maxGroupBytes) {
+      truncated = true;
+      for (const file of group.files) {
+        skipped.push({
+          relativePath: file.relativePath,
+          reason: "max_group_bytes_exceeded"
+        });
+      }
+      continue;
+    }
+    groups.push(group);
+  }
+  groups.sort(compareGroups);
+  return {
+    root: walk.root,
+    canonicalRoot: walk.canonicalRoot,
+    rootDevice: walk.rootDevice,
+    rootInode: walk.rootInode,
+    manifestEntries: walk.manifestEntries,
+    groups,
+    skipped,
+    visitedEntries: walk.visitedEntries,
+    visitedDirectories: walk.visitedDirectories,
+    totalFiles: groups.reduce((sum, group) => sum + group.files.length, 0),
+    totalBytes: groups.reduce((sum, group) => sum + group.totalBytes, 0),
+    truncated,
+    limits
+  };
+}
+function planConfirmationToken(plan) {
+  return sha256Hex(
+    stableStringify({
+      version: 1,
+      root: {
+        requested: plan.root,
+        canonical: plan.canonicalRoot,
+        device: plan.rootDevice,
+        inode: plan.rootInode
+      },
+      manifestEntries: plan.manifestEntries,
+      groups: plan.groups,
+      skipped: plan.skipped,
+      visitedEntries: plan.visitedEntries,
+      visitedDirectories: plan.visitedDirectories,
+      totalFiles: plan.totalFiles,
+      totalBytes: plan.totalBytes,
+      truncated: plan.truncated,
+      limits: plan.limits
+    })
+  );
+}
+function confirmFolderImportPlan(plan, token) {
+  if (!/^[a-f0-9]{64}$/.test(token) || token !== planConfirmationToken(plan)) {
+    throw new FolderImportError("path_changed", "folder changed after preview");
+  }
+  if (plan.truncated) {
+    throw new FolderImportError(
+      "folder_limits_exceeded",
+      "folder preview exceeded safe traversal limits"
+    );
+  }
+}
+function previewFolderImportPlan(plan, preflight = [], preflightComplete = false) {
+  const rides = [];
+  const ungrouped = [];
+  for (const group of plan.groups) {
+    if (group.kind === "ride") {
+      rides.push({
+        rideKey: `${group.workoutType ?? ""}:${group.stampHint ?? ""}`,
+        workoutType: group.workoutType ?? "",
+        stampHint: group.stampHint ?? "",
+        files: group.files.map((file) => {
+          const name = fileName(file);
+          const info = parseHaeFilename(name);
+          return {
+            relativePath: file.relativePath,
+            name,
+            sizeBytes: file.sizeBytes,
+            label: info.label,
+            format: name.toLowerCase().endsWith(".gpx") ? "gpx" : "csv"
+          };
+        })
+      });
+      continue;
+    }
+    for (const file of group.files) {
+      ungrouped.push({
+        relativePath: file.relativePath,
+        name: fileName(file),
+        sizeBytes: file.sizeBytes,
+        classification: group.kind
+      });
+    }
+  }
+  return {
+    rides,
+    ungrouped,
+    skipped: plan.skipped,
+    visitedEntries: plan.visitedEntries,
+    visitedDirectories: plan.visitedDirectories,
+    totalFiles: plan.totalFiles,
+    totalBytes: plan.totalBytes,
+    truncated: plan.truncated,
+    confirmationToken: planConfirmationToken(plan),
+    preflightComplete,
+    preflight: [...preflight]
+  };
+}
+function revalidateRoot(plan) {
+  try {
+    const canonicalRoot = realpathSync3(plan.root);
+    const stats = statSync2(plan.root);
+    if (canonicalRoot !== plan.canonicalRoot || !stats.isDirectory() || stats.dev !== plan.rootDevice || stats.ino !== plan.rootInode) {
+      throw new FolderImportError("path_changed", "folder changed after traversal");
+    }
+    checkNotInsideCheckout(canonicalRoot);
+  } catch (err) {
+    if (err instanceof FolderImportError) throw err;
+    throw new FolderImportError("path_changed", "folder changed after traversal");
+  }
+}
+function readExact(fd, sizeBytes) {
+  const data = Buffer.allocUnsafe(sizeBytes);
+  let offset = 0;
+  while (offset < sizeBytes) {
+    const count = readSync(fd, data, offset, sizeBytes - offset, offset);
+    if (count === 0) {
+      throw new FolderImportError("file_changed", "file changed during import");
+    }
+    offset += count;
+  }
+  const extra = Buffer.allocUnsafe(1);
+  if (readSync(fd, extra, 0, 1, sizeBytes) !== 0) {
+    throw new FolderImportError("file_changed", "file changed during import");
+  }
+  return data;
+}
+function readPlannedFile(plan, file) {
+  revalidateRoot(plan);
+  let fd;
+  try {
+    const linkStats = lstatSync3(file.absolutePath);
+    if (file.symbolicLink && !linkStats.isSymbolicLink() || !file.symbolicLink && !linkStats.isFile()) {
+      throw new FolderImportError("file_changed", "file changed after traversal");
+    }
+    const canonicalPath = realpathSync3(file.absolutePath);
+    if (canonicalPath !== file.canonicalPath || !insideCanonicalRoot(plan.canonicalRoot, canonicalPath)) {
+      throw new FolderImportError("file_changed", "file changed after traversal");
+    }
+    fd = openSync2(file.absolutePath, "r");
+    const before = fstatSync2(fd);
+    const beforeIdentity = identityOf(before);
+    if (!before.isFile() || !sameIdentity(file, beforeIdentity)) {
+      throw new FolderImportError("file_changed", "file changed after traversal");
+    }
+    const data = readExact(fd, file.sizeBytes);
+    const after = fstatSync2(fd);
+    if (!after.isFile() || !sameIdentity(beforeIdentity, identityOf(after))) {
+      throw new FolderImportError("file_changed", "file changed during import");
+    }
+    revalidateRoot(plan);
+    return { name: fileName(file), data };
+  } catch (err) {
+    if (err instanceof FolderImportError) throw err;
+    if (isPlannedEntryChange(err)) {
+      throw new FolderImportError("file_changed", "file changed after traversal");
+    }
+    throw new FolderImportError("file_unreadable", "file could not be read safely");
+  } finally {
+    if (fd !== void 0) {
+      try {
+        closeSync2(fd);
+      } catch {
+      }
+    }
+  }
+}
+function* readFolderFileGroups(plan) {
+  for (const group of plan.groups) {
+    yield () => {
+      revalidateRoot(plan);
+      const files = [];
+      for (const file of group.files) {
+        files.push(readPlannedFile(plan, file));
+      }
+      return files;
+    };
+  }
+}
 
 // packages/analytics/src/settings.ts
 var DEFAULT_ANALYTICS_SETTINGS = {
@@ -4194,15 +4880,15 @@ function intervalWeights(samples, from, to) {
     return Math.max(0, coveredTo - coveredFrom);
   });
 }
-function collectRouteSpeeds(route) {
+function collectRouteSpeeds(route2) {
   const speeds = [];
-  for (const seg of route) {
+  for (const seg of route2) {
     for (const p of seg.points) {
       if (p.speed != null && Number.isFinite(p.speed)) speeds.push(p.speed);
     }
   }
   if (speeds.length > 0) return speeds;
-  for (const seg of route) {
+  for (const seg of route2) {
     for (let i = 0; i < seg.points.length - 1; i++) {
       const a = seg.points[i];
       const b = seg.points[i + 1];
@@ -4240,10 +4926,10 @@ function unionDuration(intervals) {
   }
   return total + (to - from);
 }
-function routeWindowStats(route, thresholdMs, from, to) {
+function routeWindowStats(route2, thresholdMs, from, to) {
   const covered = [];
   const moving = [];
-  for (const seg of route) {
+  for (const seg of route2) {
     for (let i = 0; i < seg.points.length - 1; i++) {
       const a = seg.points[i];
       const b = seg.points[i + 1];
@@ -4260,11 +4946,11 @@ function routeWindowStats(route, thresholdMs, from, to) {
   }
   return { coveredMs: unionDuration(covered), movingMs: unionDuration(moving) };
 }
-function elevationProfile(route, hysteresisM) {
+function elevationProfile(route2, hysteresisM) {
   const eles = [];
   let gain = 0;
   let loss = 0;
-  for (const seg of route) {
+  for (const seg of route2) {
     const segmentEles = [];
     for (const p of seg.points) {
       if (p.ele != null) {
@@ -4518,12 +5204,43 @@ function parseAppSettings(value) {
   if (typeof timeZone !== "string" || !isValidTimeZone(timeZone)) return failAppSettings();
   return { ...analytics, timeZone };
 }
+function mergeAppSettings(current, patch) {
+  if (!isRecord2(patch)) return failAppSettings();
+  if (Object.keys(patch).some((key) => !APP_SETTING_KEYS.includes(key))) {
+    return failAppSettings();
+  }
+  return parseAppSettings({ ...current, ...patch });
+}
 function loadSettings(db) {
   const stored = new Repository(db).getSetting(SETTINGS_KEY);
   const defaults = { ...DEFAULT_ANALYTICS_SETTINGS, timeZone: systemTimeZone() };
   if (stored === void 0) return parseAppSettings(defaults);
   if (!isRecord2(stored)) return failAppSettings();
   return parseAppSettings({ ...defaults, ...stored });
+}
+function saveSettings(db, settings) {
+  const parsed = parseAppSettings(settings);
+  new Repository(db).setSetting(SETTINGS_KEY, parsed);
+  return parsed;
+}
+function getOrComputeAnalytics(db, workoutId, now) {
+  const input = loadWorkoutData(db, workoutId);
+  if (!input) return null;
+  const settings = loadSettings(db);
+  const settingsHash = sha256Hex(stableStringify(settings));
+  const inputHash = sha256Hex(stableStringify(input));
+  const cached = getAnalyticsSnapshot(db, workoutId, FORMULA_VERSION, settingsHash, inputHash);
+  if (cached) return JSON.parse(cached);
+  const result = computeRideAnalytics(input, settings);
+  saveAnalyticsSnapshot(db, {
+    workoutId,
+    formulaVersion: FORMULA_VERSION,
+    settingsHash,
+    inputHash,
+    resultJson: stableStringify(result),
+    createdAt: now
+  });
+  return result;
 }
 function repairWorkout(db, workoutId, now) {
   const repo = new Repository(db);
@@ -4549,18 +5266,1639 @@ function repairWorkout(db, workoutId, now) {
 }
 
 // apps/api/src/basemap.ts
+import { existsSync as existsSync3, lstatSync as lstatSync4, realpathSync as realpathSync4, statSync as statSync3 } from "node:fs";
+import { isAbsolute as isAbsolute2, resolve as resolve4 } from "node:path";
 import DatabaseConstructor3 from "better-sqlite3";
+var MAX_ZOOM = 22;
+var MAX_METADATA_ROWS = 256;
+var MAX_METADATA_NAME_BYTES = 128;
 var MAX_METADATA_VALUE_BYTES = 4 * 1024;
 var MAX_TILE_BYTES = 2 * 1024 * 1024;
+var EXPECTED_TILE_SIZE = 256;
+var DEFAULT_CACHE_ENTRIES = 128;
 var DEFAULT_CACHE_BYTES = 32 * 1024 * 1024;
+var TileCache = class {
+  #entries = /* @__PURE__ */ new Map();
+  #maxEntries;
+  #maxBytes;
+  #bytes = 0;
+  constructor(maxEntries, maxBytes) {
+    this.#maxEntries = Math.max(0, Math.floor(maxEntries));
+    this.#maxBytes = Math.max(0, Math.floor(maxBytes));
+  }
+  get(key) {
+    const value = this.#entries.get(key);
+    if (!value) return void 0;
+    this.#entries.delete(key);
+    this.#entries.set(key, value);
+    return value;
+  }
+  set(key, value) {
+    if (this.#maxEntries === 0 || value.data.byteLength > this.#maxBytes || value.data.byteLength > MAX_TILE_BYTES) {
+      return;
+    }
+    const existing = this.#entries.get(key);
+    if (existing) {
+      this.#bytes -= existing.data.byteLength;
+      this.#entries.delete(key);
+    }
+    this.#entries.set(key, value);
+    this.#bytes += value.data.byteLength;
+    while (this.#entries.size > this.#maxEntries || this.#bytes > this.#maxBytes) {
+      const oldestKey = this.#entries.keys().next().value;
+      if (oldestKey === void 0) break;
+      const oldest = this.#entries.get(oldestKey);
+      this.#entries.delete(oldestKey);
+      if (oldest) this.#bytes -= oldest.data.byteLength;
+    }
+  }
+  clear() {
+    this.#entries.clear();
+    this.#bytes = 0;
+  }
+};
+var BasemapService = class _BasemapService {
+  #manifest;
+  #ready;
+  #cache;
+  constructor(manifest, ready, options) {
+    this.#manifest = manifest;
+    this.#ready = ready;
+    this.#cache = new TileCache(
+      options.cacheEntries ?? DEFAULT_CACHE_ENTRIES,
+      options.cacheBytes ?? DEFAULT_CACHE_BYTES
+    );
+  }
+  static open(options = {}) {
+    if (!options.path) {
+      return new _BasemapService({ state: "not_configured" }, void 0, options);
+    }
+    const required = options.required ?? false;
+    if (!isAbsolute2(options.path)) {
+      return new _BasemapService({ state: "invalid" }, void 0, options);
+    }
+    if (!existsSync3(options.path)) {
+      return new _BasemapService(
+        required ? { state: "invalid" } : { state: "not_configured" },
+        void 0,
+        options
+      );
+    }
+    let database;
+    try {
+      const inputPath = resolve4(options.path);
+      const inputStat = lstatSync4(inputPath);
+      if (!inputStat.isFile() || inputStat.isSymbolicLink() || inputStat.nlink !== 1) {
+        throw new Error("invalid_basemap");
+      }
+      const canonicalPath = realpathSync4(inputPath);
+      if (canonicalPath !== inputPath) throw new Error("invalid_basemap");
+      if (guardAgainstCheckout(canonicalPath) !== canonicalPath) throw new Error("invalid_basemap");
+      database = new DatabaseConstructor3(canonicalPath, {
+        readonly: true,
+        fileMustExist: true,
+        timeout: 1e3
+      });
+      database.pragma("trusted_schema = OFF");
+      database.pragma("query_only = ON");
+      const openedPathStat = statSync3(canonicalPath);
+      if (!openedPathStat.isFile() || openedPathStat.nlink !== 1 || openedPathStat.dev !== inputStat.dev || openedPathStat.ino !== inputStat.ino) {
+        throw new Error("invalid_basemap");
+      }
+      const validated = validateDatabase(database);
+      const ready = {
+        database,
+        manifest: validated.manifest,
+        format: validated.format,
+        readTile: createTileReader(database)
+      };
+      return new _BasemapService(ready.manifest, ready, options);
+    } catch {
+      try {
+        database?.close();
+      } catch {
+      }
+      return new _BasemapService({ state: "invalid" }, void 0, options);
+    }
+  }
+  getManifest() {
+    return this.#manifest;
+  }
+  getTile(z, x, y) {
+    const ready = this.#ready;
+    if (!ready) return { state: "unavailable" };
+    if (!validCoordinates(z, x, y)) return { state: "invalid" };
+    if (z < ready.manifest.minZoom || z > ready.manifest.maxZoom) {
+      return { state: "invalid" };
+    }
+    const key = `${z}/${x}/${y}`;
+    const cached = this.#cache.get(key);
+    if (cached) return { state: "ok", data: cached.data, contentType: cached.contentType };
+    const tmsRow = 2 ** z - 1 - y;
+    try {
+      const bounded = ready.readTile(z, x, tmsRow);
+      if (bounded.state !== "ok") return bounded;
+      const data = bounded.data;
+      if (!validRasterDimensions(data, ready.format)) return { state: "invalid" };
+      const value = { data, contentType: contentTypeFor(ready.format) };
+      this.#cache.set(key, value);
+      return { state: "ok", ...value };
+    } catch {
+      return { state: "invalid" };
+    }
+  }
+  close() {
+    this.#cache.clear();
+    const ready = this.#ready;
+    this.#ready = void 0;
+    if (!ready) return;
+    try {
+      ready.database.close();
+    } catch {
+    }
+  }
+};
+function validateDatabase(database) {
+  const validate = database.transaction(() => validateDatabaseSnapshot(database));
+  return validate.deferred();
+}
+function validateDatabaseSnapshot(database) {
+  const objectType = database.prepare(
+    "SELECT type, rootpage, sql FROM sqlite_schema WHERE name = ? COLLATE BINARY LIMIT 1"
+  );
+  const metadataObject = objectType.get("metadata");
+  const tilesObject = objectType.get("tiles");
+  if (!isOrdinaryStoredTable(metadataObject) || !isOrdinaryStoredTable(tilesObject)) {
+    throw new Error("invalid_basemap");
+  }
+  requireStandardColumns(database, "metadata", ["name", "value"]);
+  requireStandardColumns(database, "tiles", ["zoom_level", "tile_column", "tile_row", "tile_data"]);
+  requireTileLookupIndex(database);
+  const metadataDescriptors = database.prepare(
+    `SELECT
+         rowid AS row_id,
+         typeof(name) AS name_type,
+         CASE WHEN typeof(name) = 'text' THEN octet_length(name) END AS name_bytes,
+         typeof(value) AS value_type,
+         CASE WHEN typeof(value) = 'text' THEN octet_length(value) END AS value_bytes
+       FROM metadata
+       ORDER BY rowid
+       LIMIT ?`
+  ).all(MAX_METADATA_ROWS + 1);
+  if (metadataDescriptors.length > MAX_METADATA_ROWS) throw new Error("invalid_basemap");
+  const boundedMetadata = metadataDescriptors.map((row) => {
+    if (row.name_type !== "text" || row.value_type !== "text") {
+      throw new Error("invalid_basemap");
+    }
+    return {
+      rowId: safeInteger(row.row_id),
+      nameBytes: boundedLength(row.name_bytes, MAX_METADATA_NAME_BYTES),
+      valueBytes: boundedLength(row.value_bytes, MAX_METADATA_VALUE_BYTES)
+    };
+  });
+  const metadataByRowId = database.prepare(
+    `SELECT name, value
+     FROM metadata
+     WHERE rowid = ? AND typeof(name) = 'text' AND typeof(value) = 'text'
+     LIMIT 1`
+  );
+  const metadata = /* @__PURE__ */ new Map();
+  for (const descriptor of boundedMetadata) {
+    const row = metadataByRowId.get(descriptor.rowId);
+    if (!row || typeof row.name !== "string" || typeof row.value !== "string") {
+      throw new Error("invalid_basemap");
+    }
+    if (Buffer.byteLength(row.name, "utf8") !== descriptor.nameBytes || Buffer.byteLength(row.value, "utf8") !== descriptor.valueBytes) {
+      throw new Error("invalid_basemap");
+    }
+    const name2 = row.name;
+    const value = row.value;
+    const key = name2.trim().toLowerCase();
+    if (key === "" || metadata.has(key)) throw new Error("invalid_basemap");
+    metadata.set(key, value);
+  }
+  const format = parseFormat(metadata.get("format"));
+  const scheme = metadata.get("scheme")?.trim().toLowerCase();
+  if (scheme !== void 0 && scheme !== "tms") throw new Error("invalid_basemap");
+  const declaredMinZoom = parseZoom(metadata.get("minzoom"));
+  const declaredMaxZoom = parseZoom(metadata.get("maxzoom"));
+  if (declaredMinZoom === void 0 || declaredMaxZoom === void 0) {
+    throw new Error("invalid_basemap");
+  }
+  const minZoom = declaredMinZoom;
+  const maxZoom = declaredMaxZoom;
+  if (minZoom > maxZoom) throw new Error("invalid_basemap");
+  const tileSizeValues = [metadata.get("tile_size"), metadata.get("tilesize")].filter(
+    (value) => value !== void 0
+  );
+  if (tileSizeValues.some((value) => value.trim() !== "256") || new Set(tileSizeValues.map((value) => value.trim())).size > 1) {
+    throw new Error("invalid_basemap");
+  }
+  const sampleDescriptors = database.prepare(
+    `SELECT
+         rowid AS row_id,
+         typeof(zoom_level) AS zoom_type,
+         CASE WHEN typeof(zoom_level) = 'integer' THEN zoom_level END AS zoom_level,
+         typeof(tile_column) AS column_type,
+         CASE WHEN typeof(tile_column) = 'integer' THEN tile_column END AS tile_column,
+         typeof(tile_row) AS row_type,
+         CASE WHEN typeof(tile_row) = 'integer' THEN tile_row END AS tile_row,
+         typeof(tile_data) AS tile_type,
+         CASE WHEN typeof(tile_data) = 'blob' THEN length(tile_data) END AS byte_length
+       FROM tiles
+       ORDER BY rowid
+       LIMIT 8`
+  ).all();
+  if (sampleDescriptors.length === 0) throw new Error("invalid_basemap");
+  const boundedSamples = sampleDescriptors.map((tile) => {
+    if (tile.zoom_type !== "integer" || tile.column_type !== "integer" || tile.row_type !== "integer" || tile.tile_type !== "blob") {
+      throw new Error("invalid_basemap");
+    }
+    const zoom = safeInteger(tile.zoom_level);
+    const column = safeInteger(tile.tile_column);
+    const row = safeInteger(tile.tile_row);
+    if (!validTmsCoordinates(zoom, column, row) || zoom < minZoom || zoom > maxZoom) {
+      throw new Error("invalid_basemap");
+    }
+    return {
+      rowId: safeInteger(tile.row_id),
+      zoom,
+      column,
+      row,
+      byteLength: boundedLength(tile.byte_length, MAX_TILE_BYTES)
+    };
+  });
+  const tileByRowId = database.prepare(
+    `SELECT tile_data
+     FROM tiles
+     WHERE rowid = ?
+       AND zoom_level = ?
+       AND tile_column = ?
+       AND tile_row = ?
+       AND typeof(tile_data) = 'blob'
+     LIMIT 1`
+  );
+  for (const sample of boundedSamples) {
+    const row = tileByRowId.get(sample.rowId, sample.zoom, sample.column, sample.row);
+    if (!row || !Buffer.isBuffer(row.tile_data) || row.tile_data.byteLength !== sample.byteLength || !validRasterDimensions(row.tile_data, format)) {
+      throw new Error("invalid_basemap");
+    }
+  }
+  const name = toPlainText(metadata.get("name") ?? "", 160);
+  if (name === "") throw new Error("invalid_basemap");
+  const attribution = toPlainText(metadata.get("attribution") ?? "", 1e3);
+  const bounds = parseBounds(metadata.get("bounds"));
+  const manifest = {
+    state: "ready",
+    format: "raster-mbtiles",
+    name,
+    attribution,
+    minZoom,
+    maxZoom,
+    ...bounds ? { bounds } : {}
+  };
+  return { manifest, format };
+}
+function requireStandardColumns(database, table, required) {
+  const rows = database.prepare("SELECT name, hidden FROM pragma_table_xinfo(?)").all(table);
+  const reservedRowIds = /* @__PURE__ */ new Set(["rowid", "_rowid_", "oid"]);
+  if (rows.some(
+    (row) => typeof row.name !== "string" || reservedRowIds.has(row.name.trim().toLowerCase())
+  )) {
+    throw new Error("invalid_basemap");
+  }
+  for (const column of required) {
+    const match = rows.find((row) => row.name === column);
+    if (!match || match.hidden !== 0) throw new Error("invalid_basemap");
+  }
+  const rowIdProbe = table === "metadata" ? database.prepare("SELECT rowid FROM metadata LIMIT 0") : database.prepare("SELECT rowid FROM tiles LIMIT 0");
+  rowIdProbe.all();
+}
+function isOrdinaryStoredTable(value) {
+  return value?.type === "table" && typeof value.rootpage === "number" && Number.isSafeInteger(value.rootpage) && value.rootpage > 0 && typeof value.sql === "string" && /^\s*CREATE\s+TABLE\b/i.test(value.sql);
+}
+function requireTileLookupIndex(database) {
+  const index = database.prepare(
+    `SELECT 1 AS present
+       FROM pragma_index_list('tiles') AS indexes
+       WHERE indexes."unique" = 1
+         AND indexes.partial = 0
+         AND (
+           SELECT COUNT(*)
+           FROM pragma_index_info(indexes.name)
+         ) = 3
+         AND (
+           SELECT COUNT(*)
+           FROM pragma_index_info(indexes.name)
+           WHERE name IN ('zoom_level', 'tile_column', 'tile_row')
+         ) = 3
+       LIMIT 1`
+  ).get();
+  if (index?.present !== 1) throw new Error("invalid_basemap");
+}
+function safeInteger(value) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number)) throw new Error("invalid_basemap");
+  return number;
+}
+function boundedLength(value, max) {
+  const length = safeInteger(value);
+  if (length < 0 || length > max) throw new Error("invalid_basemap");
+  return length;
+}
+function createTileReader(database) {
+  const descriptorQuery = database.prepare(
+    `SELECT
+       rowid AS row_id,
+       typeof(tile_data) AS tile_type,
+       CASE WHEN typeof(tile_data) = 'blob' THEN length(tile_data) END AS byte_length
+     FROM tiles
+     WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?
+     ORDER BY rowid
+     LIMIT 2`
+  );
+  const dataByRowId = database.prepare(
+    `SELECT tile_data
+     FROM tiles
+     WHERE rowid = ?
+       AND zoom_level = ?
+       AND tile_column = ?
+       AND tile_row = ?
+       AND typeof(tile_data) = 'blob'
+     LIMIT 1`
+  );
+  const read = database.transaction((z, x, tmsRow) => {
+    const descriptors = descriptorQuery.all(z, x, tmsRow);
+    if (descriptors.length === 0) return { state: "not_found" };
+    if (descriptors.length !== 1) return { state: "invalid" };
+    const descriptor = descriptors[0];
+    if (descriptor.tile_type !== "blob") return { state: "invalid" };
+    const byteLength = safeInteger(descriptor.byte_length);
+    if (byteLength < 0) return { state: "invalid" };
+    if (byteLength > MAX_TILE_BYTES) return { state: "too_large" };
+    const rowId = safeInteger(descriptor.row_id);
+    const row = dataByRowId.get(rowId, z, x, tmsRow);
+    if (!row || !Buffer.isBuffer(row.tile_data) || row.tile_data.byteLength !== byteLength) {
+      return { state: "invalid" };
+    }
+    return { state: "ok", data: row.tile_data };
+  });
+  return (z, x, tmsRow) => read.deferred(z, x, tmsRow);
+}
+function parseFormat(value) {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "png") return "png";
+  if (normalized === "jpg" || normalized === "jpeg") return "jpeg";
+  if (normalized === "webp") return "webp";
+  throw new Error("invalid_basemap");
+}
+function parseZoom(value) {
+  if (value === void 0) return void 0;
+  if (!/^(?:0|[1-9]\d?)$/.test(value.trim())) throw new Error("invalid_basemap");
+  const parsed = Number(value.trim());
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > MAX_ZOOM) {
+    throw new Error("invalid_basemap");
+  }
+  return parsed;
+}
+function parseBounds(value) {
+  if (value === void 0 || value.trim() === "") return void 0;
+  const rawParts = value.split(",");
+  if (rawParts.some((part) => part.trim() === "")) throw new Error("invalid_basemap");
+  const parts = rawParts.map((part) => Number(part.trim()));
+  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part)) || parts[0] < -180 || parts[0] > 180 || parts[2] < -180 || parts[2] > 180 || parts[1] < -85.051129 || parts[1] > 85.051129 || parts[3] < -85.051129 || parts[3] > 85.051129 || parts[0] >= parts[2] || parts[1] >= parts[3]) {
+    throw new Error("invalid_basemap");
+  }
+  return [parts[0], parts[1], parts[2], parts[3]];
+}
+function toPlainText(value, maxLength) {
+  const withoutTags = value.replace(/<[^>]*>/g, " ");
+  const decoded = withoutTags.replace(
+    /&(amp|lt|gt|quot|apos|#39);/gi,
+    (entity, name) => ({
+      amp: "&",
+      lt: "<",
+      gt: ">",
+      quot: '"',
+      apos: "'",
+      "#39": "'"
+    })[name.toLowerCase()] ?? entity
+  );
+  return decoded.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+function validCoordinates(z, x, y) {
+  if (!Number.isSafeInteger(z) || !Number.isSafeInteger(x) || !Number.isSafeInteger(y) || z < 0 || z > MAX_ZOOM || x < 0 || y < 0) {
+    return false;
+  }
+  const width = 2 ** z;
+  return x < width && y < width;
+}
+function validTmsCoordinates(z, x, row) {
+  return validCoordinates(z, x, row);
+}
+function validRasterDimensions(data, format) {
+  const dimensions = format === "png" ? pngDimensions(data) : format === "jpeg" ? jpegDimensions(data) : webpDimensions(data);
+  return dimensions?.width === EXPECTED_TILE_SIZE && dimensions.height === EXPECTED_TILE_SIZE;
+}
+function pngDimensions(data) {
+  if (data.byteLength < 33 || data[0] !== 137 || data[1] !== 80 || data[2] !== 78 || data[3] !== 71 || data[4] !== 13 || data[5] !== 10 || data[6] !== 26 || data[7] !== 10 || data.readUInt32BE(8) !== 13 || data.subarray(12, 16).toString("ascii") !== "IHDR") {
+    return void 0;
+  }
+  const width = data.readUInt32BE(16);
+  const height = data.readUInt32BE(20);
+  return width > 0 && height > 0 ? { width, height } : void 0;
+}
+var JPEG_START_OF_FRAME = /* @__PURE__ */ new Set([
+  192,
+  193,
+  194,
+  195,
+  197,
+  198,
+  199,
+  201,
+  202,
+  203,
+  205,
+  206,
+  207
+]);
+function jpegDimensions(data) {
+  if (data.byteLength < 4 || data[0] !== 255 || data[1] !== 216 || data[data.byteLength - 2] !== 255 || data[data.byteLength - 1] !== 217) {
+    return void 0;
+  }
+  let offset = 2;
+  while (offset < data.byteLength - 2) {
+    if (data[offset] !== 255) return void 0;
+    while (offset < data.byteLength && data[offset] === 255) offset += 1;
+    if (offset >= data.byteLength) return void 0;
+    const marker = data[offset];
+    offset += 1;
+    if (marker === 217) break;
+    if (marker === 0) return void 0;
+    if (marker === 1 || marker >= 208 && marker <= 216) continue;
+    if (offset + 2 > data.byteLength) return void 0;
+    const segmentLength = data.readUInt16BE(offset);
+    if (segmentLength < 2 || offset + segmentLength > data.byteLength) return void 0;
+    if (JPEG_START_OF_FRAME.has(marker)) {
+      if (segmentLength < 8) return void 0;
+      const height = data.readUInt16BE(offset + 3);
+      const width = data.readUInt16BE(offset + 5);
+      return width > 0 && height > 0 ? { width, height } : void 0;
+    }
+    if (marker === 218) return void 0;
+    offset += segmentLength;
+  }
+  return void 0;
+}
+function webpDimensions(data) {
+  if (data.byteLength < 20 || data.subarray(0, 4).toString("ascii") !== "RIFF" || data.subarray(8, 12).toString("ascii") !== "WEBP" || data.readUInt32LE(4) + 8 !== data.byteLength) {
+    return void 0;
+  }
+  let offset = 12;
+  let canvas;
+  let image;
+  while (offset + 8 <= data.byteLength) {
+    const chunkType = data.subarray(offset, offset + 4).toString("ascii");
+    const chunkSize = data.readUInt32LE(offset + 4);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + chunkSize;
+    const paddedEnd = dataEnd + (chunkSize & 1);
+    if (dataEnd > data.byteLength || paddedEnd > data.byteLength) return void 0;
+    if (chunkType === "VP8X") {
+      if (chunkSize !== 10 || canvas) return void 0;
+      if ((data[dataStart] & 2) !== 0) return void 0;
+      canvas = {
+        width: readUInt24LE(data, dataStart + 4) + 1,
+        height: readUInt24LE(data, dataStart + 7) + 1
+      };
+    } else if (chunkType === "VP8L") {
+      if (chunkSize < 5 || image || data[dataStart] !== 47) return void 0;
+      const packed = data.readUInt32LE(dataStart + 1);
+      image = {
+        width: (packed & 16383) + 1,
+        height: (packed >>> 14 & 16383) + 1
+      };
+    } else if (chunkType === "VP8 ") {
+      if (chunkSize < 10 || image || data[dataStart + 3] !== 157 || data[dataStart + 4] !== 1 || data[dataStart + 5] !== 42) {
+        return void 0;
+      }
+      image = {
+        width: data.readUInt16LE(dataStart + 6) & 16383,
+        height: data.readUInt16LE(dataStart + 8) & 16383
+      };
+    }
+    offset = paddedEnd;
+  }
+  if (offset !== data.byteLength || !image || image.width === 0 || image.height === 0) {
+    return void 0;
+  }
+  if (canvas && (canvas.width !== image.width || canvas.height !== image.height)) {
+    return void 0;
+  }
+  return image;
+}
+function readUInt24LE(data, offset) {
+  return data[offset] | data[offset + 1] << 8 | data[offset + 2] << 16;
+}
+function contentTypeFor(format) {
+  if (format === "png") return "image/png";
+  if (format === "jpeg") return "image/jpeg";
+  return "image/webp";
+}
 
 // apps/api/src/server.ts
+var API_VERSION = APP_VERSION;
 var MAX_PATH_BODY_BYTES = 8 * 1024;
 var PATH_IMPORT_ZIP_LIMITS = {
   ...DEFAULT_ZIP_LIMITS,
   maxEntryBytes: DEFAULT_MAX_GROUP_BYTES,
   maxTotalBytes: DEFAULT_MAX_GROUP_BYTES
 };
+function notifyRequestWaiters(state) {
+  if (state.activeRequests <= 1) {
+    for (const resolve5 of state.exclusiveWaiters) resolve5();
+    state.exclusiveWaiters.clear();
+  }
+  if (state.activeRequests === 0) {
+    for (const resolve5 of state.idleWaiters) resolve5();
+    state.idleWaiters.clear();
+  }
+}
+function waitForExclusiveRequest(state) {
+  if (state.activeRequests <= 1) return Promise.resolve();
+  return new Promise((resolve5) => state.exclusiveWaiters.add(resolve5));
+}
+function waitForRequests(state) {
+  if (state.activeRequests === 0) return Promise.resolve();
+  return new Promise((resolve5) => state.idleWaiters.add(resolve5));
+}
+function createApiServer(opts) {
+  const now = opts.now ?? Date.now;
+  const state = {
+    importInProgress: false,
+    activeRequests: 0,
+    databaseAvailable: true,
+    restoreInProgress: false,
+    exclusiveWaiters: /* @__PURE__ */ new Set(),
+    idleWaiters: /* @__PURE__ */ new Set()
+  };
+  const basemap = BasemapService.open({
+    ...opts.basemapPath ? { path: opts.basemapPath } : {},
+    ...opts.basemapPathRequired === void 0 ? {} : { required: opts.basemapPathRequired }
+  });
+  let server;
+  try {
+    server = createServer((req, res) => {
+      state.activeRequests += 1;
+      let finished = false;
+      let operationPending = false;
+      const finishRequest = () => {
+        if (finished) return;
+        finished = true;
+        state.activeRequests -= 1;
+        notifyRequestWaiters(state);
+      };
+      const finishResponse = () => {
+        if (!operationPending) finishRequest();
+      };
+      res.once("finish", finishResponse);
+      res.once("close", finishResponse);
+      try {
+        const operation = handle(req, res, opts, now, server, state, basemap);
+        if (operation) {
+          operationPending = true;
+          void operation.catch(
+            (error) => send(res, 500, {
+              error: error instanceof AnalyticsSnapshotConflictError ? "analytics_snapshot_conflict" : "internal_error"
+            })
+          ).finally(() => {
+            operationPending = false;
+            finishRequest();
+          });
+        }
+      } catch (error) {
+        send(res, 500, {
+          error: error instanceof AnalyticsSnapshotConflictError ? "analytics_snapshot_conflict" : "internal_error"
+        });
+      }
+    });
+  } catch (error) {
+    basemap.close();
+    throw error;
+  }
+  const closeBasemap = () => basemap.close();
+  server.once("close", closeBasemap);
+  return Object.assign(server, {
+    getDatabase: () => opts.db,
+    isRestoreInProgress: () => state.restoreInProgress,
+    waitForRequests: () => waitForRequests(state),
+    closeBasemap
+  });
+}
+function expectedPort(server) {
+  const addr = server.address();
+  return addr && typeof addr === "object" ? addr.port : null;
+}
+function hostAllowed(header, port) {
+  if (!header) return false;
+  const h = header.trim().toLowerCase();
+  let name;
+  let p = null;
+  const v6 = /^\[([^\]]+)\](?::(\d+))?$/.exec(h);
+  if (v6) {
+    name = `[${v6[1]}]`;
+    p = v6[2] ? Number(v6[2]) : null;
+  } else {
+    const idx = h.lastIndexOf(":");
+    if (idx !== -1 && /^\d+$/.test(h.slice(idx + 1))) {
+      name = h.slice(0, idx);
+      p = Number(h.slice(idx + 1));
+    } else {
+      name = h;
+    }
+  }
+  const loopback = name === "127.0.0.1" || name === "localhost" || name === "[::1]";
+  return loopback && (port == null || p === port || p == null && (port === 80 || port === 443));
+}
+function originAllowed(origin, port) {
+  if (!origin) return true;
+  try {
+    const u = new URL(origin);
+    const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(u.hostname);
+    const p = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
+    return loopback && (port == null || p === port);
+  } catch {
+    return false;
+  }
+}
+function securityHeaders(res) {
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'"
+  );
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cache-Control", "no-store");
+}
+function send(res, status, body) {
+  if (res.destroyed || res.writableEnded) return;
+  securityHeaders(res);
+  const json = JSON.stringify(body);
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(json);
+}
+function handle(req, res, opts, now, server, state, basemap) {
+  const port = expectedPort(server);
+  if (!hostAllowed(req.headers.host, port)) {
+    send(res, 403, { error: "host_not_allowed" });
+    return;
+  }
+  if (!originAllowed(req.headers.origin, port)) {
+    send(res, 403, { error: "origin_not_allowed" });
+    return;
+  }
+  const url = new URL(req.url ?? "/", `http://127.0.0.1:${port ?? 0}`);
+  const path = url.pathname;
+  const method = req.method ?? "GET";
+  if (path.startsWith("/api/") && !fetchSiteAllowed(req.headers["sec-fetch-site"])) {
+    send(res, 403, { error: "cross_site_request" });
+    return;
+  }
+  if (method !== "GET" && method !== "HEAD") {
+    if (req.headers["x-velograph-request"] !== "1") {
+      send(res, 403, { error: "missing_csrf_header" });
+      return;
+    }
+  }
+  if (!state.databaseAvailable) {
+    send(res, 503, { error: "database_unavailable" });
+    return;
+  }
+  if (state.restoreInProgress && path !== "/api/health") {
+    send(res, 503, { error: "restore_in_progress" });
+    return;
+  }
+  if (path.startsWith("/api/")) {
+    return route(req, res, opts, url, method, now, state, basemap);
+  }
+  serveStatic(res, opts.staticDir, path);
+}
+function route(req, res, opts, url, method, now, state, basemap) {
+  const db = opts.db;
+  const path = url.pathname;
+  if (method === "GET" && path === "/api/health") {
+    send(res, 200, { ok: true, version: API_VERSION });
+    return;
+  }
+  if (method === "GET" && path === "/api/basemap") {
+    send(res, 200, basemap.getManifest());
+    return;
+  }
+  const basemapTile = /^\/api\/basemap\/tiles\/(\d+)\/(\d+)\/(\d+)$/.exec(path);
+  if (method === "GET" && basemapTile) {
+    const tile = basemap.getTile(
+      Number(basemapTile[1]),
+      Number(basemapTile[2]),
+      Number(basemapTile[3])
+    );
+    sendBasemapTile(res, tile);
+    return;
+  }
+  if (state.importInProgress) {
+    send(res, 503, { error: "import_in_progress" });
+    return;
+  }
+  if (method === "GET" && path === "/api/workouts") {
+    const repo = new Repository(db);
+    const list = repo.listWorkouts().map((w) => {
+      const a = getOrComputeAnalytics(db, w.id, now());
+      return {
+        id: w.id,
+        type: w.type,
+        startUtc: w.start_utc,
+        endUtc: w.end_utc,
+        durationS: w.duration_s,
+        qualityState: w.quality_state,
+        distanceM: a?.distanceM ?? null,
+        avgSpeedMs: a?.avgSpeedMs ?? null,
+        avgHr: a?.heartRate.avg ?? null,
+        elevationGainM: a?.elevation.gainM ?? null,
+        hasRoute: new Repository(db).workoutRouteFormat(w.id) !== void 0
+      };
+    });
+    send(res, 200, { workouts: list });
+    return;
+  }
+  const detail = /^\/api\/workouts\/(\d+)$/.exec(path);
+  if (method === "GET" && detail) {
+    const id = Number(detail[1]);
+    const data = loadWorkoutData(db, id);
+    if (!data) {
+      send(res, 404, { error: "not_found" });
+      return;
+    }
+    const analytics = getOrComputeAnalytics(db, id, now());
+    send(res, 200, { workout: data.workout, metrics: data.metrics, route: data.route, analytics });
+    return;
+  }
+  if (method === "DELETE" && detail) {
+    const id = Number(detail[1]);
+    const repo = new Repository(db);
+    const result = repo.deleteWorkout(id);
+    if (!result) {
+      send(res, 404, { error: "not_found" });
+      return;
+    }
+    send(res, 200, {
+      deleted: true,
+      workoutId: id,
+      removedSourceFiles: result.removedSourceFileIds.length
+    });
+    return;
+  }
+  const repairMatch = /^\/api\/workouts\/(\d+)\/repair$/.exec(path);
+  if (method === "POST" && repairMatch) {
+    const id = Number(repairMatch[1]);
+    const analytics = repairWorkout(db, id, now());
+    if (!analytics) {
+      send(res, 404, { error: "not_found" });
+      return;
+    }
+    send(res, 200, { repaired: true, analytics });
+    return;
+  }
+  if (method === "GET" && path === "/api/trends") {
+    send(res, 200, buildTrends(db, now));
+    return;
+  }
+  if (method === "GET" && path === "/api/settings") {
+    send(res, 200, { settings: loadSettings(db) });
+    return;
+  }
+  if (method === "PUT" && path === "/api/settings") {
+    return readJsonBody(req, 1024 * 1024).then((body) => {
+      try {
+        if (typeof body !== "object" || body === null || Array.isArray(body) || Object.keys(body).length !== 1 || !Object.hasOwn(body, "settings")) {
+          throw new InvalidAppSettingsError();
+        }
+        const patch = body.settings;
+        const merged = mergeAppSettings(loadSettings(db), patch);
+        const settings = saveSettings(db, merged);
+        send(res, 200, { settings });
+      } catch (error) {
+        if (error instanceof InvalidAppSettingsError) {
+          send(res, 400, { error: "invalid_settings" });
+          return;
+        }
+        send(res, 500, { error: "internal_error" });
+      }
+    }).catch(() => {
+      if (!res.headersSent) send(res, 400, { error: "invalid_body" });
+    });
+    return;
+  }
+  if (method === "POST" && path === "/api/import/inventory") {
+    const limits = opts.importUploadLimits ?? DEFAULT_IMPORT_UPLOAD_LIMITS;
+    const cancellation = createRequestCancellation(req, res);
+    return readJsonBody(req, limits.maxBodyBytes, cancellation.signal).then(async (body) => {
+      await yieldToRequestEvents();
+      throwIfImportAborted(cancellation.signal);
+      const uploads = decodeUploadFiles(body, limits);
+      await yieldToRequestEvents();
+      throwIfImportAborted(cancellation.signal);
+      if (!beginImport(state, res)) return;
+      try {
+        const inventory = await preflightImportCancellable(
+          db,
+          uploads.map((upload) => upload.file),
+          {
+            now: now(),
+            timeZone: loadSettings(db).timeZone,
+            signal: cancellation.signal,
+            zipLimits: {
+              maxEntries: limits.maxFiles,
+              maxEntryBytes: limits.maxFileBytes,
+              maxTotalBytes: limits.maxTotalDecodedBytes
+            }
+          }
+        );
+        send(res, 200, {
+          inventory: inventory.map((item, index) => ({
+            id: uploads[index].id,
+            ...item
+          }))
+        });
+      } finally {
+        state.importInProgress = false;
+      }
+    }).catch((err) => sendImportRequestError(res, err)).finally(cancellation.dispose);
+  }
+  if (method === "POST" && path === "/api/import") {
+    const limits = opts.importUploadLimits ?? DEFAULT_IMPORT_UPLOAD_LIMITS;
+    const cancellation = createRequestCancellation(req, res);
+    return readJsonBody(req, limits.maxBodyBytes, cancellation.signal).then(async (body) => {
+      await yieldToRequestEvents();
+      throwIfImportAborted(cancellation.signal);
+      const files = decodeUploadFiles(body, limits).map((upload) => upload.file);
+      await yieldToRequestEvents();
+      throwIfImportAborted(cancellation.signal);
+      if (!beginImport(state, res)) return;
+      try {
+        const result = await runImportCancellable(db, files, {
+          now: now(),
+          timeZone: loadSettings(db).timeZone,
+          signal: cancellation.signal,
+          zipLimits: {
+            maxEntries: limits.maxFiles,
+            maxEntryBytes: limits.maxFileBytes,
+            maxTotalBytes: limits.maxTotalDecodedBytes
+          }
+        });
+        send(res, 200, { result });
+      } finally {
+        state.importInProgress = false;
+      }
+    }).catch((err) => sendImportRequestError(res, err)).finally(cancellation.dispose);
+  }
+  if (method === "POST" && path === "/api/import/path/inventory") {
+    const cancellation = createRequestCancellation(req, res);
+    return readJsonBody(req, MAX_PATH_BODY_BYTES, cancellation.signal).then(async (body) => {
+      await yieldToRequestEvents();
+      throwIfImportAborted(cancellation.signal);
+      const p = readPathField(body);
+      if (!p) {
+        send(res, 400, { error: "invalid_path" });
+        return;
+      }
+      try {
+        const plan = planFolderImport(p);
+        await yieldToRequestEvents();
+        throwIfImportAborted(cancellation.signal);
+        let preflight = [];
+        let preflightComplete = false;
+        if (!plan.truncated) {
+          if (!beginImport(state, res)) return;
+          try {
+            preflight = await preflightImportGroupsCancellable(db, readFolderFileGroups(plan), {
+              now: now(),
+              timeZone: loadSettings(db).timeZone,
+              zipLimits: PATH_IMPORT_ZIP_LIMITS,
+              signal: cancellation.signal
+            });
+            preflightComplete = true;
+          } finally {
+            state.importInProgress = false;
+          }
+        }
+        const preview = previewFolderImportPlan(plan, preflight, preflightComplete);
+        send(res, 200, { preview });
+      } catch (err) {
+        sendFolderImportError(res, err);
+      }
+    }).catch((err) => sendFolderRequestError(res, err)).finally(cancellation.dispose);
+  }
+  if (method === "POST" && path === "/api/import/path") {
+    const cancellation = createRequestCancellation(req, res);
+    return readJsonBody(req, MAX_PATH_BODY_BYTES, cancellation.signal).then(async (body) => {
+      await yieldToRequestEvents();
+      throwIfImportAborted(cancellation.signal);
+      const p = readPathField(body);
+      const confirmationToken = readConfirmationToken(body);
+      if (!p) {
+        send(res, 400, { error: "invalid_path" });
+        return;
+      }
+      if (!confirmationToken) {
+        send(res, 400, { error: "preview_required" });
+        return;
+      }
+      try {
+        const plan = planFolderImportForConfirmation(p);
+        confirmFolderImportPlan(plan, confirmationToken);
+        if (plan.totalFiles === 0) {
+          send(res, 400, {
+            error: "no_files",
+            skipped: plan.skipped,
+            truncated: plan.truncated
+          });
+          return;
+        }
+        await yieldToRequestEvents();
+        throwIfImportAborted(cancellation.signal);
+        if (!beginImport(state, res)) return;
+        try {
+          const result = await runImportGroupsCancellable(db, readFolderFileGroups(plan), {
+            now: now(),
+            timeZone: loadSettings(db).timeZone,
+            zipLimits: PATH_IMPORT_ZIP_LIMITS,
+            signal: cancellation.signal
+          });
+          send(res, 200, {
+            result,
+            skipped: plan.skipped,
+            truncated: plan.truncated
+          });
+        } finally {
+          state.importInProgress = false;
+        }
+      } catch (err) {
+        sendFolderImportError(res, err);
+      }
+    }).catch((err) => sendFolderRequestError(res, err)).finally(cancellation.dispose);
+  }
+  if (method === "POST" && path === "/api/backup") {
+    return readJsonBody(req, MAX_PATH_BODY_BYTES).then(async (body) => {
+      const dest = readPathField(body);
+      if (!dest) {
+        send(res, 400, { error: "invalid_path" });
+        return;
+      }
+      try {
+        const result = await backupDatabase(db, dest);
+        send(res, 200, {
+          ok: true,
+          totalPages: result.totalPages,
+          manifest: {
+            formatVersion: result.manifest.formatVersion,
+            appVersion: result.manifest.appVersion,
+            schemaVersion: result.manifest.schemaVersion,
+            includedCategories: result.manifest.includedCategories
+          }
+        });
+      } catch (err) {
+        if (err instanceof BackupValidationError) {
+          send(res, 400, { error: err.code });
+          return;
+        }
+        send(res, 500, { error: "backup_failed" });
+      }
+    }).catch(() => send(res, 400, { error: "invalid_body" }));
+    return;
+  }
+  if (method === "POST" && path === "/api/restore") {
+    if (!opts.dbPath) {
+      send(res, 400, { error: "restore_unsupported" });
+      return;
+    }
+    return readJsonBody(req, MAX_PATH_BODY_BYTES).then(async (body) => {
+      const source = readPathField(body);
+      if (!source) {
+        send(res, 400, { error: "invalid_path" });
+        return;
+      }
+      if (body.confirmed !== true) {
+        send(res, 409, { error: "restore_confirmation_required" });
+        return;
+      }
+      if (state.restoreInProgress) {
+        send(res, 409, { error: "restore_in_progress" });
+        return;
+      }
+      state.restoreInProgress = true;
+      try {
+        await waitForExclusiveRequest(state);
+        const restored = await (opts.restoreDatabaseFn ?? restoreDatabaseWithReport)(
+          opts.db,
+          opts.dbPath,
+          source
+        );
+        opts.db = restored.database;
+        send(res, 200, { ok: true, report: restored.report });
+      } catch (error) {
+        let status = 400;
+        let code = "restore_failed";
+        if (error instanceof RestoreValidationError) {
+          code = error.code;
+        } else if (error instanceof RestoreDatabaseError) {
+          status = 500;
+          code = error.code;
+          if (error.recoveredDatabase) {
+            opts.db = error.recoveredDatabase;
+          } else {
+            state.databaseAvailable = false;
+            code = "database_unavailable";
+          }
+        }
+        if (!opts.db.open) {
+          state.databaseAvailable = false;
+          status = 500;
+          code = "database_unavailable";
+        }
+        send(res, status, { error: code });
+      } finally {
+        state.restoreInProgress = false;
+      }
+    }).catch(() => send(res, 400, { error: "invalid_body" }));
+    return;
+  }
+  send(res, 404, { error: "not_found" });
+}
+function sendBasemapTile(res, tile) {
+  if (tile.state !== "ok") {
+    const statuses = {
+      unavailable: 404,
+      not_found: 404,
+      too_large: 413,
+      invalid: 400
+    };
+    const errors = {
+      unavailable: "basemap_unavailable",
+      not_found: "tile_not_found",
+      too_large: "tile_too_large",
+      invalid: "invalid_tile"
+    };
+    send(res, statuses[tile.state], { error: errors[tile.state] });
+    return;
+  }
+  securityHeaders(res);
+  res.writeHead(200, {
+    "Content-Type": tile.contentType,
+    "Content-Length": tile.data.byteLength
+  });
+  res.end(tile.data);
+}
+function fetchSiteAllowed(value) {
+  if (value === void 0) return true;
+  if (Array.isArray(value)) return false;
+  return ["same-origin", "same-site", "none"].includes(value.trim().toLowerCase());
+}
+function readPathField(body) {
+  const p = body?.path;
+  return typeof p === "string" && p.trim() !== "" ? p : void 0;
+}
+function readConfirmationToken(body) {
+  const token = body?.confirmationToken;
+  return typeof token === "string" && /^[a-f0-9]{64}$/.test(token) ? token : void 0;
+}
+function planFolderImportForConfirmation(path) {
+  try {
+    return planFolderImport(path);
+  } catch (err) {
+    if (err instanceof FolderImportError && (err.code === "path_not_found" || err.code === "not_a_directory")) {
+      throw new FolderImportError("path_changed", "folder changed after preview");
+    }
+    throw err;
+  }
+}
+function folderErrorCode(err) {
+  if (err instanceof FolderImportError) {
+    return err.code === "inside_checkout" ? "path_inside_checkout" : err.code;
+  }
+  return "folder_import_failed";
+}
+function folderErrorStatus(err) {
+  if (!(err instanceof FolderImportError)) return 500;
+  return err.code === "path_changed" ? 409 : 400;
+}
+function sendFolderImportError(res, err) {
+  if (err instanceof ImportAbortedError) {
+    send(res, 499, { error: err.code });
+    return;
+  }
+  send(res, folderErrorStatus(err), { error: folderErrorCode(err) });
+}
+function sendFolderRequestError(res, err) {
+  if (err instanceof ImportAbortedError) {
+    send(res, 499, { error: err.code });
+    return;
+  }
+  if (err instanceof ImportRequestError && err.code === "invalid_json") {
+    send(res, 400, { error: "invalid_body" });
+    return;
+  }
+  send(res, 400, { error: "invalid_body" });
+}
+var ImportRequestError = class extends Error {
+  status;
+  code;
+  constructor(status, code) {
+    super(code);
+    this.name = "ImportRequestError";
+    this.status = status;
+    this.code = code;
+  }
+};
+function beginImport(runtime, res) {
+  if (runtime.importInProgress) {
+    send(res, 503, { error: "import_in_progress" });
+    return false;
+  }
+  runtime.importInProgress = true;
+  return true;
+}
+function createRequestCancellation(req, res) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const abortIncompleteRequest = () => {
+    if (!req.complete) abort();
+  };
+  const abortIncompleteResponse = () => {
+    if (!res.writableEnded) abort();
+  };
+  req.once("aborted", abort);
+  req.once("close", abortIncompleteRequest);
+  res.once("close", abortIncompleteResponse);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      req.off("aborted", abort);
+      req.off("close", abortIncompleteRequest);
+      res.off("close", abortIncompleteResponse);
+    }
+  };
+}
+function yieldToRequestEvents() {
+  return new Promise((resolve5) => setTimeout(resolve5, 0));
+}
+function isRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function hasExactKeys(value, keys) {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+function decodedBase64Length(value) {
+  if (value.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    return null;
+  }
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  if (value.endsWith("==") && (alphabet.indexOf(value.at(-3) ?? "") & 15) !== 0) {
+    return null;
+  }
+  if (!value.endsWith("==") && value.endsWith("=") && (alphabet.indexOf(value.at(-2) ?? "") & 3) !== 0) {
+    return null;
+  }
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return value.length / 4 * 3 - padding;
+}
+function decodeUploadFiles(body, limits) {
+  if (!isRecord3(body) || !hasExactKeys(body, ["files"]) || !Array.isArray(body.files)) {
+    throw new ImportRequestError(400, "invalid_import_payload");
+  }
+  if (body.files.length === 0) throw new ImportRequestError(400, "no_files");
+  if (body.files.length > limits.maxFiles) {
+    throw new ImportRequestError(413, "import_file_count_exceeded");
+  }
+  const descriptors = [];
+  const ids = /* @__PURE__ */ new Set();
+  let totalDecodedBytes = 0;
+  for (const value of body.files) {
+    if (!isRecord3(value) || !hasExactKeys(value, ["id", "name", "dataBase64"])) {
+      throw new ImportRequestError(400, "invalid_import_payload");
+    }
+    const { id, name, dataBase64 } = value;
+    if (typeof id !== "string" || id.length === 0 || id.length > limits.maxIdLength || !/^[A-Za-z0-9_-]+$/.test(id) || typeof name !== "string" || name.length === 0 || name.length > limits.maxNameLength || Buffer.byteLength(name, "utf8") > limits.maxNameLength || /[\/\\\0]/.test(name) || typeof dataBase64 !== "string") {
+      throw new ImportRequestError(400, "invalid_import_payload");
+    }
+    if (ids.has(id)) throw new ImportRequestError(400, "duplicate_file_id");
+    ids.add(id);
+    const decodedBytes = decodedBase64Length(dataBase64);
+    if (decodedBytes === null) throw new ImportRequestError(400, "invalid_base64");
+    if (decodedBytes > limits.maxFileBytes) {
+      throw new ImportRequestError(413, "import_file_too_large");
+    }
+    totalDecodedBytes += decodedBytes;
+    if (!Number.isSafeInteger(totalDecodedBytes) || totalDecodedBytes > limits.maxTotalDecodedBytes) {
+      throw new ImportRequestError(413, "import_total_size_exceeded");
+    }
+    descriptors.push({ id, name, dataBase64, decodedBytes });
+  }
+  return descriptors.map(({ id, name, dataBase64, decodedBytes }) => {
+    const data = Buffer.from(dataBase64, "base64");
+    if (data.length !== decodedBytes || data.toString("base64") !== dataBase64) {
+      throw new ImportRequestError(400, "invalid_base64");
+    }
+    return { id, file: { name, data } };
+  });
+}
+function sendImportRequestError(res, err) {
+  if (err instanceof ImportAbortedError) {
+    send(res, 499, { error: err.code });
+    return;
+  }
+  if (err instanceof ImportRequestError) {
+    send(res, err.status, { error: err.code });
+    return;
+  }
+  send(res, 500, { error: "import_failed" });
+}
+function buildTrends(db, now) {
+  const repo = new Repository(db);
+  const workouts = repo.listWorkouts();
+  const rides = workouts.map((w) => {
+    const a = getOrComputeAnalytics(db, w.id, now());
+    return {
+      id: w.id,
+      startUtc: w.start_utc,
+      durationS: w.duration_s,
+      distanceM: a?.distanceM ?? null,
+      avgHr: a?.heartRate.avg ?? null,
+      avgSpeedMs: a?.avgSpeedMs ?? null,
+      efficiency: a?.efficiency ?? null,
+      zones: a?.zones ?? null,
+      elevationGainM: a?.elevation.gainM ?? null
+    };
+  });
+  const weeks = /* @__PURE__ */ new Map();
+  for (const r of rides) {
+    const d = new Date(r.startUtc);
+    const day = (d.getUTCDay() + 6) % 7;
+    const monday = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day);
+    const key = new Date(monday).toISOString().slice(0, 10);
+    const bucket = weeks.get(key) ?? {
+      weekStartUtc: monday,
+      rideCount: 0,
+      distanceM: 0,
+      durationS: 0
+    };
+    bucket.rideCount++;
+    bucket.distanceM += r.distanceM ?? 0;
+    bucket.durationS += r.durationS;
+    weeks.set(key, bucket);
+  }
+  return {
+    rides,
+    weekly: [...weeks.values()].sort((a, b) => a.weekStartUtc - b.weekStartUtc)
+  };
+}
+function readJsonBody(req, maxBytes, signal) {
+  return new Promise((resolve5, reject) => {
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    const cleanup = () => {
+      signal?.removeEventListener("abort", rejectAborted);
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("aborted", onAborted);
+      req.off("close", onClose);
+      req.off("error", onError);
+    };
+    const rejectOnce = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const rejectAborted = () => rejectOnce(new ImportAbortedError());
+    const onData = (chunk) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        chunks.length = 0;
+        req.resume();
+        rejectOnce(new ImportRequestError(413, "import_body_too_large"));
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = () => {
+      if (settled) return;
+      try {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        settled = true;
+        cleanup();
+        resolve5(body);
+      } catch {
+        rejectOnce(new ImportRequestError(400, "invalid_json"));
+      }
+    };
+    const onAborted = () => rejectOnce(new Error("request_aborted"));
+    const onClose = () => {
+      if (!req.complete) rejectOnce(new Error("request_closed"));
+    };
+    const onError = (error) => rejectOnce(error);
+    if (signal?.aborted) {
+      rejectAborted();
+      return;
+    }
+    signal?.addEventListener("abort", rejectAborted, { once: true });
+    const declared = req.headers["content-length"];
+    if (typeof declared === "string" && /^\d+$/.test(declared) && Number(declared) > maxBytes) {
+      req.resume();
+      rejectOnce(new ImportRequestError(413, "import_body_too_large"));
+      return;
+    }
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("aborted", onAborted);
+    req.on("close", onClose);
+    req.on("error", onError);
+  });
+}
+var MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff",
+  ".json": "application/json; charset=utf-8"
+};
+function serveStatic(res, staticDir, path) {
+  securityHeaders(res);
+  if (!staticDir) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Velograph API. Web client not built.");
+    return;
+  }
+  const rel = normalize(path).replace(/^([/\\])+/, "");
+  let file = join6(staticDir, rel);
+  if (!file.startsWith(normalize(staticDir))) {
+    res.writeHead(403, { "Content-Type": "text/plain" });
+    res.end("forbidden");
+    return;
+  }
+  if (!existsSync4(file) || statSync4(file).isDirectory()) {
+    file = join6(staticDir, "index.html");
+    if (!existsSync4(file)) {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("not found");
+      return;
+    }
+  }
+  const type = MIME[extname(file).toLowerCase()] ?? "application/octet-stream";
+  res.writeHead(200, { "Content-Type": type });
+  res.end(readFileSync2(file));
+}
+
+// apps/api/src/main.ts
+import { existsSync as existsSync5 } from "node:fs";
+import { dirname as dirname4, join as join7 } from "node:path";
+import { fileURLToPath as fileURLToPath2, pathToFileURL } from "node:url";
+
+// apps/api/src/shutdown-coordinator.ts
+function createShutdownCoordinator(options) {
+  let shuttingDown = false;
+  let finished = false;
+  return (reason) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    options.log(`Velograph: ${reason}; draining local requests before shutdown.`);
+    const deadline = { handle: void 0 };
+    const finish = (code, errorMessage) => {
+      if (finished) return;
+      finished = true;
+      if (deadline.handle !== void 0) options.cancel(deadline.handle);
+      if (errorMessage) options.error(errorMessage);
+      options.exit(code);
+    };
+    deadline.handle = options.schedule(() => {
+      finish(1, `Velograph: graceful shutdown exceeded ${options.timeoutMs}ms; forcing exit.`);
+    }, options.timeoutMs);
+    void options.shutdown().then(
+      () => finish(0),
+      () => finish(1, "Velograph: graceful shutdown failed; forcing exit.")
+    );
+  };
+}
+
+// apps/api/src/shutdown.ts
+function closeHttpServer(server) {
+  return new Promise((resolve5, reject) => {
+    const wasListening = server.listening;
+    server.close((error) => {
+      if (error?.code === "ERR_SERVER_NOT_RUNNING") {
+        resolve5();
+      } else if (error) {
+        reject(error);
+      } else {
+        resolve5();
+      }
+    });
+    if (wasListening) {
+      server.closeIdleConnections?.();
+    }
+  });
+}
+async function shutdownApiServer(server) {
+  let firstError;
+  const capture = (error) => {
+    firstError ??= error;
+  };
+  try {
+    await closeHttpServer(server);
+  } catch (error) {
+    capture(error);
+  }
+  try {
+    await server.waitForRequests();
+  } catch (error) {
+    capture(error);
+  }
+  const db = server.getDatabase();
+  if (db.open) {
+    try {
+      checkpointDatabase(db);
+    } catch (error) {
+      capture(error);
+    } finally {
+      try {
+        db.close();
+      } catch (error) {
+        capture(error);
+      }
+    }
+  }
+  server.closeBasemap();
+  if (firstError !== void 0) throw firstError;
+}
+
+// apps/api/src/main.ts
+var DEFAULT_HOST = "127.0.0.1";
+var DEFAULT_PORT = 5123;
+var LOOPBACK_HOSTS = /* @__PURE__ */ new Set(["127.0.0.1", "localhost", "::1"]);
+var SHUTDOWN_TIMEOUT_MS = 1e4;
+var ApiConfigurationError = class extends Error {
+  field;
+  constructor(field) {
+    super(`invalid_${field}`);
+    this.name = "ApiConfigurationError";
+    this.field = field;
+  }
+};
+function readApiRuntimeConfig(env = process.env) {
+  const host = env["VELO_HOST"] ?? DEFAULT_HOST;
+  if (!LOOPBACK_HOSTS.has(host)) throw new ApiConfigurationError("host");
+  const rawPort = env["VELO_PORT"] ?? String(DEFAULT_PORT);
+  if (!/^(?:0|[1-9]\d{0,4})$/.test(rawPort)) throw new ApiConfigurationError("port");
+  const port = Number(rawPort);
+  if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
+    throw new ApiConfigurationError("port");
+  }
+  return { host, port };
+}
+function configuredParentPid(env) {
+  const raw = env["VELO_EXIT_WITH_PARENT_PID"];
+  if (!raw || !/^[1-9]\d*$/.test(raw)) return void 0;
+  const pid = Number(raw);
+  return Number.isSafeInteger(pid) ? pid : void 0;
+}
+function resolveWebDist(moduleUrl = import.meta.url) {
+  const runtimeDirectory = dirname4(fileURLToPath2(moduleUrl));
+  const candidates = [
+    join7(runtimeDirectory, "web"),
+    join7(runtimeDirectory, "..", "..", "web", "dist")
+  ];
+  return candidates.find((candidate) => existsSync5(join7(candidate, "index.html")));
+}
+function closeDatabaseWithoutThrow(db) {
+  if (!db?.open) return;
+  try {
+    db.close();
+  } catch {
+  }
+}
+function listen(server, config) {
+  return new Promise((resolve5, reject) => {
+    const onError = (error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      const address = server.address();
+      if (!address || typeof address !== "object") {
+        reject(new Error("listen_address_unavailable"));
+        return;
+      }
+      resolve5(address.port);
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(config.port, config.host);
+  });
+}
+async function main(env = process.env) {
+  let config;
+  try {
+    config = readApiRuntimeConfig(env);
+  } catch (error) {
+    if (error instanceof ApiConfigurationError && error.field === "host") {
+      console.error("Refusing non-loopback bind: authentication is not implemented yet.");
+    } else {
+      console.error("Refusing invalid port.");
+    }
+    return 1;
+  }
+  let db;
+  let server;
+  try {
+    const dataDir = resolveDataDir(env);
+    const dbPath = databasePath(dataDir);
+    db = openDatabase(dbPath);
+    const basemapOverride = env["VELO_BASEMAP_PATH"]?.trim();
+    const basemapPath = basemapOverride || join7(dataDir, "basemap.mbtiles");
+    const staticDir = resolveWebDist();
+    server = createApiServer({
+      db,
+      dbPath,
+      basemapPath,
+      basemapPathRequired: Boolean(basemapOverride),
+      ...staticDir ? { staticDir } : {}
+    });
+  } catch (error) {
+    closeDatabaseWithoutThrow(db);
+    throw error;
+  }
+  let boundPort;
+  try {
+    boundPort = await listen(server, config);
+  } catch (error) {
+    try {
+      await shutdownApiServer(server);
+    } catch {
+    }
+    throw error;
+  }
+  const shutdown = createShutdownCoordinator({
+    shutdown: () => shutdownApiServer(server),
+    exit: (code) => process.exit(code),
+    schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+    cancel: (handle2) => clearTimeout(handle2),
+    log: (message) => console.log(message),
+    error: (message) => console.error(message),
+    timeoutMs: SHUTDOWN_TIMEOUT_MS
+  });
+  process.on("SIGINT", () => shutdown("received SIGINT"));
+  process.on("SIGTERM", () => shutdown("received SIGTERM"));
+  server.on("error", () => shutdown("server error"));
+  const watchParentPid = configuredParentPid(env);
+  if (watchParentPid !== void 0) {
+    const watchdog = setInterval(() => {
+      try {
+        process.kill(watchParentPid, 0);
+      } catch (error) {
+        if (error.code === "ESRCH") {
+          clearInterval(watchdog);
+          shutdown("parent process exited");
+        }
+      }
+    }, 1e3);
+    watchdog.unref();
+  }
+  console.log(
+    `Velograph listening on http://${config.host}:${boundPort} (data dir configured via VELO_DATA_DIR)`
+  );
+  return 0;
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main().then(
+    (code) => {
+      process.exitCode = code;
+    },
+    () => {
+      console.error("Server failed: unexpected_error");
+      process.exitCode = 1;
+    }
+  );
+}
 
 // apps/cli/src/index.ts
 var USAGE = [
@@ -4574,23 +6912,68 @@ var USAGE = [
 function portableBasename(path) {
   return basename3(path.replaceAll("\\", "/"));
 }
-function collectFiles(paths) {
-  const files = [];
-  for (const p of paths) {
-    const st = statSync2(p);
-    if (st.isDirectory()) {
-      for (const entry of readdirSync2(p).sort()) {
-        const full = join5(p, entry);
-        if (!statSync2(full).isFile()) continue;
-        if (/\.(csv|gpx|zip)$/i.test(entry)) {
-          files.push({ name: entry, data: readFileSync2(full) });
-        }
+function sameFileIdentity(expected, actual) {
+  return expected.dev === actual.dev && expected.ino === actual.ino && expected.size === actual.size && expected.mtimeMs === actual.mtimeMs && expected.ctimeMs === actual.ctimeMs;
+}
+function directFileLoader(path, expected) {
+  const name = portableBasename(path);
+  return () => {
+    let fd;
+    try {
+      const pathStats = lstatSync5(path);
+      if (!pathStats.isFile() || !sameFileIdentity(expected, pathStats)) {
+        throw new Error("import_file_changed");
       }
-    } else {
-      files.push({ name: portableBasename(p), data: readFileSync2(p) });
+      fd = openSync3(path, "r");
+      const before = fstatSync3(fd);
+      if (!before.isFile() || !sameFileIdentity(expected, before)) {
+        throw new Error("import_file_changed");
+      }
+      const data = Buffer.alloc(expected.size);
+      let offset = 0;
+      while (offset < data.byteLength) {
+        const bytesRead = readSync2(fd, data, offset, data.byteLength - offset, null);
+        if (bytesRead === 0) throw new Error("import_file_changed");
+        offset += bytesRead;
+      }
+      const overflowProbe = Buffer.allocUnsafe(1);
+      if (readSync2(fd, overflowProbe, 0, 1, null) !== 0) {
+        throw new Error("import_file_changed");
+      }
+      const after = fstatSync3(fd);
+      if (!sameFileIdentity(before, after) || data.byteLength !== expected.size) {
+        throw new Error("import_file_changed");
+      }
+      return [{ name, data }];
+    } finally {
+      if (fd !== void 0) closeSync3(fd);
+    }
+  };
+}
+function collectImportGroups(paths) {
+  const groups = [];
+  let totalFiles = 0;
+  let totalBytes = 0;
+  for (const path of paths) {
+    const stats = lstatSync5(path);
+    if (stats.isSymbolicLink()) throw new Error("import_symbolic_path");
+    if (stats.isDirectory()) {
+      const plan = planFolderImport(path);
+      if (plan.truncated) throw new Error("import_folder_limits_exceeded");
+      totalFiles += plan.totalFiles;
+      totalBytes += plan.totalBytes;
+      groups.push(...readFolderFileGroups(plan));
+    } else if (stats.isFile() && /\.(csv|gpx|zip)$/i.test(path)) {
+      if (stats.size > DEFAULT_MAX_GROUP_BYTES) throw new Error("import_file_too_large");
+      totalFiles++;
+      totalBytes += stats.size;
+      groups.push(directFileLoader(path, stats));
+    }
+    if (totalFiles > DEFAULT_MAX_FILES || totalBytes > DEFAULT_MAX_TOTAL_BYTES) {
+      throw new Error("import_folder_limits_exceeded");
     }
   }
-  return files;
+  return groups;
 }
 function extractDataDirOverride(args) {
   const rest = [...args];
@@ -4613,12 +6996,12 @@ function runImportCmd(args) {
   const dataDir = resolveDataDir();
   const db = openDatabase(databasePath(dataDir));
   try {
-    const files = collectFiles(args);
-    if (files.length === 0) {
+    const groups = collectImportGroups(args);
+    if (groups.length === 0) {
       console.error("No importable files found (.csv, .gpx, .zip)");
       return 2;
     }
-    const result = runImport(db, files, { timeZone: systemTimeZone() });
+    const result = runImportGroups(db, groups, { timeZone: systemTimeZone() });
     console.log(
       [
         `Batch ${result.batchId} committed`,
@@ -4628,8 +7011,14 @@ function runImportCmd(args) {
         `  workouts created:   ${result.workoutsCreated}`
       ].join("\n")
     );
-    for (const q of result.quarantinedFiles) {
-      console.log(`  quarantined: ${q.name} [${q.code}]`);
+    const quarantinedByCode = /* @__PURE__ */ new Map();
+    for (const quarantine of result.quarantinedFiles) {
+      quarantinedByCode.set(quarantine.code, (quarantinedByCode.get(quarantine.code) ?? 0) + 1);
+    }
+    for (const [code, count] of [...quarantinedByCode].sort(
+      ([left], [right]) => left.localeCompare(right)
+    )) {
+      console.log(`  quarantined [${code}]: ${count}`);
     }
     return 0;
   } finally {
@@ -4678,7 +7067,7 @@ function runRepairCmd(args) {
     db.close();
   }
 }
-function closeDatabaseWithoutThrow(db) {
+function closeDatabaseWithoutThrow2(db) {
   if (!db?.open) return true;
   try {
     db.close();
@@ -4698,7 +7087,7 @@ async function runBackupCmd(args) {
     const dataDir = resolveDataDir();
     db = openDatabase(databasePath(dataDir));
     const result = await backupDatabase(db, dest);
-    if (!closeDatabaseWithoutThrow(db)) {
+    if (!closeDatabaseWithoutThrow2(db)) {
       console.error("Backup failed: backup_failed");
       return 1;
     }
@@ -4707,7 +7096,7 @@ async function runBackupCmd(args) {
     );
     return 0;
   } catch (err) {
-    closeDatabaseWithoutThrow(db);
+    closeDatabaseWithoutThrow2(db);
     const code = err instanceof BackupValidationError ? err.code : "backup_failed";
     console.error(`Backup failed: ${code}`);
     return 1;
@@ -4731,7 +7120,7 @@ async function runRestoreCmd(args) {
     const dbPath = databasePath(dataDir);
     db = openDatabase(dbPath);
     const result = await restoreDatabaseWithReport(db, dbPath, source);
-    if (!closeDatabaseWithoutThrow(result.database)) {
+    if (!closeDatabaseWithoutThrow2(result.database)) {
       console.error("Restore failed: restore_failed");
       return 1;
     }
@@ -4741,9 +7130,9 @@ async function runRestoreCmd(args) {
     return 0;
   } catch (err) {
     if (err instanceof RestoreDatabaseError && err.recoveredDatabase?.open) {
-      closeDatabaseWithoutThrow(err.recoveredDatabase);
+      closeDatabaseWithoutThrow2(err.recoveredDatabase);
     } else {
-      closeDatabaseWithoutThrow(db);
+      closeDatabaseWithoutThrow2(db);
     }
     const code = err instanceof RestoreDatabaseError ? err.code : err instanceof RestoreValidationError ? err.code : "restore_failed";
     console.error(`Restore failed: ${code}`);
@@ -4766,7 +7155,7 @@ function commandFailureMessage(command) {
       return "Command failed: command_failed";
   }
 }
-async function main(argv) {
+async function main2(argv) {
   const args = [...argv];
   const cmd = args.shift();
   try {
@@ -4797,8 +7186,8 @@ async function main(argv) {
     return 1;
   }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  void main(process.argv.slice(2)).then(
+if (process.argv[1] && import.meta.url === pathToFileURL2(process.argv[1]).href) {
+  void main2(process.argv.slice(2)).then(
     (code) => {
       process.exitCode = code;
     },
@@ -4809,6 +7198,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   );
 }
 export {
-  main,
+  main2 as main,
   portableBasename
 };

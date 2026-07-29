@@ -12,6 +12,7 @@ import {
   auditArtifact,
   auditOciArchive,
   auditProductionDeploy,
+  scanHistoryContent,
 } from './privacy-audit-release.mjs';
 
 const temporaryDirectories = [];
@@ -44,18 +45,12 @@ function jsonBlob(layout, value, mediaType) {
 }
 
 function writeSyntheticWebArtifact(root) {
-  const webRoot = join(root, 'app', 'web', 'dist');
+  const webRoot = join(root, 'app', 'api', 'dist', 'web');
   const script = Buffer.from('const relList = {}; relList.supports("modulepreload");\n');
   const html = Buffer.from('<main>Synthetic container artifact</main>\n');
   const font = Buffer.from('synthetic bundled font bytes\n');
-  const directDependencies = webPackageManifest.dependencies ?? {};
   const requiredPackageIds = thirdPartyManifest.packages
-    .filter(
-      (entry) =>
-        entry.scopes.includes('web') &&
-        entry.artifactPresence === 'required' &&
-        (!entry.conditionalOnDirectDependency || Object.hasOwn(directDependencies, entry.name)),
-    )
+    .filter((entry) => entry.scopes.includes('web') && entry.artifactPresence === 'required')
     .map((entry) => `${entry.name}@${entry.version}`);
   const workspaceId = `${webPackageManifest.name}@${webPackageManifest.version}`;
   const packageIds = [workspaceId, ...requiredPackageIds].sort((left, right) =>
@@ -150,7 +145,8 @@ function createSyntheticOciArchive({
   );
   const imageLayers = [layer];
   const effectiveWhiteoutPath =
-    whiteoutPath ?? (whiteoutWebNotices ? 'app/web/dist/.wh.THIRD_PARTY_NOTICES.md' : undefined);
+    whiteoutPath ??
+    (whiteoutWebNotices ? 'app/api/dist/web/.wh.THIRD_PARTY_NOTICES.md' : undefined);
   if (
     effectiveWhiteoutPath ||
     addWebScript ||
@@ -166,13 +162,21 @@ function createSyntheticOciArchive({
       archiveRoots.add(effectiveWhiteoutPath.split('/')[0]);
     }
     if (addWebScript) {
-      const extraScript = join(whiteoutRoot, 'app', 'web', 'dist', 'assets', 'unreviewed.js');
+      const extraScript = join(
+        whiteoutRoot,
+        'app',
+        'api',
+        'dist',
+        'web',
+        'assets',
+        'unreviewed.js',
+      );
       mkdirSync(dirname(extraScript), { recursive: true });
       writeFileSync(extraScript, 'console.log("synthetic extra script");\n');
       archiveRoots.add('app');
     }
     if (replaceWebDirectory) {
-      const replacement = join(whiteoutRoot, 'app', 'web', 'dist');
+      const replacement = join(whiteoutRoot, 'app', 'api', 'dist', 'web');
       mkdirSync(dirname(replacement), { recursive: true });
       writeFileSync(replacement, 'synthetic replacement file\n');
       archiveRoots.add('app');
@@ -266,6 +270,15 @@ afterEach(() => {
 });
 
 describe('release privacy artifact audit', () => {
+  it('uses an opaque history handle for a sensitive filename', () => {
+    const sensitiveName = ['Outdoor Cycling-Heart Rate-', '20250101', '_101500.csv'].join('');
+    const violations = scanHistoryContent(`private/${sensitiveName}`, Buffer.from('invented\n'));
+    expect(violations).toHaveLength(2);
+    expect(violations[0]?.path).toMatch(/^history-entry\/[0-9a-f]{16}$/);
+    expect(JSON.stringify(violations)).not.toContain(sensitiveName);
+    expect(JSON.stringify(violations)).not.toContain('20250101');
+  });
+
   it('accepts an ordinary extracted artifact', () => {
     const directory = makeArtifactDirectory();
     writeFileSync(join(directory, 'release-notes.txt'), 'synthetic release notes\n');
@@ -322,7 +335,7 @@ describe('release privacy artifact audit', () => {
     ).rejects.toThrow('container_third_party_notices_missing');
   });
 
-  it.each(['app/.wh.api', 'app/web/.wh.dist', '.wh.app'])(
+  it.each(['app/.wh.api', 'app/api/dist/.wh.web', '.wh.app'])(
     'tracks a parent-directory whiteout at %s',
     async (whiteoutPath) => {
       await expect(auditOciArchive(createSyntheticOciArchive({ whiteoutPath }))).rejects.toThrow(

@@ -16,12 +16,12 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "prepack": "pnpm run build",
+    "prepack": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "better-sqlite3": "^12.11.1",
-    "fflate": "^0.8.2"
+    "better-sqlite3": "12.11.1",
+    "fflate": "0.8.3"
   },
   "devDependencies": {
     "@types/node": "^24.1.0",

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -97,6 +97,21 @@ afterAll(async () => {
 });
 
 describe('root development coordinator and real Vite proxy', () => {
+  it('leaves the authoritative notice and module evidence in both web artifact trees', async () => {
+    const canonicalNotice = await readFile(join(REPO_ROOT, 'THIRD_PARTY_NOTICES.md'));
+    const [sourceNotice, packagedNotice, sourceEvidence, packagedEvidence] = await Promise.all([
+      readFile(join(REPO_ROOT, 'apps', 'web', 'dist', 'THIRD_PARTY_NOTICES.md')),
+      readFile(join(REPO_ROOT, 'apps', 'api', 'dist', 'web', 'THIRD_PARTY_NOTICES.md')),
+      readFile(join(REPO_ROOT, 'apps', 'web', 'dist', 'third-party-module-evidence.json')),
+      readFile(join(REPO_ROOT, 'apps', 'api', 'dist', 'web', 'third-party-module-evidence.json')),
+    ]);
+
+    expect(sourceNotice.equals(canonicalNotice)).toBe(true);
+    expect(packagedNotice.equals(canonicalNotice)).toBe(true);
+    expect(packagedEvidence.equals(sourceEvidence)).toBe(true);
+    expect(JSON.parse(sourceEvidence.toString('utf8'))).toMatchObject({ schemaVersion: 1 });
+  });
+
   it('passes GET and mutating requests through the strict loopback API', async () => {
     const health = await fetch(`${webOrigin}/api/health`);
     expect(health.status).toBe(200);

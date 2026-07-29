@@ -397,7 +397,7 @@ describe('third-party licence artifact gates', () => {
     expect(verifyArtifact(artifactRoot, repositoryRoot)).toBe(0);
     writeFileSync(join(artifactRoot, 'assets', 'index.js'), 'tampered\n');
     expect(() => verifyArtifact(artifactRoot, repositoryRoot)).toThrow(
-      'artifact_file_evidence_mismatch',
+      /^artifact_file_evidence_mismatch$/,
     );
     writeWebArtifactEvidence(artifactRoot, {
       packageIds: ['@synthetic/web@1.0.0', 'synthetic-runtime@1.0.0'],
@@ -457,6 +457,22 @@ describe('third-party licence artifact gates', () => {
     const texts = new Map([[entry.licenseSha256, text]]);
     writeCanonicalEvidence(repositoryRoot, manifest, texts);
     writeFileSync(join(deploymentRoot, 'THIRD_PARTY_NOTICES.md'), renderNotices(manifest, texts));
+    mkdirSync(join(repositoryRoot, 'apps', 'web'), { recursive: true });
+    mkdirSync(join(repositoryRoot, 'packages'), { recursive: true });
+    writeJson(join(repositoryRoot, 'package.json'), {
+      name: 'synthetic-project',
+      version: '1.0.0',
+    });
+    writeJson(join(repositoryRoot, 'apps', 'web', 'package.json'), {
+      name: '@synthetic/web',
+      version: '1.0.0',
+    });
+    const deployedWeb = join(deploymentRoot, 'dist', 'web');
+    writeWebArtifactEvidence(deployedWeb, {
+      packageIds: ['@synthetic/web@1.0.0'],
+      injectedModules: [],
+    });
+    writeFileSync(join(deployedWeb, 'THIRD_PARTY_NOTICES.md'), renderNotices(manifest, texts));
 
     const packageRoot = join(
       deploymentRoot,

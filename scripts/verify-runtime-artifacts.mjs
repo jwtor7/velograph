@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
-import { scanFile } from './privacy-scan.mjs';
+import { formatOpaqueViolation, scanFile } from './privacy-scan.mjs';
+import { verifyWebArtifactContents } from './third-party-license-gate.mjs';
 
 const repositoryRoot = process.cwd();
 const apiRoot = join(repositoryRoot, 'apps', 'api');
@@ -12,10 +13,14 @@ const requiredFiles = [
   join(apiRoot, 'dist', 'velograph-api.mjs'),
   join(apiRoot, 'dist', 'api-runtime.mjs'),
   join(apiRoot, 'dist', 'api-runtime.meta.json'),
+  join(apiRoot, 'dist', 'THIRD_PARTY_NOTICES.md'),
   join(apiRoot, 'dist', 'web', 'index.html'),
+  join(apiRoot, 'dist', 'web', 'THIRD_PARTY_NOTICES.md'),
+  join(apiRoot, 'dist', 'web', 'third-party-module-evidence.json'),
   join(cliRoot, 'dist', 'velograph-import.mjs'),
   join(cliRoot, 'dist', 'cli-runtime.mjs'),
   join(cliRoot, 'dist', 'cli-runtime.meta.json'),
+  join(cliRoot, 'dist', 'THIRD_PARTY_NOTICES.md'),
 ];
 
 async function walk(directory) {
@@ -27,6 +32,14 @@ async function walk(directory) {
     else if (entry.isFile()) files.push(path);
   }
   return files.sort();
+}
+
+async function collectContents(directory) {
+  const contents = new Map();
+  for (const path of await walk(directory)) {
+    contents.set(relative(directory, path).replaceAll('\\', '/'), await readFile(path));
+  }
+  return contents;
 }
 
 async function verifyMigrationCopy(packageRoot) {
@@ -59,14 +72,13 @@ for (const path of requiredFiles) {
 }
 
 await Promise.all([verifyMigrationCopy(apiRoot), verifyMigrationCopy(cliRoot)]);
+verifyWebArtifactContents(await collectContents(join(apiRoot, 'dist', 'web')), repositoryRoot);
 
 const canonicalNotice = join(repositoryRoot, 'THIRD_PARTY_NOTICES.md');
-if (existsSync(canonicalNotice)) {
-  const canonical = await readFile(canonicalNotice);
-  for (const packageRoot of [apiRoot, cliRoot]) {
-    const copied = await readFile(join(packageRoot, 'dist', 'THIRD_PARTY_NOTICES.md'));
-    if (!canonical.equals(copied)) throw new Error('runtime_artifact_notice_mismatch');
-  }
+const canonical = await readFile(canonicalNotice);
+for (const packageRoot of [apiRoot, cliRoot]) {
+  const copied = await readFile(join(packageRoot, 'dist', 'THIRD_PARTY_NOTICES.md'));
+  if (!canonical.equals(copied)) throw new Error('runtime_artifact_notice_mismatch');
 }
 for (const packageRoot of [apiRoot, cliRoot]) {
   if (existsSync(join(packageRoot, 'dist', 'LICENSE'))) {
@@ -99,9 +111,7 @@ for (const path of artifactFiles) {
 if (violations.length > 0) {
   console.error(`RUNTIME ARTIFACT PRIVACY SCAN FAILED — ${violations.length} violation(s):`);
   for (const violation of violations) {
-    console.error(
-      `  ${violation.path}${violation.line ? `:${violation.line}` : ''}  [${violation.rule}]`,
-    );
+    console.error(`  ${formatOpaqueViolation(violation)}`);
   }
   process.exitCode = 1;
 } else {

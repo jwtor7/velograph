@@ -1,10 +1,20 @@
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  truncate,
+  writeFile,
+} from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { assertRuntimeDependencyContract } from './runtime-package-contract.mjs';
 
 const repositoryRoot = process.cwd();
 const sandbox = await mkdtemp(join(tmpdir(), 'velograph-cli-package-'));
@@ -12,6 +22,8 @@ const packageDirectory = join(sandbox, 'package');
 const installDirectory = join(sandbox, 'install');
 const dataDirectory = join(sandbox, 'data');
 const fixturePath = join(sandbox, 'Outdoor Cycling-Heart Rate-20310102_080000.csv');
+const quarantinePath = join(sandbox, 'Outdoor Cycling-Heart Rate-20390101_010101.csv');
+const oversizedPath = join(sandbox, 'Outdoor Cycling-Heart Rate-20390101_020202.csv');
 const backupPath = join(sandbox, 'synthetic-backup.sqlite3');
 const canonicalMigrations = join(repositoryRoot, 'packages', 'db', 'migrations');
 
@@ -75,6 +87,17 @@ async function verifyMigrationCopies(installedPackageDirectory) {
   }
 }
 
+async function installedDependencyVersion(installedPackageDirectory, name) {
+  for (const path of [
+    join(installDirectory, 'node_modules', name, 'package.json'),
+    join(installedPackageDirectory, 'node_modules', name, 'package.json'),
+  ]) {
+    if (!existsSync(path)) continue;
+    return JSON.parse(await readFile(path, 'utf8')).version;
+  }
+  throw new Error('installed CLI runtime dependency is missing');
+}
+
 try {
   await writeFile(
     fixturePath,
@@ -85,6 +108,9 @@ try {
       '2031-01-02T08:02:00Z,122,Synthetic Sensor',
     ].join('\n'),
   );
+  await writeFile(quarantinePath, 'invented malformed private source\n');
+  await writeFile(oversizedPath, '');
+  await truncate(oversizedPath, 64 * 1024 * 1024 + 1);
   await Promise.all([mkdir(packageDirectory), mkdir(installDirectory)]);
 
   run(
@@ -120,24 +146,22 @@ try {
   ) {
     throw new Error('installed CLI manifest does not target the supported built runtime');
   }
-  if (
-    packagedManifest.dependencies?.['better-sqlite3'] !== '^12.11.1' ||
-    typeof packagedManifest.dependencies?.fflate !== 'string' ||
-    Object.keys(packagedManifest.dependencies).some((name) => name.startsWith('@velograph/'))
-  ) {
-    throw new Error('installed CLI runtime dependency boundary is invalid');
+  assertRuntimeDependencyContract(packagedManifest);
+  const [sqliteVersion, fflateVersion] = await Promise.all([
+    installedDependencyVersion(installedPackageDirectory, 'better-sqlite3'),
+    installedDependencyVersion(installedPackageDirectory, 'fflate'),
+  ]);
+  if (sqliteVersion !== '12.11.1' || fflateVersion !== '0.8.3') {
+    throw new Error('installed CLI runtime dependency version is not the audited version');
   }
 
   await verifyMigrationCopies(installedPackageDirectory);
   const canonicalNotice = join(repositoryRoot, 'THIRD_PARTY_NOTICES.md');
-  if (existsSync(canonicalNotice)) {
-    const [canonical, installed] = await Promise.all([
-      readFile(canonicalNotice),
-      readFile(join(installedPackageDirectory, 'dist', 'THIRD_PARTY_NOTICES.md')),
-    ]);
-    if (!canonical.equals(installed))
-      throw new Error('installed CLI notice differs from canonical');
-  }
+  const [canonical, installed] = await Promise.all([
+    readFile(canonicalNotice),
+    readFile(join(installedPackageDirectory, 'dist', 'THIRD_PARTY_NOTICES.md')),
+  ]);
+  if (!canonical.equals(installed)) throw new Error('installed CLI notice differs from canonical');
   if (existsSync(join(installedPackageDirectory, 'dist', 'LICENSE'))) {
     throw new Error('installed CLI substituted the project LICENSE for third-party notices');
   }
@@ -183,6 +207,41 @@ try {
   if (storedName !== 'Outdoor Cycling-Heart Rate-20310102_080000.csv') {
     throw new Error('installed CLI did not store only the portable source basename');
   }
+
+  const quarantined = runCli(['import', quarantinePath, '--data-dir', dataDirectory]);
+  if (
+    quarantined.status !== 0 ||
+    !/quarantined:\s+1/.test(quarantined.stdout) ||
+    !/quarantined \[[a-z_]+\]: 1/.test(quarantined.stdout)
+  ) {
+    throw new Error('installed CLI did not report a value-free quarantine summary');
+  }
+  assertValueFree(`${quarantined.stdout}${quarantined.stderr}`, [
+    sandbox,
+    quarantinePath,
+    '20390101',
+    '010101',
+  ]);
+
+  const oversized = runCli(['import', oversizedPath, '--data-dir', dataDirectory]);
+  if (
+    oversized.status !== 1 ||
+    oversized.stdout !== '' ||
+    oversized.stderr.trim() !== 'Import failed: import_failed'
+  ) {
+    throw new Error('installed CLI did not reject an oversized direct file');
+  }
+  assertValueFree(`${oversized.stdout}${oversized.stderr}`, [
+    sandbox,
+    oversizedPath,
+    '20390101',
+    '020202',
+  ]);
+  database = inspectDatabase();
+  if (database.prepare('SELECT count(*) AS count FROM workouts').get().count !== 1) {
+    throw new Error('installed CLI oversized-file rejection mutated workouts');
+  }
+  database.close();
 
   const runtimeModule = await import(
     `${pathToFileURL(join(installedPackageDirectory, 'dist', 'cli-runtime.mjs')).href}?verify=1`

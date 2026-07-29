@@ -17,6 +17,7 @@ import {
   type ImportSelectionError,
   type PickedImportFile,
 } from './import-files.ts';
+import { resolveDroppedFolderPath, type DroppedFolderFile } from './import-folder-drop.ts';
 import { requestCurrentFolderPreview } from './import-preview.ts';
 
 const ACCEPT = '.csv,.gpx,.zip';
@@ -63,19 +64,25 @@ function uploadErrorMessage(err: unknown): string {
 }
 
 /**
- * Recursively read every file entry under a dropped `FileSystemEntry`
- * (issue #51: folder drag-and-drop via `webkitGetAsEntry`). Browsers do not
- * expose the OS-absolute path of a dropped folder — that's a platform
- * limitation, not something this app can work around — so a dropped folder
- * is read into the existing multi-file list rather than the path field.
- * Large exports are better served by pasting the path below, which reads
- * from disk instead of buffering every file into the page.
+ * Recursively read every file entry under a dropped `FileSystemEntry`, while
+ * constructing a relative path from entry names. The virtual `entry.fullPath`
+ * is intentionally ignored because it is not an OS path.
  */
-function readEntryFiles(entry: FileSystemEntry): Promise<File[]> {
+function readEntryFiles(
+  entry: FileSystemEntry,
+  relativeParent = '',
+  droppedRoot = true,
+): Promise<DroppedFolderFile[]> {
   return new Promise((resolve) => {
     if (entry.isFile) {
       (entry as FileSystemFileEntry).file(
-        (file) => resolve([file]),
+        (file) =>
+          resolve([
+            {
+              file,
+              relativePath: [relativeParent, entry.name].filter(Boolean).join('/'),
+            },
+          ]),
         () => resolve([]),
       );
       return;
@@ -84,8 +91,11 @@ function readEntryFiles(entry: FileSystemEntry): Promise<File[]> {
       resolve([]);
       return;
     }
+    const childParent = droppedRoot
+      ? relativeParent
+      : [relativeParent, entry.name].filter(Boolean).join('/');
     const reader = (entry as FileSystemDirectoryEntry).createReader();
-    const collected: File[] = [];
+    const collected: DroppedFolderFile[] = [];
     const readBatch = () => {
       reader.readEntries(
         (entries) => {
@@ -93,7 +103,7 @@ function readEntryFiles(entry: FileSystemEntry): Promise<File[]> {
             resolve(collected);
             return;
           }
-          Promise.all(entries.map(readEntryFiles))
+          Promise.all(entries.map((child) => readEntryFiles(child, childParent, false)))
             .then((groups) => {
               for (const g of groups) collected.push(...g);
               readBatch(); // a directory reader may require several calls to exhaust all entries
@@ -117,6 +127,7 @@ export function ImportPage() {
   const [result, setResult] = useState<ImportResultBody | null>(null);
   const [resultSkipped, setResultSkipped] = useState<FolderSkipItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [dropNotice, setDropNotice] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const nextFileIdRef = useRef(1);
   const selectionVersionRef = useRef(0);
@@ -140,13 +151,14 @@ export function ImportPage() {
     [],
   );
 
-  const addFiles = (files: FileList | File[]) => {
+  const addFiles = (files: FileList | File[], notice: string | null = null) => {
     if (fileOperationBusy || pathOperationBusy) {
       setError(
         'Wait for the current review, scan, or import to finish before changing the selection.',
       );
       return;
     }
+    setDropNotice(notice);
     setPicked((prev) => {
       const created = createPickedFiles(files, nextFileIdRef.current);
       const merged = [...prev, ...created.files];
@@ -174,8 +186,30 @@ export function ImportPage() {
         ? [...items].map((it) => it.webkitGetAsEntry?.()).filter((x): x is FileSystemEntry => !!x)
         : [];
     if (entries.length > 0 && entries.some((en) => en.isDirectory)) {
-      const groups = await Promise.all(entries.map(readEntryFiles));
-      addFiles(groups.flat());
+      const groups = await Promise.all(entries.map((entry) => readEntryFiles(entry)));
+      const droppedFiles = groups.flat();
+      const folderPath =
+        entries.length === 1 && entries[0]!.isDirectory
+          ? resolveDroppedFolderPath(droppedFiles)
+          : null;
+      if (folderPath) {
+        selectionVersionRef.current++;
+        setPicked([]);
+        setInventory(null);
+        setError(null);
+        setDropNotice(
+          'Folder path detected by this local desktop runtime. Previewing it directly from disk.',
+        );
+        folderPathRef.current = folderPath;
+        setFolderPath(folderPath);
+        setPreview(null);
+        await loadPreviewForPath(folderPath);
+        return;
+      }
+      addFiles(
+        droppedFiles.map(({ file }) => file),
+        'This browser does not expose one verified absolute folder path. Velograph added the bounded loose files it could read; paste the path below for a large export.',
+      );
       return;
     }
     addFiles(e.dataTransfer.files);
@@ -249,12 +283,12 @@ export function ImportPage() {
     }
   };
 
-  const loadPreview = async () => {
+  async function loadPreviewForPath(requestedPath: string) {
     if (fileOperationBusy) {
       setPreviewError('Wait for the file operation to finish before scanning a folder.');
       return;
     }
-    const requestedPath = folderPath.trim();
+    const normalizedRequestedPath = requestedPath.trim();
     const controller = new AbortController();
     pathOperationRef.current = controller;
     setPreviewBusy(true);
@@ -262,7 +296,7 @@ export function ImportPage() {
     setResult(null);
     try {
       const res = await requestCurrentFolderPreview(
-        requestedPath,
+        normalizedRequestedPath,
         () => folderPathRef.current,
         (path) => api.importPathPreview(path, controller.signal),
       );
@@ -291,7 +325,9 @@ export function ImportPage() {
         setPreviewBusy(false);
       }
     }
-  };
+  }
+
+  const loadPreview = async () => loadPreviewForPath(folderPath);
 
   const confirmPathImport = async () => {
     if (fileOperationBusy) {
@@ -401,6 +437,11 @@ export function ImportPage() {
           </button>
         </div>
         <p style={{ margin: '10px 0 0', fontSize: 11 }}>.csv · .gpx · .zip</p>
+        {dropNotice && (
+          <p className="muted" role="status" style={{ margin: '10px 0 0', fontSize: 12 }}>
+            {dropNotice}
+          </p>
+        )}
         <input
           ref={inputRef}
           type="file"

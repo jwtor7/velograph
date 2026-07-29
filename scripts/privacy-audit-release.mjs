@@ -16,7 +16,7 @@
  *   node scripts/privacy-audit-release.mjs --oci-image path/to/image.oci.tar
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   closeSync,
   createReadStream,
@@ -38,17 +38,18 @@ import { scanFile } from './privacy-scan.mjs';
 import { verifyWebArtifactContents } from './third-party-license-gate.mjs';
 
 export const MAX_AUDIT_ENTRY_BYTES = 64 * 1024 * 1024;
+const OPAQUE_REPORT_SALT = randomBytes(32);
 const REPOSITORY_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CANONICAL_NOTICES_PATH = join(REPOSITORY_ROOT, 'THIRD_PARTY_NOTICES.md');
 export const REQUIRED_CONTAINER_NOTICE_PATHS = [
   'app/api/THIRD_PARTY_NOTICES.md',
-  'app/web/dist/THIRD_PARTY_NOTICES.md',
+  'app/api/dist/web/THIRD_PARTY_NOTICES.md',
 ];
 export const REQUIRED_CONTAINER_SYSTEM_NOTICE_PATHS = [
   'usr/local/LICENSE',
   'usr/share/doc/tini/copyright',
 ];
-const WEB_ARTIFACT_PREFIX = 'app/web/dist/';
+const WEB_ARTIFACT_PREFIX = 'app/api/dist/web/';
 const COMMAND_BUFFER_BYTES = MAX_AUDIT_ENTRY_BYTES + 1;
 const TARGET_PLATFORMS = ['linux/amd64', 'linux/arm64'];
 const APP_ENTRYPOINTS = new Set([
@@ -144,7 +145,12 @@ function normalizedArchivePath(path) {
 }
 
 function opaquePath(scope, identity) {
-  const digest = createHash('sha256').update(identity).digest('hex').slice(0, 16);
+  const digest = createHash('sha256')
+    .update(OPAQUE_REPORT_SALT)
+    .update('\0')
+    .update(identity)
+    .digest('hex')
+    .slice(0, 16);
   return `${scope}/${digest}`;
 }
 
@@ -192,11 +198,8 @@ function scanContent(logicalPath, content, reportPath = logicalPath) {
   return violations.map((violation) => ({ ...violation, path: reportPath }));
 }
 
-function scanHistoryContent(path, content) {
-  return scanContent(path, content).map((violation) => ({
-    ...violation,
-    path: `history/${violation.path}`,
-  }));
+export function scanHistoryContent(path, content) {
+  return scanContent(path, content, opaquePath('history-entry', path));
 }
 
 function walkArtifactFiles(root) {

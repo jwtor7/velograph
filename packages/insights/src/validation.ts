@@ -14,7 +14,11 @@ import type { InsightFinding } from './schema.ts';
 export type FindingValidationStatus = 'valid' | 'flagged' | 'removed';
 
 export type FindingValidationReasonCode =
-  'no_evidence' | 'unknown_evidence_metric' | 'diagnostic_phrasing' | 'unsupported_numeric_value';
+  | 'no_evidence'
+  | 'unknown_evidence_metric'
+  | 'diagnostic_phrasing'
+  | 'unsupported_numeric_value'
+  | 'unsupported_numeric_unit';
 
 export interface FindingValidationResult {
   status: FindingValidationStatus;
@@ -76,10 +80,95 @@ export function deriveFactsFromPayload(payload: InsightPayload): NumericFact[] {
 
 const NUMBER_PATTERN = /-?\d+(?:\.\d+)?/g;
 
+interface NumericClaim {
+  value: number;
+  /** Canonical unit only when the text explicitly labels this number. */
+  unit: string | null;
+}
+
+const CLAIM_UNIT_ALIASES: readonly { pattern: RegExp; unit: string }[] = [
+  {
+    pattern: /^\s*(?:kilomet(?:er|re)s?\s+per\s+hour\s+per\s+bpm|km\/h\/bpm)\b/i,
+    unit: 'km/h/bpm',
+  },
+  {
+    pattern: /^\s*(?:met(?:er|re)s?\s+per\s+second|m\/s)\b/i,
+    unit: 'm/s',
+  },
+  {
+    pattern: /^\s*(?:kilomet(?:er|re)s?\s+per\s+hour|km\/h)\b/i,
+    unit: 'km/h',
+  },
+  {
+    pattern: /^\s*(?:beats?\s+per\s+minute|bpm)\b/i,
+    unit: 'bpm',
+  },
+  {
+    pattern: /^\s*(?:revolutions?\s+per\s+minute|rpm)\b/i,
+    unit: 'rpm',
+  },
+  {
+    pattern: /^\s*(?:milliseconds?|msecs?|ms)\b/i,
+    unit: 'ms',
+  },
+  {
+    pattern: /^\s*(?:seconds?|secs?|s)\b/i,
+    unit: 's',
+  },
+  {
+    pattern: /^\s*(?:minutes?|mins?|min)\b/i,
+    unit: 'min',
+  },
+  {
+    pattern: /^\s*(?:hours?|hrs?|hr)\b/i,
+    unit: 'h',
+  },
+  {
+    pattern: /^\s*(?:kilomet(?:er|re)s?|kms?|km)\b/i,
+    unit: 'km',
+  },
+  {
+    pattern: /^\s*(?:met(?:er|re)s?|m)\b/i,
+    unit: 'm',
+  },
+  {
+    pattern: /^\s*(?:kilojoules?|kJ)\b/i,
+    unit: 'kJ',
+  },
+  {
+    pattern: /^\s*(?:joules?|J)\b/i,
+    unit: 'J',
+  },
+  {
+    pattern: /^\s*(?:percent(?:age)?|pct)\b/i,
+    unit: '%',
+  },
+  {
+    pattern: /^\s*%/,
+    unit: '%',
+  },
+  {
+    pattern: /^\s*ratio\b/i,
+    unit: 'ratio',
+  },
+];
+
+function explicitClaimUnit(textAfterNumber: string): string | null {
+  return CLAIM_UNIT_ALIASES.find(({ pattern }) => pattern.test(textAfterNumber))?.unit ?? null;
+}
+
+function extractNumericClaims(text: string): NumericClaim[] {
+  return [...text.matchAll(NUMBER_PATTERN)]
+    .map((match) => ({
+      value: Number(match[0]),
+      unit: explicitClaimUnit(text.slice((match.index ?? 0) + match[0].length)),
+    }))
+    .filter((claim) => Number.isFinite(claim.value));
+}
+
 /** Extracts numeric tokens from free text (percentages counted by their leading number). */
 export function extractNumbers(text: string): number[] {
-  const matches = text.match(NUMBER_PATTERN) ?? [];
-  return matches.map(Number).filter((n) => Number.isFinite(n));
+  return extractNumericClaims(text).map((claim) => claim.value);
 }
 
 function withinTolerance(n: number, fact: NumericFact, options: NumericToleranceOptions): boolean {
@@ -87,12 +176,12 @@ function withinTolerance(n: number, fact: NumericFact, options: NumericTolerance
   return Math.abs(n - fact.value) <= allowed;
 }
 
-function isNumberSupported(
-  n: number,
+function matchingFacts(
+  claim: NumericClaim,
   facts: NumericFact[],
   options: NumericToleranceOptions,
-): boolean {
-  return facts.some((fact) => withinTolerance(n, fact, options));
+): NumericFact[] {
+  return facts.filter((fact) => withinTolerance(claim.value, fact, options));
 }
 
 /**
@@ -122,10 +211,15 @@ export function validateFinding(
   const facts = deriveFactsFromPayload(payload).filter((fact) =>
     citedEvidenceIds.has(fact.evidenceId),
   );
-  const numbers = extractNumbers(finding.text);
-  const hasUnsupportedNumber = numbers.some((n) => !isNumberSupported(n, facts, options));
-  if (hasUnsupportedNumber) {
-    return { status: 'flagged', reasonCode: 'unsupported_numeric_value' };
+  const claims = extractNumericClaims(finding.text);
+  for (const claim of claims) {
+    const matches = matchingFacts(claim, facts, options);
+    if (matches.length === 0) {
+      return { status: 'flagged', reasonCode: 'unsupported_numeric_value' };
+    }
+    if (claim.unit !== null && !matches.some((fact) => fact.unit === claim.unit)) {
+      return { status: 'flagged', reasonCode: 'unsupported_numeric_unit' };
+    }
   }
 
   return { status: 'valid', reasonCode: null };

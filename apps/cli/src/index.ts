@@ -7,12 +7,11 @@
  *   node apps/cli/src/index.ts restore <backupPath> --confirm-replace [--data-dir <dir>]
  *   node apps/cli/src/index.ts repair <workoutId> [--data-dir <dir>]
  *
- * Accepts CSV/GPX files, directories (scanned one level, non-recursive), and
- * ZIP archives. Prints counts and error codes only — never sample values or
- * filesystem paths beyond what the user themselves passed on the command line.
+ * Accepts CSV/GPX files, recursively planned directories, and ZIP archives.
+ * Prints counts and error codes only — never sample values or filesystem paths.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { closeSync, fstatSync, lstatSync, openSync, readSync, type Stats } from 'node:fs';
+import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   BackupValidationError,
@@ -27,7 +26,15 @@ import {
   type Database,
 } from '@velograph/db';
 import { repairWorkout } from '@velograph/api';
-import { runImport, type ImportFile } from '@velograph/importers';
+import {
+  DEFAULT_MAX_FILES,
+  DEFAULT_MAX_GROUP_BYTES,
+  DEFAULT_MAX_TOTAL_BYTES,
+  planFolderImport,
+  readFolderFileGroups,
+  runImportGroups,
+  type ImportFileGroupLoader,
+} from '@velograph/importers';
 import { systemTimeZone } from '@velograph/shared';
 
 const USAGE = [
@@ -43,23 +50,80 @@ export function portableBasename(path: string): string {
   return basename(path.replaceAll('\\', '/'));
 }
 
-function collectFiles(paths: string[]): ImportFile[] {
-  const files: ImportFile[] = [];
-  for (const p of paths) {
-    const st = statSync(p);
-    if (st.isDirectory()) {
-      for (const entry of readdirSync(p).sort()) {
-        const full = join(p, entry);
-        if (!statSync(full).isFile()) continue;
-        if (/\.(csv|gpx|zip)$/i.test(entry)) {
-          files.push({ name: entry, data: readFileSync(full) });
-        }
+function sameFileIdentity(expected: Stats, actual: Stats): boolean {
+  return (
+    expected.dev === actual.dev &&
+    expected.ino === actual.ino &&
+    expected.size === actual.size &&
+    expected.mtimeMs === actual.mtimeMs &&
+    expected.ctimeMs === actual.ctimeMs
+  );
+}
+
+function directFileLoader(path: string, expected: Stats): ImportFileGroupLoader {
+  const name = portableBasename(path);
+  return () => {
+    let fd: number | undefined;
+    try {
+      const pathStats = lstatSync(path);
+      if (!pathStats.isFile() || !sameFileIdentity(expected, pathStats)) {
+        throw new Error('import_file_changed');
       }
-    } else {
-      files.push({ name: portableBasename(p), data: readFileSync(p) });
+      fd = openSync(path, 'r');
+      const before = fstatSync(fd);
+      if (!before.isFile() || !sameFileIdentity(expected, before)) {
+        throw new Error('import_file_changed');
+      }
+      const data = Buffer.alloc(expected.size);
+      let offset = 0;
+      while (offset < data.byteLength) {
+        const bytesRead = readSync(fd, data, offset, data.byteLength - offset, null);
+        if (bytesRead === 0) throw new Error('import_file_changed');
+        offset += bytesRead;
+      }
+      const overflowProbe = Buffer.allocUnsafe(1);
+      if (readSync(fd, overflowProbe, 0, 1, null) !== 0) {
+        throw new Error('import_file_changed');
+      }
+      const after = fstatSync(fd);
+      if (!sameFileIdentity(before, after) || data.byteLength !== expected.size) {
+        throw new Error('import_file_changed');
+      }
+      return [{ name, data }];
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
+  };
+}
+
+function collectImportGroups(paths: string[]): ImportFileGroupLoader[] {
+  const groups: ImportFileGroupLoader[] = [];
+  let totalFiles = 0;
+  let totalBytes = 0;
+
+  for (const path of paths) {
+    const stats = lstatSync(path);
+    if (stats.isSymbolicLink()) throw new Error('import_symbolic_path');
+
+    if (stats.isDirectory()) {
+      const plan = planFolderImport(path);
+      if (plan.truncated) throw new Error('import_folder_limits_exceeded');
+      totalFiles += plan.totalFiles;
+      totalBytes += plan.totalBytes;
+      groups.push(...readFolderFileGroups(plan));
+    } else if (stats.isFile() && /\.(csv|gpx|zip)$/i.test(path)) {
+      if (stats.size > DEFAULT_MAX_GROUP_BYTES) throw new Error('import_file_too_large');
+      totalFiles++;
+      totalBytes += stats.size;
+      groups.push(directFileLoader(path, stats));
+    }
+
+    if (totalFiles > DEFAULT_MAX_FILES || totalBytes > DEFAULT_MAX_TOTAL_BYTES) {
+      throw new Error('import_folder_limits_exceeded');
     }
   }
-  return files;
+
+  return groups;
 }
 
 type DataDirOverride =
@@ -91,12 +155,12 @@ function runImportCmd(args: string[]): number {
   const dataDir = resolveDataDir();
   const db = openDatabase(databasePath(dataDir));
   try {
-    const files = collectFiles(args);
-    if (files.length === 0) {
+    const groups = collectImportGroups(args);
+    if (groups.length === 0) {
       console.error('No importable files found (.csv, .gpx, .zip)');
       return 2;
     }
-    const result = runImport(db, files, { timeZone: systemTimeZone() });
+    const result = runImportGroups(db, groups, { timeZone: systemTimeZone() });
     console.log(
       [
         `Batch ${result.batchId} committed`,
@@ -106,8 +170,14 @@ function runImportCmd(args: string[]): number {
         `  workouts created:   ${result.workoutsCreated}`,
       ].join('\n'),
     );
-    for (const q of result.quarantinedFiles) {
-      console.log(`  quarantined: ${q.name} [${q.code}]`);
+    const quarantinedByCode = new Map<string, number>();
+    for (const quarantine of result.quarantinedFiles) {
+      quarantinedByCode.set(quarantine.code, (quarantinedByCode.get(quarantine.code) ?? 0) + 1);
+    }
+    for (const [code, count] of [...quarantinedByCode].sort(([left], [right]) =>
+      left.localeCompare(right),
+    )) {
+      console.log(`  quarantined [${code}]: ${count}`);
     }
     return 0;
   } finally {

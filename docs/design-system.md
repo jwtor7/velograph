@@ -97,7 +97,7 @@ Accessibility note: sampled label grays from the art fail AA contrast at small s
 
 - **Sidebar**: `--vg-bg-sidebar`, icon + label rows, active row gets a `--vg-surface-raised` pill with white text; inactive rows muted.
 - **KPI tile**: icon in channel color, tiny muted label, large tabular numeral + small unit.
-- **Pill badge**: transparent fill, 1 px `--vg-brand-green` border, brand-green text (as in "Open Source · Local-First · Runs in Your Browser").
+- **Pill badge**: transparent fill, 1 px `--vg-brand-green` border, brand-green text (as in "Public Source · Local-First · Runs in Your Browser").
 - **Chart tile**: title left, current value right in channel color; sparkline/area chart beneath; muted axis ticks.
 - **Zone strip**: six columns, zone label + time + percent, thin rounded progress bar in the zone color.
 - **Route panel**: interactive geographic viewport, gradient polyline, start/finish/distance/

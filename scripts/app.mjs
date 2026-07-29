@@ -7,10 +7,11 @@
  * built-entrypoint command must agree.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { closeSync, existsSync, openSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { homedir, platform, tmpdir } from 'node:os';
+import { buildApiRuntime } from './build-api-runtime.mjs';
 import { openBrowser } from './open-browser.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -19,7 +20,10 @@ const DEFAULT_PORT = 5123;
 const STOP_GRACE_MS = 12_000;
 const STOP_POLL_MS = 200;
 const START_TIMEOUT_MS = 20_000;
+const LOG_SINK_READY_TIMEOUT_MS = 5000;
+export const MAX_SERVER_LOG_BYTES = 5 * 1024 * 1024;
 const API_ENTRYPOINT = join(REPO_ROOT, 'apps', 'api', 'dist', 'velograph-api.mjs');
+const LOG_SINK_ENTRYPOINT = join(REPO_ROOT, 'scripts', 'server-log-sink.mjs');
 const PACKAGE_VERSION = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version;
 
 export function readManagedPort(raw = process.env['VELO_PORT'] ?? String(DEFAULT_PORT)) {
@@ -183,14 +187,7 @@ async function status(port) {
 
 function buildApp() {
   console.log('Building web client and API…');
-  execFileSync('pnpm', ['--filter', '@velograph/web', 'build'], {
-    cwd: REPO_ROOT,
-    stdio: ['ignore', 'ignore', 'inherit'],
-  });
-  execFileSync('pnpm', ['--filter', '@velograph/api', 'build'], {
-    cwd: REPO_ROOT,
-    stdio: ['ignore', 'ignore', 'inherit'],
-  });
+  buildApiRuntime({ stdio: ['ignore', 'ignore', 'inherit'] });
 }
 
 function childEnvironment(port, parentPid) {
@@ -222,6 +219,34 @@ function observeChild(child) {
 }
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+export async function startManagedLogSink(
+  path,
+  { maxBytes = MAX_SERVER_LOG_BYTES, readyTimeoutMs = LOG_SINK_READY_TIMEOUT_MS } = {},
+) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error('server_log_limit_invalid');
+  }
+  const child = spawn(process.execPath, [LOG_SINK_ENTRYPOINT, path, String(maxBytes)], {
+    cwd: REPO_ROOT,
+    detached: true,
+    stdio: ['pipe', 'ignore', 'ignore', 'ipc'],
+  });
+  const observation = observeChild(child);
+  const ready = await Promise.race([
+    new Promise((resolve) => {
+      child.once('message', (message) => resolve(message?.type === 'ready'));
+    }),
+    observation.completion.then(() => false),
+    delay(readyTimeoutMs).then(() => false),
+  ]);
+  if (!ready || !child.stdin) {
+    child.stdin?.end();
+    await terminateSpawnedChild(child, observation);
+    throw new Error('server_log_sink_start_failed');
+  }
+  return { child, input: child.stdin, observation };
+}
 
 async function waitForChildReadiness(child, observation, port) {
   const deadline = Date.now() + START_TIMEOUT_MS;
@@ -299,27 +324,39 @@ async function start(port) {
   }
 
   buildApp();
-  const output = openSync(logPath(port), 'a');
+  const logSink = await startManagedLogSink(logPath(port));
   let child;
   try {
     child = spawn(process.execPath, [API_ENTRYPOINT], {
       cwd: REPO_ROOT,
       detached: true,
-      stdio: ['ignore', output, output],
+      stdio: ['ignore', logSink.input, logSink.input],
       env: childEnvironment(port),
     });
-  } finally {
-    closeSync(output);
+  } catch (error) {
+    logSink.input.end();
+    await terminateSpawnedChild(logSink.child, logSink.observation);
+    throw error;
   }
+  // Close only the launcher's duplicate of the pipe. `end()` would issue a
+  // shared write-side shutdown and cut off the detached API's descriptors.
+  logSink.input.destroy();
   const observation = observeChild(child);
   const ready = await waitForChildReadiness(child, observation, port);
-  if (!ready.ready) {
-    reportStartupFailure(ready, port);
+  if (!ready.ready || logSink.observation.getOutcome()) {
+    if (ready.ready) {
+      console.error('Velograph log sink exited before startup completed.');
+    } else {
+      reportStartupFailure(ready, port);
+    }
     await terminateSpawnedChild(child, observation);
+    await Promise.race([logSink.observation.completion, delay(2000)]);
+    await terminateSpawnedChild(logSink.child, logSink.observation);
     return 1;
   }
 
   child.unref();
+  logSink.child.unref();
   console.log(`Velograph running at http://${HOST}:${port}`);
   console.log(`  data dir: ${resolveDataDir()}`);
   console.log(`  log:      ${logPath(port)}`);

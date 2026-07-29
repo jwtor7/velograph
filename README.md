@@ -6,7 +6,7 @@
 
 **Turn Apple Health cycling data into clear visuals and AI-powered insights that help you understand every ride.**
 
-Velograph is an open-source, local-first web app for cyclists. It imports Apple Health cycling exports (via [Health Auto Export](https://www.healthyapps.dev/) CSV/GPX/ZIP), stores them in a local SQLite database, calculates deterministic ride and conditioning metrics, reconstructs your routes entirely offline, and — optionally — generates evidence-linked AI narratives through a locally installed Codex CLI or Ollama.
+Velograph is a local-first web app for cyclists in a public source repository. It imports Apple Health cycling exports (via [Health Auto Export](https://www.healthyapps.dev/) CSV/GPX/ZIP), stores them in a local SQLite database, calculates deterministic ride and conditioning metrics, reconstructs your routes entirely offline, and — optionally — generates evidence-linked AI narratives through a locally installed Codex CLI or Ollama.
 
 ## Privacy stance
 
@@ -22,6 +22,11 @@ Your health data never leaves your machine unless you explicitly send it somewhe
 The build system is a pnpm/TypeScript monorepo with a working import pipeline, analytics
 engine, loopback API, and web client. Use Node.js `^20.19.0 || >=22.12.0 <27` and the
 repository-pinned pnpm `10.34.5`.
+
+Use an already-installed pnpm binary whose `pnpm --version` reports `10.34.5`; project commands
+do not install or update the package manager on demand. Once a lifecycle command starts, its
+packaging phase executes the checked-in Node build scripts directly instead of resolving another
+package-manager shim. The production container runs only Node and `tini`, never pnpm.
 
 ```bash
 pnpm install   # install workspace dependencies
@@ -96,9 +101,12 @@ Confirm button appears using those same parser and database rules, and files wit
 same name and size remain distinct. Browser uploads enforce count, per-file, aggregate decoded,
 and encoded-request limits and encode one file at a time; use folder path import when a selection
 exceeds them. Compressed ZIP contents inherit those same per-file and aggregate decoded-byte
-limits. Dropping a folder (where the browser supports `webkitGetAsEntry`) reads its files
-into that same picker, since browsers do not expose a dropped folder's real filesystem path to a
-web page — only pasting the path does that.
+limits. When a local desktop runtime exposes a nonstandard absolute `File.path`, a folder drop is
+accepted as a path only after every file maps to one root through an independently constructed
+relative suffix; Velograph then populates the path field and starts the same disk-backed preview.
+Standard browsers do not expose that absolute path, so they fall back visibly to the bounded
+loose-file picker and direct large exports to the paste-path workflow. Virtual
+`FileSystemEntry.fullPath` values are never treated as OS paths.
 
 The versioned CSV adapter accepts units only when the header states them explicitly. Distance
 supports `km` and `m`; energy supports `kJ`, `J`, and `kcal`; route altitude and accuracy support
@@ -144,7 +152,11 @@ at any time. `app:start` builds the web client and API package, forces a loopbac
 waits for a health response whose version, listener PID, and command all identify the child it
 started. An unrelated listener is reported as unverified and is never labeled or signaled as
 Velograph. Server output goes to a log file whose path `app:start` and `app:status` print.
-(Process lookup uses `lsof`; on Windows use Task Manager to stop a stray server.)
+The log is owner-only, rotates to one previous generation at 5 MiB, and refuses symlink or
+non-regular targets. Both the current and previous generations are hard-capped while the API is
+running; a detached local sink drains through shutdown and tightens any retained legacy file to
+owner-only permissions. (Process lookup uses `lsof`; on Windows use Task Manager to stop a stray
+server.)
 
 ## Run with Docker Compose
 
@@ -163,10 +175,16 @@ normal stop does not delete rides. Removing that volume deletes the local app
 data; use Velograph's backup/delete workflow and read `docs/data-management.md`
 before doing so. Do not change the checked-in `127.0.0.1:5123:5123` port mapping
 to a wildcard or LAN address: the app has no authentication for network use.
+The image defaults its ingress relay to container loopback, so a bare
+`docker run -p 5123:5123 …` does not opt into network-reachable service.
+Compose explicitly binds the relay to the container network only while keeping
+the host publication on `127.0.0.1`; preserve both halves of that contract.
 
 The runtime is read-only except for its data volume and a small temporary
-filesystem. The final image contains only the built web client, the API
-production deployment, and the checked-in entrypoint/relay; build tools,
+filesystem. The final image serves the audited client embedded in the API
+production deployment; there is no duplicate web asset tree. The entrypoint
+supervises the API and ingress relay together, the healthcheck probes that
+published ingress, and Compose allows 25 seconds for coordinated shutdown. Build tools,
 development dependencies, and reviewed install-only compiler/archive material
 remain outside the runtime stage. For an advanced external-volume setup, create
 a local ignored Compose override and mount only a directory outside the
@@ -183,6 +201,8 @@ pnpm runtime:build
 pnpm runtime:verify-artifacts
 pnpm api:verify-package
 pnpm cli:verify-package
+pnpm license:check
+pnpm package:web
 node scripts/privacy-scan.mjs --all   # privacy/data-leak scan
 ```
 

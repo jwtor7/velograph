@@ -40,6 +40,92 @@ jobs:
         run: docker build --tag velograph:privacy-audit .
       - name: Audit every native image layer
         run: node scripts/privacy-audit-release.mjs --image velograph:privacy-audit
+      - name: Smoke-test the native container lifecycle through proxy ingress
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_name="velograph-runtime-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          container_id=""
+
+          cleanup() {
+            result=$?
+            trap - EXIT
+            if [[ -n "$container_id" ]] && [[ "$result" -ne 0 ]]; then
+              docker logs "$container_id" 2>&1 || true
+            fi
+            docker rm --force "$container_name" >/dev/null 2>&1 || true
+            exit "$result"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          container_id="$(
+            docker run --detach \
+              --name "$container_name" \
+              --read-only \
+              --env VELO_DATA_DIR=/var/lib/velograph \
+              --env VELO_PROXY_HOST=0.0.0.0 \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777 \
+              --tmpfs /var/lib/velograph:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700 \
+              --publish 127.0.0.1::5123 \
+              --health-interval 1s \
+              --health-timeout 2s \
+              --health-start-period 1s \
+              --health-retries 10 \
+              velograph:privacy-audit
+          )"
+
+          published_address="$(docker port "$container_id" 5123/tcp)"
+          if [[ ! "$published_address" =~ ^127\.0\.0\.1:([0-9]+)$ ]]; then
+            echo "Unexpected published proxy address: $published_address" >&2
+            exit 1
+          fi
+          published_port="${BASH_REMATCH[1]}"
+          proxy_origin="http://127.0.0.1:${published_port}"
+
+          proxy_ready=false
+          docker_healthy=false
+          for _ in {1..120}; do
+            container_state="$(
+              docker inspect \
+                --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+                "$container_id"
+            )"
+            case "$container_state" in
+              'running healthy')
+                docker_healthy=true
+                ;;
+              'running starting') ;;
+              *)
+                echo "Container entered unexpected state: $container_state" >&2
+                exit 1
+                ;;
+            esac
+
+            if curl --connect-timeout 2 --max-time 3 --fail --silent --show-error \
+              "${proxy_origin}/api/health" >/dev/null \
+              && curl --connect-timeout 2 --max-time 3 --fail --silent --show-error \
+                "${proxy_origin}/" >/dev/null; then
+              proxy_ready=true
+            fi
+            if [[ "$proxy_ready" == true ]] && [[ "$docker_healthy" == true ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$proxy_ready" != true ]] || [[ "$docker_healthy" != true ]]; then
+            echo "Container did not become healthy through published proxy ingress." >&2
+            exit 1
+          fi
+
+          docker stop --time 25 "$container_id" >/dev/null
+          exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id")"
+          if [[ "$exit_code" != 0 ]]; then
+            echo "Container exited uncleanly after docker stop: $exit_code" >&2
+            exit 1
+          fi
       - name: Set up QEMU for linux/arm64 verification
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.0.0
       - name: Set up Buildx

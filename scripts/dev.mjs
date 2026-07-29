@@ -4,10 +4,11 @@
  * The coordinator owns both exact children and gives the API's ten-second
  * drain/checkpoint deadline twelve seconds before escalation.
  */
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildApiRuntime as buildPackagedApiRuntime } from './build-api-runtime.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const API_ENTRY = join(REPO_ROOT, 'apps', 'api', 'dist', 'velograph-api.mjs');
@@ -27,14 +28,7 @@ function readPort(raw, fallback, name) {
 }
 
 function buildApiRuntime() {
-  execFileSync('pnpm', ['--filter', '@velograph/web', 'build'], {
-    cwd: REPO_ROOT,
-    stdio: 'inherit',
-  });
-  execFileSync('pnpm', ['--filter', '@velograph/api', 'build'], {
-    cwd: REPO_ROOT,
-    stdio: 'inherit',
-  });
+  buildPackagedApiRuntime({ stdio: 'inherit' });
 }
 
 async function main() {

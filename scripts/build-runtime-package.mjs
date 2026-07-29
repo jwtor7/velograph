@@ -10,7 +10,6 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { build } from 'esbuild';
 
@@ -93,6 +92,7 @@ export async function buildRuntimePackage({
   repositoryRoot,
   packageRoot,
   entryPoint,
+  alias,
   launcher,
   executableName,
   runtimeName,
@@ -117,6 +117,7 @@ export async function buildRuntimePackage({
     platform: 'node',
     format: 'esm',
     target: ['node20.19'],
+    alias,
     external: [...RUNTIME_EXTERNALS],
     legalComments: 'none',
     sourcemap: false,
@@ -135,14 +136,12 @@ export async function buildRuntimePackage({
     await copyDirectory(webDirectory, join(outputDirectory, 'web'));
   }
 
-  // Third-party notices travel with local release tarballs when the canonical
-  // notice exists. Deliberately do not fall back to a project LICENSE file:
-  // those documents have different legal purposes.
+  // Third-party notices are mandatory in every runtime tarball. Deliberately
+  // do not fall back to a project LICENSE file: those documents have different
+  // legal purposes.
   const notice = join(repositoryRoot, 'THIRD_PARTY_NOTICES.md');
-  if (existsSync(notice)) {
-    const destination = join(outputDirectory, basename(notice));
-    await copyFile(notice, destination);
-    const [sourceBytes, copiedBytes] = await Promise.all([readFile(notice), readFile(destination)]);
-    if (!sourceBytes.equals(copiedBytes)) throw new Error('runtime_build_notice_content_mismatch');
-  }
+  const destination = join(outputDirectory, basename(notice));
+  await copyFile(notice, destination);
+  const [sourceBytes, copiedBytes] = await Promise.all([readFile(notice), readFile(destination)]);
+  if (!sourceBytes.equals(copiedBytes)) throw new Error('runtime_build_notice_content_mismatch');
 }

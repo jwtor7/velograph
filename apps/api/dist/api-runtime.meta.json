@@ -635,11 +635,37 @@
         }
       ],
       "format": "esm"
+    },
+    "apps/api/src/index.ts": {
+      "bytes": 96,
+      "imports": [
+        {
+          "path": "apps/api/src/server.ts",
+          "kind": "import-statement",
+          "original": "./server.ts"
+        },
+        {
+          "path": "apps/api/src/analytics-service.ts",
+          "kind": "import-statement",
+          "original": "./analytics-service.ts"
+        },
+        {
+          "path": "apps/api/src/main.ts",
+          "kind": "import-statement",
+          "original": "./main.ts"
+        }
+      ],
+      "format": "esm"
     }
   },
   "outputs": {
     "apps/api/dist/api-runtime.mjs": {
       "imports": [
+        {
+          "path": "node:http",
+          "kind": "import-statement",
+          "external": true
+        },
         {
           "path": "node:fs",
           "kind": "import-statement",
@@ -647,11 +673,6 @@
         },
         {
           "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:url",
           "kind": "import-statement",
           "external": true
         },
@@ -726,21 +747,6 @@
           "external": true
         },
         {
-          "path": "node:http",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:fs",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
           "path": "node:zlib",
           "kind": "import-statement",
           "external": true
@@ -769,17 +775,42 @@
           "path": "better-sqlite3",
           "kind": "import-statement",
           "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:url",
+          "kind": "import-statement",
+          "external": true
         }
       ],
       "exports": [
+        "API_VERSION",
+        "InvalidAppSettingsError",
+        "SETTINGS_KEY",
+        "createApiServer",
+        "getOrComputeAnalytics",
+        "loadSettings",
         "main",
+        "mergeAppSettings",
+        "parseAppSettings",
         "readApiRuntimeConfig",
-        "resolveWebDist"
+        "repairWorkout",
+        "resolveWebDist",
+        "saveSettings"
       ],
-      "entryPoint": "apps/api/src/main.ts",
+      "entryPoint": "apps/api/src/index.ts",
       "inputs": {
-        "apps/api/src/main.ts": {
-          "bytesInOutput": 4756
+        "apps/api/src/server.ts": {
+          "bytesInOutput": 29493
         },
         "packages/db/src/database.ts": {
           "bytesInOutput": 741
@@ -823,9 +854,6 @@
         "packages/db/src/backup-manifest.ts": {
           "bytesInOutput": 7352
         },
-        "apps/api/src/server.ts": {
-          "bytesInOutput": 29493
-        },
         "packages/importers/src/csv.ts": {
           "bytesInOutput": 3533
         },
@@ -868,6 +896,12 @@
         "apps/api/src/basemap.ts": {
           "bytesInOutput": 20467
         },
+        "apps/api/src/index.ts": {
+          "bytesInOutput": 0
+        },
+        "apps/api/src/main.ts": {
+          "bytesInOutput": 4756
+        },
         "apps/api/src/shutdown-coordinator.ts": {
           "bytesInOutput": 870
         },
@@ -875,7 +909,7 @@
           "bytesInOutput": 1026
         }
       },
-      "bytes": 247571
+      "bytes": 247762
     }
   }
 }

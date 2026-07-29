@@ -579,8 +579,65 @@
       ],
       "format": "esm"
     },
+    "apps/api/src/shutdown-coordinator.ts": {
+      "bytes": 1415,
+      "imports": [],
+      "format": "esm"
+    },
+    "apps/api/src/shutdown.ts": {
+      "bytes": 1627,
+      "imports": [
+        {
+          "path": "packages/db/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/db"
+        }
+      ],
+      "format": "esm"
+    },
+    "apps/api/src/main.ts": {
+      "bytes": 6063,
+      "imports": [
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:url",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/db/src/index.ts",
+          "kind": "import-statement",
+          "original": "@velograph/db"
+        },
+        {
+          "path": "apps/api/src/server.ts",
+          "kind": "import-statement",
+          "original": "./server.ts"
+        },
+        {
+          "path": "apps/api/src/shutdown-coordinator.ts",
+          "kind": "import-statement",
+          "original": "./shutdown-coordinator.ts"
+        },
+        {
+          "path": "apps/api/src/shutdown.ts",
+          "kind": "import-statement",
+          "original": "./shutdown.ts"
+        }
+      ],
+      "format": "esm"
+    },
     "apps/api/src/index.ts": {
-      "bytes": 69,
+      "bytes": 96,
       "imports": [
         {
           "path": "apps/api/src/server.ts",
@@ -591,12 +648,17 @@
           "path": "apps/api/src/analytics-service.ts",
           "kind": "import-statement",
           "original": "./analytics-service.ts"
+        },
+        {
+          "path": "apps/api/src/main.ts",
+          "kind": "import-statement",
+          "original": "./main.ts"
         }
       ],
       "format": "esm"
     },
     "apps/cli/src/index.ts": {
-      "bytes": 9372,
+      "bytes": 11793,
       "imports": [
         {
           "path": "node:fs",
@@ -726,12 +788,62 @@
           "external": true
         },
         {
+          "path": "node:http",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
           "path": "node:zlib",
           "kind": "import-statement",
           "external": true
         },
         {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
           "path": "better-sqlite3",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:url",
           "kind": "import-statement",
           "external": true
         }
@@ -743,7 +855,7 @@
       "entryPoint": "apps/cli/src/index.ts",
       "inputs": {
         "apps/cli/src/index.ts": {
-          "bytesInOutput": 7489
+          "bytesInOutput": 9738
         },
         "packages/db/src/database.ts": {
           "bytesInOutput": 741
@@ -779,13 +891,16 @@
           "bytesInOutput": 14067
         },
         "packages/db/src/analytics-input.ts": {
-          "bytesInOutput": 3215
+          "bytesInOutput": 3601
         },
         "packages/db/src/backup.ts": {
           "bytesInOutput": 42644
         },
         "packages/db/src/backup-manifest.ts": {
           "bytesInOutput": 7352
+        },
+        "apps/api/src/server.ts": {
+          "bytesInOutput": 29493
         },
         "packages/importers/src/csv.ts": {
           "bytesInOutput": 3533
@@ -809,10 +924,10 @@
           "bytesInOutput": 1673
         },
         "packages/importers/src/importer.ts": {
-          "bytesInOutput": 13856
+          "bytesInOutput": 17001
         },
         "packages/importers/src/folder.ts": {
-          "bytesInOutput": 102
+          "bytesInOutput": 19450
         },
         "packages/analytics/src/index.ts": {
           "bytesInOutput": 0
@@ -821,22 +936,28 @@
           "bytesInOutput": 2151
         },
         "packages/analytics/src/engine.ts": {
-          "bytesInOutput": 16042
+          "bytesInOutput": 16049
         },
         "apps/api/src/analytics-service.ts": {
-          "bytesInOutput": 2457
+          "bytesInOutput": 3547
         },
         "apps/api/src/basemap.ts": {
-          "bytesInOutput": 174
-        },
-        "apps/api/src/server.ts": {
-          "bytesInOutput": 178
+          "bytesInOutput": 20467
         },
         "apps/api/src/index.ts": {
           "bytesInOutput": 0
+        },
+        "apps/api/src/main.ts": {
+          "bytesInOutput": 4756
+        },
+        "apps/api/src/shutdown-coordinator.ts": {
+          "bytesInOutput": 870
+        },
+        "apps/api/src/shutdown.ts": {
+          "bytesInOutput": 1026
         }
       },
-      "bytes": 175041
+      "bytes": 257682
     }
   }
 }

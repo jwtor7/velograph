@@ -9,6 +9,9 @@ await buildRuntimePackage({
   repositoryRoot,
   packageRoot,
   entryPoint: join(packageRoot, 'src', 'index.ts'),
+  alias: {
+    '@velograph/api': join(repositoryRoot, 'apps', 'api', 'src', 'index.ts'),
+  },
   launcher: join(packageRoot, 'src', 'bin.mjs'),
   executableName: 'velograph-import.mjs',
   runtimeName: 'cli-runtime.mjs',

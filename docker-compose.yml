@@ -11,6 +11,9 @@ services:
       VELO_DATA_DIR: /var/lib/velograph
       VELO_HOST: 127.0.0.1
       VELO_INTERNAL_PORT: 5124
+      # Container-network ingress is explicit here because the corresponding
+      # host publication above is pinned to loopback.
+      VELO_PROXY_HOST: 0.0.0.0
       VELO_PROXY_PORT: 5123
     volumes:
       - velograph-data:/var/lib/velograph
@@ -21,6 +24,7 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    stop_grace_period: 25s
     restart: unless-stopped
 
 volumes:

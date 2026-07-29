@@ -33,10 +33,10 @@ importers:
   apps/api:
     dependencies:
       better-sqlite3:
-        specifier: ^12.11.1
+        specifier: 12.11.1
         version: 12.11.1
       fflate:
-        specifier: ^0.8.2
+        specifier: 0.8.3
         version: 0.8.3
     devDependencies:
       '@types/better-sqlite3':
@@ -64,10 +64,10 @@ importers:
   apps/cli:
     dependencies:
       better-sqlite3:
-        specifier: ^12.11.1
+        specifier: 12.11.1
         version: 12.11.1
       fflate:
-        specifier: ^0.8.2
+        specifier: 0.8.3
         version: 0.8.3
     devDependencies:
       '@types/node':

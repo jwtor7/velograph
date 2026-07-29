@@ -1,10 +1,168 @@
-import { describe, expect, it, vi } from 'vitest';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   isExpectedVelographRuntime,
   isVelographCommand,
   readManagedPort,
+  startManagedLogSink,
   stopProcess,
 } from './app.mjs';
+import { BoundedLogFile, runServerLogSink } from './server-log-sink.mjs';
+
+const temporaryDirectories = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function temporaryDirectory() {
+  const directory = mkdtempSync(join(tmpdir(), 'velograph-log-test-'));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+describe('app:start managed server log', () => {
+  it('tightens retained current and previous targets to owner-only permissions', () => {
+    const path = join(temporaryDirectory(), 'server.log');
+    writeFileSync(path, 'existing');
+    writeFileSync(`${path}.previous`, 'previous');
+    chmodSync(path, 0o644);
+    chmodSync(`${path}.previous`, 0o644);
+
+    const writer = new BoundedLogFile(path, { maxBytes: 64 });
+    writer.close();
+
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(statSync(`${path}.previous`).mode & 0o777).toBe(0o600);
+    expect(readFileSync(path, 'utf8')).toBe('existing');
+  });
+
+  it('caps and tightens a permissive legacy log before retaining it as the rotated generation', () => {
+    const path = join(temporaryDirectory(), 'server.log');
+    writeFileSync(path, 'current-generation');
+    writeFileSync(`${path}.previous`, 'older-generation');
+    chmodSync(path, 0o644);
+    chmodSync(`${path}.previous`, 0o644);
+
+    const writer = new BoundedLogFile(path, { maxBytes: 8 });
+    writer.write('new');
+    writer.close();
+
+    expect(readFileSync(`${path}.previous`, 'utf8')).toBe('current-');
+    expect(readFileSync(path, 'utf8')).toBe('new');
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(statSync(`${path}.previous`).mode & 0o777).toBe(0o600);
+    expect(statSync(path).size).toBeLessThanOrEqual(8);
+    expect(statSync(`${path}.previous`).size).toBeLessThanOrEqual(8);
+  });
+
+  it('rejects symlink and non-regular log targets without following them', () => {
+    const directory = temporaryDirectory();
+    const outside = join(directory, 'outside');
+    const symlink = join(directory, 'server.log');
+    writeFileSync(outside, 'outside');
+    symlinkSync(outside, symlink);
+    expect(() => new BoundedLogFile(symlink, { maxBytes: 8 })).toThrow('server_log_target_invalid');
+    expect(readFileSync(outside, 'utf8')).toBe('outside');
+
+    const nonRegular = join(directory, 'directory.log');
+    mkdirSync(nonRegular);
+    expect(() => new BoundedLogFile(nonRegular, { maxBytes: 8 })).toThrow(
+      'server_log_target_invalid',
+    );
+  });
+
+  it('rejects a symlinked rotation target before replacing it', () => {
+    const directory = temporaryDirectory();
+    const path = join(directory, 'server.log');
+    const outside = join(directory, 'outside');
+    writeFileSync(path, 'rotate-me');
+    writeFileSync(outside, 'outside');
+    symlinkSync(outside, `${path}.previous`);
+
+    expect(() => new BoundedLogFile(path, { maxBytes: 1 })).toThrow(
+      'server_log_rotation_target_invalid',
+    );
+    expect(readFileSync(path, 'utf8')).toBe('rotate-me');
+    expect(readFileSync(outside, 'utf8')).toBe('outside');
+  });
+
+  it('fails closed if the active log path is replaced before runtime rotation', () => {
+    const directory = temporaryDirectory();
+    const path = join(directory, 'server.log');
+    const outside = join(directory, 'outside');
+    writeFileSync(outside, 'outside');
+    const writer = new BoundedLogFile(path, { maxBytes: 8 });
+    writer.write('12345678');
+    rmSync(path);
+    symlinkSync(outside, path);
+    try {
+      expect(() => writer.write('x')).toThrow('server_log_target_invalid');
+      expect(readFileSync(outside, 'utf8')).toBe('outside');
+    } finally {
+      writer.close();
+    }
+  });
+
+  it('keeps both generations bounded while draining a producer after the launcher closes its pipe', async () => {
+    const path = join(temporaryDirectory(), 'server.log');
+    const sink = await startManagedLogSink(path, { maxBytes: 8 });
+    const producer = spawn(
+      process.execPath,
+      ['-e', "process.stdout.write('abcdefghijklmnopqrst')"],
+      {
+        stdio: ['ignore', sink.input, sink.input],
+      },
+    );
+    sink.input.destroy();
+
+    const producerOutcome = await new Promise((resolve) => {
+      producer.once('exit', (code, signal) => resolve({ code, signal }));
+    });
+    const sinkOutcome = await sink.observation.completion;
+
+    expect(producerOutcome).toEqual({ code: 0, signal: null });
+    expect(sinkOutcome).toEqual({ type: 'exit', code: 0, signal: null });
+    expect(readFileSync(`${path}.previous`, 'utf8')).toBe('ijklmnop');
+    expect(readFileSync(path, 'utf8')).toBe('qrst');
+    expect(statSync(path).size).toBeLessThanOrEqual(8);
+    expect(statSync(`${path}.previous`).size).toBeLessThanOrEqual(8);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(statSync(`${path}.previous`).mode & 0o777).toBe(0o600);
+  });
+
+  it('reports sink failures without exposing the rejected path or content', async () => {
+    const directory = temporaryDirectory();
+    const outside = join(directory, 'outside');
+    const path = join(directory, 'server.log');
+    writeFileSync(outside, 'invented sensitive content');
+    symlinkSync(outside, path);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await runServerLogSink([path, '8'])).toBe(1);
+      const output = JSON.stringify(error.mock.calls);
+      expect(output).toContain('Velograph log sink failed.');
+      expect(output).not.toContain(path);
+      expect(output).not.toContain('invented sensitive content');
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
 
 describe('app:stop graceful-shutdown escalation', () => {
   it('waits for the grace period, reports escalation, then sends SIGKILL', async () => {

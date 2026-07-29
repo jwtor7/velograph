@@ -2,9 +2,9 @@
 /**
  * Fail-closed third-party runtime licence and notice verification.
  *
- * This gate covers dependencies that are shipped in the built web client or
- * retained API production deployment. It deliberately does not select or
- * imply a licence for Velograph itself.
+ * This gate covers dependencies that are shipped in the built web client,
+ * retained API production deployment, or CLI runtime package. It deliberately
+ * does not select or imply a licence for Velograph itself.
  */
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -38,7 +38,7 @@ const APPROVED_SELECTED_LICENSES = new Set([
   'blessing',
 ]);
 const FORBIDDEN_LICENSE = /\b(?:A?GPL|LGPL|SSPL|BUSL|Commons-Clause|CC-BY-NC)\b/i;
-const VALID_SCOPES = new Set(['api', 'web']);
+const VALID_SCOPES = new Set(['api', 'cli', 'web']);
 const MAX_LICENSE_BYTES = 128 * 1024;
 const MAX_ARTIFACT_ENTRY_BYTES = 64 * 1024 * 1024;
 const WEB_ARTIFACT_EVIDENCE_FILE = 'third-party-module-evidence.json';
@@ -345,7 +345,8 @@ export function collectWorkspaceClosures(repositoryRoot = REPOSITORY_ROOT) {
   const root = realpathSync(repositoryRoot);
   const webRecords = collectDependencyClosure(join(root, 'apps', 'web'), 'web', root);
   const apiRecords = collectDependencyClosure(join(root, 'apps', 'api'), 'api', root);
-  return { root, webRecords, apiRecords };
+  const cliRecords = collectDependencyClosure(join(root, 'apps', 'cli'), 'cli', root);
+  return { root, webRecords, apiRecords, cliRecords };
 }
 
 function addPackageRecord(records, record) {
@@ -955,11 +956,12 @@ export function verifyWorkspace(repositoryRoot = REPOSITORY_ROOT) {
   const closures = collectWorkspaceClosures(repositoryRoot);
   verifyRecords(closures.webRecords, manifest, texts, 'web', closures.root);
   verifyRecords(closures.apiRecords, manifest, texts, 'api', closures.root);
+  verifyRecords(closures.cliRecords, manifest, texts, 'cli', closures.root);
   verifyEmbeddedComponents(
     manifest,
     texts,
     closures.root,
-    new Map([...closures.webRecords, ...closures.apiRecords]),
+    new Map([...closures.webRecords, ...closures.apiRecords, ...closures.cliRecords]),
   );
   console.log(
     `third-party-license-gate: workspace clean (${manifest.packages.length} package(s), ${manifest.embeddedComponents.length} embedded/build contribution(s))`,
@@ -1137,7 +1139,7 @@ function verifyWebArtifactEvidence(manifest, contents, repositoryRoot) {
 
     const content = contents.get(file.file);
     if (!content || content.length !== file.bytes || sha256(content) !== file.sha256) {
-      fail('artifact_file_evidence_mismatch', file.file);
+      fail('artifact_file_evidence_mismatch');
     }
     for (const id of file.packages) {
       verifyArtifactPackageIdentity(id);
@@ -1266,6 +1268,10 @@ export function verifyProductionDeployment(deploymentRoot, repositoryRoot = REPO
   });
   verifyProductionEmbeddedEvidence(manifest, deployment);
   verifyArtifactNotice(deployment.root, canonicalNotices);
+  verifyWebArtifactContents(
+    collectArtifactContents(join(deployment.root, 'dist', 'web')),
+    repositoryRoot,
+  );
   console.log(
     `third-party-license-gate: production API clean (${thirdPartyRecords(deployment.records, repositoryRoot, { allowDeployedWorkspaceCopies: true }).size} package(s))`,
   );
@@ -1313,7 +1319,7 @@ export function stageAndVerifyArtifact(artifactRoot, repositoryRoot = REPOSITORY
 
 function sourceRootsFromWorkspace(repositoryRoot) {
   const closures = collectWorkspaceClosures(repositoryRoot);
-  return new Map([...closures.webRecords, ...closures.apiRecords]);
+  return new Map([...closures.webRecords, ...closures.apiRecords, ...closures.cliRecords]);
 }
 
 export function syncNotices({

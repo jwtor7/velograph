@@ -14,13 +14,15 @@
  *   --all     scan every tracked file (CI)
  *   --files <paths...>  scan specific paths on disk (tests)
  *
- * Violation output names the rule and file:line only — never the matched
- * value, which could itself be the sensitive data.
+ * Violation output names the rule, a per-process salted file handle, and line
+ * only — never the path or matched value, either of which may be sensitive.
  */
 import { execFileSync } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 
 const SYNTHETIC_DIR = 'fixtures/synthetic/';
+const OPAQUE_REPORT_SALT = randomBytes(32);
 
 // Coordinates are permitted ONLY inside this box (open ocean near Point Nemo,
 // the oceanic pole of inaccessibility) and ONLY under fixtures/synthetic/.
@@ -249,6 +251,19 @@ function readContent(mode, path) {
   return readFileSync(path);
 }
 
+export function opaqueFileHandle(path) {
+  return `file/${createHash('sha256')
+    .update(OPAQUE_REPORT_SALT)
+    .update('\0')
+    .update(path)
+    .digest('hex')
+    .slice(0, 16)}`;
+}
+
+export function formatOpaqueViolation(violation) {
+  return `${opaqueFileHandle(violation.path)}${violation.line ? `:${violation.line}` : ''}  [${violation.rule}]`;
+}
+
 export function run(argv) {
   const mode = argv[0] ?? '--all';
   let files;
@@ -279,10 +294,10 @@ export function run(argv) {
   if (all.length > 0) {
     console.error(`PRIVACY SCAN FAILED — ${all.length} violation(s):`);
     for (const v of all) {
-      console.error(`  ${v.path}${v.line ? ':' + v.line : ''}  [${v.rule}]`);
+      console.error(`  ${formatOpaqueViolation(v)}`);
     }
     console.error(
-      '\nNo matched values are printed; open the file location above to inspect.' +
+      '\nMatched values and paths are intentionally opaque. Use the rule and line to inspect candidates locally.' +
         '\nSee CLAUDE.md / PRD §12.2. Never bypass with git add -f or --no-verify.',
     );
     return 1;

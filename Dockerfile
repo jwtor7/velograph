@@ -26,10 +26,8 @@ RUN pnpm install --frozen-lockfile
 
 COPY . .
 RUN node scripts/third-party-license-gate.mjs --workspace
-RUN pnpm package:web
-# Issue #11 adds a bundled Node 20.19-compatible API. Build it when that branch
-# is present; current main falls back to Node 22's TypeScript runtime.
-RUN pnpm --filter @velograph/api --if-present run build
+# Bundle the API runtime together with its authoritative packaged web assets.
+RUN pnpm api:build
 # Deploy only the API package and its production dependency graph. Lifecycle
 # scripts remain enabled so production native dependencies are built normally.
 RUN pnpm --filter @velograph/api deploy --prod --legacy /opt/velograph/api
@@ -48,6 +46,7 @@ ENV NODE_ENV=production \
     VELO_DATA_DIR=/var/lib/velograph \
     VELO_HOST=127.0.0.1 \
     VELO_INTERNAL_PORT=5124 \
+    VELO_PROXY_HOST=127.0.0.1 \
     VELO_PROXY_PORT=5123
 
 # The small Node relay preserves the API's loopback authentication boundary and
@@ -61,7 +60,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build --chown=node:node /opt/velograph/api /app/api
-COPY --from=build --chown=node:node /app/apps/web/dist /app/web/dist
 COPY --chown=node:node docker-entrypoint.sh docker-proxy.mjs /usr/local/bin/
 RUN chmod 0555 /usr/local/bin/docker-entrypoint.sh \
     && mkdir -p /var/lib/velograph \
@@ -71,6 +69,6 @@ USER node
 EXPOSE 5123
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:5124/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:5123/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]

@@ -17,7 +17,7 @@
       "version": "1.5.1",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "5b37224c080cdcc97c871ada971c224e9926370fe74f11b539aa1cf9f3b1aca1",
       "licenseBytes": 1081
@@ -27,7 +27,7 @@
       "version": "12.11.1",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "09856b52897c91ab67e7456ef43067019f31dfd3b87fda72e655736b1ebdee55",
       "licenseBytes": 1078
@@ -37,7 +37,7 @@
       "version": "1.5.0",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE.md",
       "licenseSha256": "85fde19744c84cfacb04aed732c0392ba221231b26090d3271d2ed865bfc0792",
       "licenseBytes": 1108
@@ -47,7 +47,7 @@
       "version": "4.1.0",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE.md",
       "licenseSha256": "9377db95383c8befacf05c6e465d969d756edf178487ca1344fdf3ba147c596f",
       "licenseBytes": 1216
@@ -57,7 +57,7 @@
       "version": "5.7.1",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "06bafa45fdad2579ba0e43b0c9b2c6290287c99c4203c300254a462b38a307f6",
       "licenseBytes": 1106
@@ -67,7 +67,7 @@
       "version": "1.1.4",
       "declaredLicense": "ISC",
       "selectedLicense": "ISC",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b",
       "licenseBytes": 765
@@ -88,7 +88,7 @@
       "version": "6.0.0",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "license",
       "licenseSha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3",
       "licenseBytes": 1117
@@ -98,7 +98,7 @@
       "version": "0.6.0",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "e17120ad3deff741c2ca5cbe511971ca33971a1ba6e49694c6498309bb2680b9",
       "licenseBytes": 1093
@@ -108,7 +108,7 @@
       "version": "2.1.2",
       "declaredLicense": "Apache-2.0",
       "selectedLicense": "Apache-2.0",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
       "licenseBytes": 11357
@@ -118,7 +118,7 @@
       "version": "1.4.5",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "c0993ca46cd47c09710a977d3a3d51602cff96f19e8d2eb8d5887aa20a7beead",
       "licenseBytes": 1079
@@ -128,7 +128,7 @@
       "version": "2.0.3",
       "declaredLicense": "(MIT OR WTFPL)",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "77e34b8bcff7968c20cef7a81e56835494746645eea2110dfa0f849d3d02f62e",
       "licenseBytes": 1083
@@ -138,7 +138,7 @@
       "version": "0.8.3",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "766daa9b2ab0ab2698c769f334a6d72c42437b0a7d0d0dfd5c13c64b3120117b",
       "licenseBytes": 1070
@@ -148,7 +148,7 @@
       "version": "1.0.0",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "75070206e4ee2a749be52444cecc05101ca8d314c9d6d335ff914046cbf086a0",
       "licenseBytes": 1083
@@ -158,7 +158,7 @@
       "version": "1.0.0",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "2281f2db407bdbb54f069eec38128b2dee2c0c952f52b786ef1faecb81767b3c",
       "licenseBytes": 1079
@@ -168,7 +168,7 @@
       "version": "0.0.0",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "435a6722c786b0a56fbe7387028f1d9d3f3a2d0fb615bb8fee118727c3f59b7b",
       "licenseBytes": 1073
@@ -178,7 +178,7 @@
       "version": "1.2.1",
       "declaredLicense": "BSD-3-Clause",
       "selectedLicense": "BSD-3-Clause",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "18d45466ba3253deae04667e267a91ea8de8548f18c1125264d1c9db28194cc1",
       "licenseBytes": 1465
@@ -188,7 +188,7 @@
       "version": "2.0.4",
       "declaredLicense": "ISC",
       "selectedLicense": "ISC",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "69be713b3d6c33e0dba76c4d23d986d568593abca04ce47d75162af255d6a345",
       "licenseBytes": 748
@@ -198,7 +198,7 @@
       "version": "1.3.8",
       "declaredLicense": "ISC",
       "selectedLicense": "ISC",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b",
       "licenseBytes": 765
@@ -212,15 +212,14 @@
       "artifactPresence": "required",
       "licenseFile": "LICENSE",
       "licenseSha256": "bbc959aaef7488b38942e7f05cfd1244351f8bce54261951ea17dd7cf60f894b",
-      "licenseBytes": 1369,
-      "conditionalOnDirectDependency": true
+      "licenseBytes": 1369
     },
     {
       "name": "mimic-response",
       "version": "3.1.0",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "license",
       "licenseSha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3",
       "licenseBytes": 1117
@@ -230,7 +229,7 @@
       "version": "1.2.8",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "435a6722c786b0a56fbe7387028f1d9d3f3a2d0fb615bb8fee118727c3f59b7b",
       "licenseBytes": 1073
@@ -240,7 +239,7 @@
       "version": "0.5.3",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "a255b85c1a510ecfe660c4d442ecdbc1e9d07f4b4d3d7f90443f7e5570591e0a",
       "licenseBytes": 1118
@@ -250,7 +249,7 @@
       "version": "2.0.0",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "9c6a91d2847bd9bfd493c1ca87b9c3f96302cfd069667e6dd4a6278e69a33a31",
       "licenseBytes": 1069
@@ -260,7 +259,7 @@
       "version": "3.94.0",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "9a508cd4122f2dc1cc39f8ab0b6950efbc49fb087a581c7177a4b8c9d5d0d6a1",
       "licenseBytes": 1069
@@ -270,7 +269,7 @@
       "version": "1.4.0",
       "declaredLicense": "ISC",
       "selectedLicense": "ISC",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b",
       "licenseBytes": 765
@@ -280,7 +279,7 @@
       "version": "7.1.3",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "0aa9add6a9158efad3e6649e3affd607c7e2629f6677af19f9988c8fbb0757b0",
       "licenseBytes": 1079
@@ -290,7 +289,7 @@
       "version": "3.0.4",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "c0993ca46cd47c09710a977d3a3d51602cff96f19e8d2eb8d5887aa20a7beead",
       "licenseBytes": 1079
@@ -300,7 +299,7 @@
       "version": "1.2.8",
       "declaredLicense": "(BSD-2-Clause OR MIT OR Apache-2.0)",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE.MIT",
       "licenseSha256": "d72dea1a8cdf3f4dfa2f594253d0c5b37baefc76e806f5ecb0e426393edcd505",
       "licenseBytes": 1088
@@ -354,7 +353,7 @@
       "version": "3.6.2",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "ec62dc96da0099b87f4511736c87309335527fb7031639493e06c95728dc8c54",
       "licenseBytes": 2337
@@ -364,7 +363,7 @@
       "version": "5.2.1",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "c7cc929b57080f4b9d0c6cf57669f0463fc5b39906344dfc8d3bc43426b30eac",
       "licenseBytes": 1081
@@ -385,7 +384,7 @@
       "version": "7.8.5",
       "declaredLicense": "ISC",
       "selectedLicense": "ISC",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b",
       "licenseBytes": 765
@@ -406,7 +405,7 @@
       "version": "1.0.1",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "d4c2065e2b936e62a4eb400efb4576edec9ca1388a9f78aa288e147275e7bc8b",
       "licenseBytes": 1081
@@ -416,7 +415,7 @@
       "version": "4.0.1",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "d4c2065e2b936e62a4eb400efb4576edec9ca1388a9f78aa288e147275e7bc8b",
       "licenseBytes": 1081
@@ -426,7 +425,7 @@
       "version": "1.3.0",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "ec62dc96da0099b87f4511736c87309335527fb7031639493e06c95728dc8c54",
       "licenseBytes": 2337
@@ -436,7 +435,7 @@
       "version": "2.0.1",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "license",
       "licenseSha256": "6fb9754611c20f6649f68805e8c990e83261f29316e29de9e6cedae607b8634c",
       "licenseBytes": 1119
@@ -446,7 +445,7 @@
       "version": "2.1.5",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "c0993ca46cd47c09710a977d3a3d51602cff96f19e8d2eb8d5887aa20a7beead",
       "licenseBytes": 1079
@@ -456,7 +455,7 @@
       "version": "2.2.0",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "c0993ca46cd47c09710a977d3a3d51602cff96f19e8d2eb8d5887aa20a7beead",
       "licenseBytes": 1079
@@ -466,7 +465,7 @@
       "version": "0.6.0",
       "declaredLicense": "Apache-2.0",
       "selectedLicense": "Apache-2.0",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "527adf9d4c760f7367c2aeffed6a89afba8ba40ea1b0efbc8f56496ad30ea9cf",
       "licenseBytes": 9141
@@ -476,7 +475,7 @@
       "version": "1.0.2",
       "declaredLicense": "MIT",
       "selectedLicense": "MIT",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "0154425673db15cdfa80ecba2c9b1f1a867f7197a006764712849bfc3a93cbb7",
       "licenseBytes": 1102
@@ -486,7 +485,7 @@
       "version": "1.0.2",
       "declaredLicense": "ISC",
       "selectedLicense": "ISC",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "licenseFile": "LICENSE",
       "licenseSha256": "4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b",
       "licenseBytes": 765
@@ -498,7 +497,7 @@
       "version": "3.53.2",
       "declaredLicense": "blessing",
       "selectedLicense": "blessing",
-      "scopes": ["api"],
+      "scopes": ["api", "cli"],
       "evidenceKind": "sqlite-amalgamation-blessing",
       "sourcePackage": "better-sqlite3@12.11.1",
       "sourceFile": "deps/sqlite3/sqlite3.h",

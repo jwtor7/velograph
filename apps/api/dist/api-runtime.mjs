@@ -1,7 +1,7 @@
-// apps/api/src/main.ts
-import { existsSync as existsSync5 } from "node:fs";
-import { dirname as dirname4, join as join7 } from "node:path";
-import { fileURLToPath as fileURLToPath2, pathToFileURL } from "node:url";
+// apps/api/src/server.ts
+import { createServer } from "node:http";
+import { existsSync as existsSync4, readFileSync as readFileSync2, statSync as statSync4 } from "node:fs";
+import { extname, join as join6, normalize } from "node:path";
 
 // packages/db/src/database.ts
 import DatabaseConstructor from "better-sqlite3";
@@ -2243,11 +2243,6 @@ async function restoreDatabaseWithReport(liveDb, dbPath, backupPath, options = {
     }
   }
 }
-
-// apps/api/src/server.ts
-import { createServer } from "node:http";
-import { existsSync as existsSync4, readFileSync as readFileSync2, statSync as statSync4 } from "node:fs";
-import { extname, join as join6, normalize } from "node:path";
 
 // packages/importers/src/csv.ts
 var DEFAULT_CSV_LIMITS = {
@@ -6656,6 +6651,11 @@ function serveStatic(res, staticDir, path) {
   res.end(readFileSync2(file));
 }
 
+// apps/api/src/main.ts
+import { existsSync as existsSync5 } from "node:fs";
+import { dirname as dirname4, join as join7 } from "node:path";
+import { fileURLToPath as fileURLToPath2, pathToFileURL } from "node:url";
+
 // apps/api/src/shutdown-coordinator.ts
 function createShutdownCoordinator(options) {
   let shuttingDown = false;
@@ -6883,7 +6883,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   );
 }
 export {
+  API_VERSION,
+  InvalidAppSettingsError,
+  SETTINGS_KEY,
+  createApiServer,
+  getOrComputeAnalytics,
+  loadSettings,
   main,
+  mergeAppSettings,
+  parseAppSettings,
   readApiRuntimeConfig,
-  resolveWebDist
+  repairWorkout,
+  resolveWebDist,
+  saveSettings
 };

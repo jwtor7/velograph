@@ -77,9 +77,11 @@ touches.
 
 `ci.yml` retains the primary Node 22 checks and also performs separate clean,
 frozen-lockfile installs on Node 20.19 (the supported minimum) and Node 26.
-The minimum-runtime lane packages and verifies the complete web artifact. The
+Both runtime lanes build the API and CLI from the complete audited web artifact,
+verify deterministic checked-in outputs, and clean-install both tarballs. The
 release-governance workflow audits the worktree and all reachable Git blobs,
-builds a native container solely for an application-payload layer audit, then
+builds and layer-audits a native container, smoke-tests its published loopback
+ingress with an empty synthetic data mount, verifies clean shutdown, then
 creates and audits one exact OCI image index for `linux/amd64` and `linux/arm64`
 with BuildKit SBOM and provenance attestations enabled for both platforms. CI
 retains that audited OCI archive, its SHA-256, and its image index together for
@@ -89,7 +91,7 @@ a registry, mounts credentials, or publishes an image.
 
 The Dockerfile also pins its official Node base-image tag to a reviewed
 multi-architecture digest. Its runtime stage copies only the built web client
-and the API's production deployment; build tooling, repository fixtures, and
+inside the API production deployment; build tooling, repository fixtures, and
 development dependency trees remain in the discarded build stage. A
 fail-closed pruning step removes reviewed install-only package material after
 native lifecycle scripts run, and the resulting deployment is privacy-scanned
@@ -98,7 +100,7 @@ together, then re-run the exact OCI privacy audit and SBOM build before
 publishing.
 
 Dependency metadata and generated SBOMs are not the licence authority on their
-own. `pnpm license:check` compares the exact web/API production closures with
+own. `pnpm license:check` compares the exact web/API/CLI production closures with
 the reviewed manifest, installed SPDX metadata, and hashed authoritative
 licence texts. It also covers Vite's injected browser polyfill and SQLite
 embedded in the native addon. The Docker build verifies the physical API

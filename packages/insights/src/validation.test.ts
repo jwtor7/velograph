@@ -123,6 +123,56 @@ describe('validateFinding (AI-006, AI-007)', () => {
     });
   });
 
+  it('rejects an equal numeric value labelled with the wrong unit', () => {
+    const collidingPayload = {
+      ...payload,
+      metrics: payload.metrics.map((metric) =>
+        metric.id === 'duration_s' || metric.id === 'heart_rate_max_bpm'
+          ? { ...metric, value: 180 }
+          : metric,
+      ),
+    };
+    const result = validateFinding(
+      {
+        text: 'Maximum heart rate was 180 seconds.',
+        evidence: ['heart_rate_max_bpm'],
+      },
+      collidingPayload,
+    );
+    expect(result).toEqual({
+      status: 'flagged',
+      reasonCode: 'unsupported_numeric_unit',
+    });
+    expect(result.reasonCode).not.toContain('180');
+    expect(result.reasonCode).not.toContain('seconds');
+  });
+
+  it('keeps textual unit aliases tied to the cited metric unit', () => {
+    const maximum = payload.metrics.find((metric) => metric.id === 'heart_rate_max_bpm')!
+      .value as number;
+    expect(
+      validateFinding(
+        {
+          text: `Maximum heart rate was ${maximum} beats per minute.`,
+          evidence: ['heart_rate_max_bpm'],
+        },
+        payload,
+      ),
+    ).toEqual({ status: 'valid', reasonCode: null });
+    expect(
+      validateFinding(
+        {
+          text: `Maximum heart rate was ${maximum} metres.`,
+          evidence: ['heart_rate_max_bpm'],
+        },
+        payload,
+      ),
+    ).toEqual({
+      status: 'flagged',
+      reasonCode: 'unsupported_numeric_unit',
+    });
+  });
+
   it('accepts an explicitly represented zone share percentage only when that zone is cited', () => {
     const zone = payload.zones?.[1];
     expect(zone).toBeDefined();

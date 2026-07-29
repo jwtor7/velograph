@@ -8,7 +8,7 @@ const repositoryRoot = join(packageRoot, '..', '..');
 await buildRuntimePackage({
   repositoryRoot,
   packageRoot,
-  entryPoint: join(packageRoot, 'src', 'main.ts'),
+  entryPoint: join(packageRoot, 'src', 'index.ts'),
   launcher: join(packageRoot, 'src', 'bin.mjs'),
   executableName: 'velograph-api.mjs',
   runtimeName: 'api-runtime.mjs',

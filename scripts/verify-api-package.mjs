@@ -4,6 +4,9 @@ import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:f
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { assertRuntimeDependencyContract } from './runtime-package-contract.mjs';
+import { verifyWebArtifactContents } from './third-party-license-gate.mjs';
 
 const repositoryRoot = process.cwd();
 const sandbox = await mkdtemp(join(tmpdir(), 'velograph-api-package-'));
@@ -150,6 +153,17 @@ async function verifyMigrationCopies(installedPackageDirectory) {
   return canonicalNames;
 }
 
+async function installedDependencyVersion(installedPackageDirectory, name) {
+  for (const path of [
+    join(installDirectory, 'node_modules', name, 'package.json'),
+    join(installedPackageDirectory, 'node_modules', name, 'package.json'),
+  ]) {
+    if (!existsSync(path)) continue;
+    return JSON.parse(await readFile(path, 'utf8')).version;
+  }
+  throw new Error('installed API runtime dependency is missing');
+}
+
 try {
   await Promise.all([mkdir(packageDirectory), mkdir(installDirectory)]);
   run(
@@ -180,30 +194,40 @@ try {
   );
   if (
     packagedManifest.private !== true ||
+    packagedManifest.exports?.['.'] !== './dist/api-runtime.mjs' ||
     packagedManifest.bin?.['velograph-api'] !== './dist/velograph-api.mjs' ||
     packagedManifest.scripts?.start !== 'node dist/velograph-api.mjs' ||
-    packagedManifest.engines?.node !== '^20.19.0 || >=22.12.0 <27'
+    packagedManifest.engines?.node !== '^20.19.0 || >=22.12.0 <27' ||
+    existsSync(join(installedPackageDirectory, 'src'))
   ) {
     throw new Error('installed API manifest does not target the supported built runtime');
   }
+  const installedModule = await import(
+    pathToFileURL(join(installedPackageDirectory, 'dist', 'api-runtime.mjs')).href
+  );
   if (
-    packagedManifest.dependencies?.['better-sqlite3'] !== '^12.11.1' ||
-    typeof packagedManifest.dependencies?.fflate !== 'string' ||
-    Object.keys(packagedManifest.dependencies).some((name) => name.startsWith('@velograph/'))
+    typeof installedModule.main !== 'function' ||
+    typeof installedModule.createApiServer !== 'function' ||
+    typeof installedModule.repairWorkout !== 'function'
   ) {
-    throw new Error('installed API runtime dependency boundary is invalid');
+    throw new Error('installed API module export does not target the built runtime');
+  }
+  assertRuntimeDependencyContract(packagedManifest);
+  const [sqliteVersion, fflateVersion] = await Promise.all([
+    installedDependencyVersion(installedPackageDirectory, 'better-sqlite3'),
+    installedDependencyVersion(installedPackageDirectory, 'fflate'),
+  ]);
+  if (sqliteVersion !== '12.11.1' || fflateVersion !== '0.8.3') {
+    throw new Error('installed API runtime dependency version is not the audited version');
   }
 
   const migrationNames = await verifyMigrationCopies(installedPackageDirectory);
   const canonicalNotice = join(repositoryRoot, 'THIRD_PARTY_NOTICES.md');
-  if (existsSync(canonicalNotice)) {
-    const [canonical, installed] = await Promise.all([
-      readFile(canonicalNotice),
-      readFile(join(installedPackageDirectory, 'dist', 'THIRD_PARTY_NOTICES.md')),
-    ]);
-    if (!canonical.equals(installed))
-      throw new Error('installed API notice differs from canonical');
-  }
+  const [canonical, installed] = await Promise.all([
+    readFile(canonicalNotice),
+    readFile(join(installedPackageDirectory, 'dist', 'THIRD_PARTY_NOTICES.md')),
+  ]);
+  if (!canonical.equals(installed)) throw new Error('installed API notice differs from canonical');
   if (existsSync(join(installedPackageDirectory, 'dist', 'LICENSE'))) {
     throw new Error('installed API substituted the project LICENSE for third-party notices');
   }
@@ -228,6 +252,11 @@ try {
     const webDirectory = join(installedPackageDirectory, 'dist', 'web');
     const webFiles = await walk(webDirectory);
     if (webFiles.length < 2) throw new Error('installed API web client is incomplete');
+    const webContents = new Map();
+    for (const file of webFiles) {
+      webContents.set(relative(webDirectory, file).replaceAll('\\', '/'), await readFile(file));
+    }
+    verifyWebArtifactContents(webContents, repositoryRoot);
     for (const file of webFiles) {
       const urlPath = relative(webDirectory, file)
         .split(/[\\/]/)
