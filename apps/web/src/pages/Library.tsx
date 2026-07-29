@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api, type WorkoutSummary } from '../api.ts';
 import { fmtDate, fmtDuration, fmtInt, fmtKm, fmtSpeedKmh } from '../chartspec/spec.ts';
-import { EmptyState } from '../components/ui.tsx';
+import { ConfirmDialog, EmptyState } from '../components/ui.tsx';
 
 /** Ride library (RIDE-001/002): date-listed rides with search and filters. */
 export function Library() {
@@ -12,14 +12,33 @@ export function Library() {
   const [to, setTo] = useState('');
   const [routeOnly, setRouteOnly] = useState(false);
   const [minKm, setMinKm] = useState('');
+  const [pendingDelete, setPendingDelete] = useState<WorkoutSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const navigate = useNavigate();
 
-  useEffect(() => {
+  const load = () =>
     api
       .workouts()
       .then((r) => setWorkouts([...r.workouts].sort((a, b) => b.startUtc - a.startUtc)))
       .catch(() => setError(true));
+
+  useEffect(() => {
+    load();
   }, []);
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    try {
+      await api.deleteWorkout(pendingDelete.id);
+      setPendingDelete(null);
+      await load();
+    } catch {
+      setError(true);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const filtered = useMemo(() => {
     if (!workouts) return null;
@@ -101,6 +120,7 @@ export function Library() {
                 <th>Climb</th>
                 <th>Route</th>
                 <th>Quality</th>
+                <th aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
@@ -138,11 +158,46 @@ export function Library() {
                       {w.qualityState}
                     </span>
                   </td>
+                  <td>
+                    <button
+                      className="btn"
+                      style={{ padding: '4px 10px', fontSize: 12 }}
+                      aria-label={`Delete ride from ${fmtDate(w.startUtc)}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPendingDelete(w);
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      {pendingDelete && (
+        <ConfirmDialog
+          title="Delete this ride?"
+          danger
+          busy={deleting}
+          confirmLabel="Delete ride"
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={confirmDelete}
+          body={
+            <>
+              <p style={{ margin: 0 }}>
+                This permanently removes the ride from {fmtDate(pendingDelete.startUtc)} — metric
+                samples, route, and analytics — from your local database.
+              </p>
+              <p style={{ margin: '8px 0 0', fontWeight: 600 }}>
+                This is irreversible unless you have a backup.
+              </p>
+            </>
+          }
+        />
       )}
     </div>
   );

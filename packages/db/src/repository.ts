@@ -230,6 +230,96 @@ export class Repository {
     return this.db.prepare('SELECT * FROM workouts ORDER BY start_utc').all() as WorkoutRow[];
   }
 
+  getWorkout(workoutId: number): WorkoutRow | undefined {
+    return this.db.prepare('SELECT * FROM workouts WHERE id = ?').get(workoutId) as
+      WorkoutRow | undefined;
+  }
+
+  /** Distinct source_files ids a workout's metric series and route(s) reference. */
+  sourceFileIdsForWorkout(workoutId: number): number[] {
+    const rows = this.db
+      .prepare(
+        `SELECT source_file_id AS id FROM metric_series WHERE workout_id = ?
+         UNION
+         SELECT source_file_id AS id FROM routes WHERE workout_id = ?`,
+      )
+      .all(workoutId, workoutId) as { id: number }[];
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * Delete a workout and every row that belongs to it, in one transaction.
+   * Schema-level ON DELETE CASCADE handles metric_series/samples,
+   * routes/route_points, analytics_snapshots, insight_runs, and notes_tags.
+   * source_files rows that become unreferenced by any remaining workout are
+   * removed too (their content hash is forgotten so a later re-import of the
+   * same file is not skipped as a duplicate) — see docs/data-management.md.
+   * A source file still referenced by another workout is left untouched.
+   * Returns null if the workout does not exist.
+   */
+  deleteWorkout(workoutId: number): { removedSourceFileIds: number[] } | null {
+    return this.transaction(() => {
+      if (!this.getWorkout(workoutId)) return null;
+      const candidateIds = this.sourceFileIdsForWorkout(workoutId);
+      this.db.prepare('DELETE FROM workouts WHERE id = ?').run(workoutId);
+
+      const stillReferenced = this.db.prepare(
+        `SELECT 1 AS x FROM metric_series WHERE source_file_id = ?
+         UNION ALL
+         SELECT 1 AS x FROM routes WHERE source_file_id = ?
+         LIMIT 1`,
+      );
+      const deleteSourceFile = this.db.prepare('DELETE FROM source_files WHERE id = ?');
+      const removedSourceFileIds: number[] = [];
+      for (const id of candidateIds) {
+        if (stillReferenced.get(id, id) === undefined) {
+          deleteSourceFile.run(id);
+          removedSourceFileIds.push(id);
+        }
+      }
+      return { removedSourceFileIds };
+    });
+  }
+
+  /**
+   * Recompute a workout's start/end/duration from its current metric_series
+   * and route_points rows (repair: re-derive association bounds from stored
+   * normalized data rather than trusting a possibly-stale span). Returns
+   * false when the workout has no dated child rows left to derive bounds
+   * from.
+   */
+  recomputeWorkoutSpan(workoutId: number): boolean {
+    const bounds = this.db
+      .prepare(
+        `SELECT MIN(mn) AS start, MAX(mx) AS end FROM (
+           SELECT start_utc AS mn, end_utc AS mx FROM metric_series WHERE workout_id = ?
+           UNION ALL
+           SELECT MIN(rp.t_utc), MAX(rp.t_utc)
+             FROM route_points rp JOIN routes r ON r.id = rp.route_id
+             WHERE r.workout_id = ? AND rp.t_utc IS NOT NULL
+         )`,
+      )
+      .get(workoutId, workoutId) as { start: number | null; end: number | null };
+    if (bounds.start == null || bounds.end == null) return false;
+    this.db
+      .prepare(
+        `UPDATE workouts SET
+           start_utc = ?, end_utc = ?,
+           duration_s = CAST(ROUND((? - ?) / 1000.0) AS INTEGER)
+         WHERE id = ?`,
+      )
+      .run(bounds.start, bounds.end, bounds.end, bounds.start, workoutId);
+    return true;
+  }
+
+  /** Delete analytics snapshots left over from a prior formula version (repair). */
+  deleteStaleAnalyticsSnapshots(workoutId: number, currentFormulaVersion: string): number {
+    const r = this.db
+      .prepare('DELETE FROM analytics_snapshots WHERE workout_id = ? AND formula_version != ?')
+      .run(workoutId, currentFormulaVersion);
+    return r.changes;
+  }
+
   countRows(
     table: 'workouts' | 'metric_samples' | 'route_points' | 'metric_series' | 'routes',
   ): number {

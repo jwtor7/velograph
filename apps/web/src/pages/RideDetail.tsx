@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, type WorkoutDetail, type WorkoutSummary } from '../api.ts';
 import { fmtDate, fmtDuration, fmtInt, fmtKm, fmtSpeedKmh, type Pt } from '../chartspec/spec.ts';
 import { TimeSeriesChart } from '../components/charts.tsx';
 import { ElevationProfile, RoutePanel, ZoneStrip } from '../components/route.tsx';
-import { Kpi, EmptyState } from '../components/ui.tsx';
+import { ConfirmDialog, Kpi, EmptyState } from '../components/ui.tsx';
 
 const CH = {
   hr: 'var(--vg-ch-hr)',
@@ -17,10 +17,15 @@ const CH = {
 /** Ride detail (RIDE-003/004/006, ROUTE-002/003): synchronized charts + route. */
 export function RideDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [detail, setDetail] = useState<WorkoutDetail | null>(null);
   const [error, setError] = useState(false);
   const [cursorT, setCursorT] = useState<number | null>(null);
   const [previous, setPrevious] = useState<WorkoutSummary | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [repairing, setRepairing] = useState(false);
+  const [repairMessage, setRepairMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -37,6 +42,34 @@ export function RideDetail() {
       })
       .catch(() => {});
   }, [id]);
+
+  const deleteRide = async () => {
+    if (!id) return;
+    setDeleting(true);
+    try {
+      await api.deleteWorkout(Number(id));
+      navigate('/');
+    } catch {
+      setError(true);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const repairRide = async () => {
+    if (!id) return;
+    setRepairing(true);
+    setRepairMessage(null);
+    try {
+      const r = await api.repairWorkout(Number(id));
+      setDetail((prev) => (prev ? { ...prev, analytics: r.analytics } : prev));
+      setRepairMessage('Repaired: association span and analytics were recomputed.');
+    } catch {
+      setRepairMessage('Repair failed — the local API may be unreachable.');
+    } finally {
+      setRepairing(false);
+    }
+  };
 
   const series = useMemo(() => {
     if (!detail) return null;
@@ -75,10 +108,46 @@ export function RideDetail() {
             Formula {a?.formulaVersion ?? '–'} · instants stored UTC · displayed UTC
           </div>
         </div>
-        <Link to="/" className="btn" style={{ textDecoration: 'none' }}>
-          Back to rides
-        </Link>
+        <div className="row">
+          <button className="btn" onClick={repairRide} disabled={repairing}>
+            {repairing ? 'Repairing…' : 'Repair ride'}
+          </button>
+          <button className="btn danger" onClick={() => setConfirmingDelete(true)}>
+            Delete ride
+          </button>
+          <Link to="/" className="btn" style={{ textDecoration: 'none' }}>
+            Back to rides
+          </Link>
+        </div>
       </div>
+
+      {repairMessage && (
+        <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+          {repairMessage}
+        </p>
+      )}
+
+      {confirmingDelete && (
+        <ConfirmDialog
+          title="Delete this ride?"
+          danger
+          busy={deleting}
+          confirmLabel="Delete ride"
+          onCancel={() => setConfirmingDelete(false)}
+          onConfirm={deleteRide}
+          body={
+            <>
+              <p style={{ margin: 0 }}>
+                This permanently removes this ride from {fmtDate(w.startUtc)} — its metric samples,
+                route, and analytics — from your local database.
+              </p>
+              <p style={{ margin: '8px 0 0', fontWeight: 600 }}>
+                This is irreversible unless you have a backup.
+              </p>
+            </>
+          }
+        />
+      )}
 
       <div className="kpi-grid">
         <Kpi label="Distance" value={fmtKm(a?.distanceM)} unit="km" />

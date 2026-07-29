@@ -5,7 +5,8 @@ import { databasePath, openDatabase, resolveDataDir } from '@velograph/db';
 import { createApiServer } from './server.ts';
 
 const dataDir = resolveDataDir();
-const db = openDatabase(databasePath(dataDir));
+const dbPath = databasePath(dataDir);
+const db = openDatabase(dbPath);
 const port = Number(process.env['VELO_PORT'] ?? 5123);
 const host = process.env['VELO_HOST'] ?? '127.0.0.1';
 
@@ -18,6 +19,7 @@ if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
 const webDist = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web', 'dist');
 const server = createApiServer({
   db,
+  dbPath,
   ...(existsSync(webDist) ? { staticDir: webDist } : {}),
 });
 server.listen(port, host, () => {

@@ -2,12 +2,18 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import type { Database } from '@velograph/db';
-import { Repository, loadWorkoutData } from '@velograph/db';
+import { Repository, backupDatabase, loadWorkoutData, restoreDatabase } from '@velograph/db';
 import { inventoryFiles, runImport, type ImportFile } from '@velograph/importers';
-import { getOrComputeAnalytics, loadSettings, saveSettings } from './analytics-service.ts';
+import {
+  getOrComputeAnalytics,
+  loadSettings,
+  repairWorkout,
+  saveSettings,
+} from './analytics-service.ts';
 
 export const API_VERSION = '0.1.0';
 const MAX_IMPORT_BODY_BYTES = 600 * 1024 * 1024; // base64-encoded uploads
+const MAX_PATH_BODY_BYTES = 8 * 1024;
 
 /**
  * Loopback-only HTTP API (PRD §11.3, §12.3).
@@ -23,6 +29,12 @@ const MAX_IMPORT_BODY_BYTES = 600 * 1024 * 1024; // base64-encoded uploads
  */
 export interface ApiOptions {
   db: Database;
+  /**
+   * Filesystem path backing `db` (undefined for an in-memory/test db).
+   * Required for /api/restore, which must close and reopen the live
+   * connection at this exact path.
+   */
+  dbPath?: string;
   port?: number;
   host?: string;
   /** Directory of built web assets to serve statically (optional). */
@@ -186,6 +198,37 @@ function route(
     return;
   }
 
+  // Delete a workout and every row that belongs to it, in one transaction
+  // (issue #38 scope). Irreversible without a backup — the UI confirmation
+  // step says so explicitly before this ever fires.
+  if (method === 'DELETE' && detail) {
+    const id = Number(detail[1]);
+    const repo = new Repository(db);
+    const result = repo.deleteWorkout(id);
+    if (!result) {
+      send(res, 404, { error: 'not_found' });
+      return;
+    }
+    send(res, 200, {
+      deleted: true,
+      workoutId: id,
+      removedSourceFiles: result.removedSourceFileIds.length,
+    });
+    return;
+  }
+
+  const repairMatch = /^\/api\/workouts\/(\d+)\/repair$/.exec(path);
+  if (method === 'POST' && repairMatch) {
+    const id = Number(repairMatch[1]);
+    const analytics = repairWorkout(db, id, now());
+    if (!analytics) {
+      send(res, 404, { error: 'not_found' });
+      return;
+    }
+    send(res, 200, { repaired: true, analytics });
+    return;
+  }
+
   if (method === 'GET' && path === '/api/trends') {
     send(res, 200, buildTrends(db, now));
     return;
@@ -236,7 +279,65 @@ function route(
     return;
   }
 
+  // Export the database to a user-chosen path via SQLite's backup API
+  // (never a raw copy of the live WAL files). The destination must not
+  // resolve inside a git checkout — enforced by guardAgainstCheckout inside
+  // backupDatabase — because backups carry real health data.
+  if (method === 'POST' && path === '/api/backup') {
+    readJsonBody(req, MAX_PATH_BODY_BYTES)
+      .then(async (body) => {
+        const dest = readPathField(body);
+        if (!dest) {
+          send(res, 400, { error: 'invalid_path' });
+          return;
+        }
+        try {
+          const result = await backupDatabase(db, dest);
+          send(res, 200, { ok: true, totalPages: result.totalPages });
+        } catch (err) {
+          const insideCheckout = err instanceof Error && /checkout/.test(err.message);
+          send(res, insideCheckout ? 400 : 500, {
+            error: insideCheckout ? 'destination_inside_checkout' : 'backup_failed',
+          });
+        }
+      })
+      .catch(() => send(res, 400, { error: 'invalid_body' }));
+    return;
+  }
+
+  // Restore the live database from a previously exported backup file. Only
+  // available when the server was started against a real database file
+  // (never for the in-memory db used in tests that don't opt in via dbPath).
+  if (method === 'POST' && path === '/api/restore') {
+    if (!opts.dbPath) {
+      send(res, 400, { error: 'restore_unsupported' });
+      return;
+    }
+    readJsonBody(req, MAX_PATH_BODY_BYTES)
+      .then(async (body) => {
+        const source = readPathField(body);
+        if (!source) {
+          send(res, 400, { error: 'invalid_path' });
+          return;
+        }
+        try {
+          const restored = await restoreDatabase(opts.db, opts.dbPath!, source);
+          opts.db = restored;
+          send(res, 200, { ok: true });
+        } catch {
+          send(res, 400, { error: 'restore_failed' });
+        }
+      })
+      .catch(() => send(res, 400, { error: 'invalid_body' }));
+    return;
+  }
+
   send(res, 404, { error: 'not_found' });
+}
+
+function readPathField(body: unknown): string | undefined {
+  const p = (body as { path?: unknown } | null)?.path;
+  return typeof p === 'string' && p.trim() !== '' ? p : undefined;
 }
 
 function decodeFiles(body: unknown): ImportFile[] {

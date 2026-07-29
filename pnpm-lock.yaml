@@ -51,6 +51,9 @@ importers:
 
   apps/cli:
     dependencies:
+      '@velograph/api':
+        specifier: workspace:*
+        version: link:../api
       '@velograph/db':
         specifier: workspace:*
         version: link:../../packages/db
