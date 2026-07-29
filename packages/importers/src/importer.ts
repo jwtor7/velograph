@@ -40,7 +40,7 @@ export interface ImportResult extends ImportCounts {
 export function runImport(
   db: Database,
   inputFiles: ImportFile[],
-  opts: { now?: number; toleranceMs?: number } = {},
+  opts: { now?: number; toleranceMs?: number; timeZone?: string } = {},
 ): ImportResult {
   const repo = new Repository(db);
   const now = opts.now ?? Date.now();
@@ -82,7 +82,7 @@ export function runImport(
 
       let parsed: ParsedFile;
       try {
-        parsed = parseFile(file);
+        parsed = parseFile(file, opts.timeZone);
       } catch (err) {
         const code: QuarantineCode =
           err instanceof AdapterError ? err.code : err instanceof ZipError ? err.code : 'io_error';
@@ -189,7 +189,7 @@ export function runImport(
   return { batchId, ...counts, quarantinedFiles };
 }
 
-function parseFile(file: ImportFile): ParsedFile {
+function parseFile(file: ImportFile, timeZone?: string): ParsedFile {
   const lower = file.name.toLowerCase();
   const text = new TextDecoder('utf-8', { fatal: false }).decode(file.data);
   if (lower.endsWith('.gpx')) return parseHaeGpx(file.name, text);
@@ -197,7 +197,7 @@ function parseFile(file: ImportFile): ParsedFile {
     if (!parseHaeFilename(file.name)) {
       throw new AdapterError('unsupported_file_type', 'filename not recognized');
     }
-    return parseHaeCsv(file.name, text);
+    return parseHaeCsv(file.name, text, timeZone ? { timeZone } : {});
   }
   throw new AdapterError('unsupported_file_type', 'extension not supported');
 }

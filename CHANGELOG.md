@@ -9,6 +9,26 @@ is pre-1.0, and for the release procedure.
 
 ## [Unreleased]
 
+### Added
+
+- **Import and display timezone**: offset-less Health Auto Export wall times are now
+  resolved in a configurable IANA timezone instead of being assumed UTC, which previously
+  shifted every affected ride by the local UTC offset. DST is handled explicitly —
+  ambiguous fall-back times resolve to the earlier occurrence and nonexistent
+  spring-forward times fail closed rather than silently shifting. Explicit `Z` and numeric
+  offsets remain authoritative. The zone is a validated app setting (defaulting to the host
+  zone), threaded through the importer, API, and CLI, with a Settings field and local-time
+  rendering in the ride library and ride detail.
+- **Route visualization**: cumulative-distance labels, direction chevrons, and a geographic
+  scale bar derived from the route projection, sampled only along recorded segments.
+- **Import inventory preview** in the import UI.
+
+### Fixed
+
+- **Real Health Auto Export column names** are now recognized — `cyclingdistancekm`,
+  `cyclingcadencecount/min`, and the `count/min` heart-rate variants. Real exports using
+  these headers previously failed to match any known metric shape.
+
 ## [0.1.0] - 2026-07-28
 
 Initial MVP: import a Health Auto Export CSV/GPX/ZIP, compute deterministic ride and

@@ -26,6 +26,9 @@ export function RideDetail() {
   const [deleting, setDeleting] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [repairMessage, setRepairMessage] = useState<string | null>(null);
+  const [timeZone, setTimeZone] = useState(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  );
 
   useEffect(() => {
     if (!id) return;
@@ -40,6 +43,10 @@ export function RideDetail() {
         const idx = sorted.findIndex((w) => w.id === Number(id));
         setPrevious(idx > 0 ? sorted[idx - 1]! : null);
       })
+      .catch(() => {});
+    api
+      .settings()
+      .then((r) => setTimeZone(r.settings.timeZone))
       .catch(() => {});
   }, [id]);
 
@@ -102,10 +109,10 @@ export function RideDetail() {
       <div className="page-head">
         <div>
           <h1 className="page-title">
-            Ride · <span className="grad-text">{fmtDate(w.startUtc)}</span>
+            Ride · <span className="grad-text">{fmtDate(w.startUtc, timeZone)}</span>
           </h1>
           <div className="page-sub">
-            Formula {a?.formulaVersion ?? '–'} · instants stored UTC · displayed UTC
+            Formula {a?.formulaVersion ?? '–'} · instants stored UTC · displayed {timeZone}
           </div>
         </div>
         <div className="row">
@@ -166,7 +173,10 @@ export function RideDetail() {
 
       <div className="two-col">
         <div className="card">
-          <h2 className="card-title">Route</h2>
+          <div className="chart-tile-head">
+            <h2 className="card-title">Offline route map</h2>
+            <span className="badge">Local geometry · no remote tiles</span>
+          </div>
           <RoutePanel segments={detail.route} cursorT={cursorT} />
         </div>
         <div className="stack">
@@ -227,7 +237,7 @@ export function RideDetail() {
                 </tbody>
               </table>
               <p className="muted" style={{ fontSize: 11, margin: '8px 0 0' }}>
-                Compared with {fmtDate(previous.startUtc)}
+                Compared with {fmtDate(previous.startUtc, timeZone)}
               </p>
             </div>
           )}

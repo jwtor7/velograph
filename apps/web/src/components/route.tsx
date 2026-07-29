@@ -44,7 +44,12 @@ export function RoutePanel({
     gridLines.push(<line key={`h${y}`} x1={0} y1={y} x2={W} y2={y} />);
 
   return (
-    <svg viewBox={`0 0 ${W} ${height}`} width="100%" role="img" aria-label="route map">
+    <svg
+      viewBox={`0 0 ${W} ${height}`}
+      width="100%"
+      role="img"
+      aria-label="offline route map with direction, distance, and scale markers"
+    >
       <defs>
         <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="0">
           <stop offset="0" stopColor="var(--vg-route-start)" />
@@ -64,6 +69,40 @@ export function RoutePanel({
           strokeLinecap="round"
           strokeLinejoin="round"
         />
+      ))}
+      {spec.directionMarkers.map((marker, i) => (
+        <g
+          key={`direction-${i}`}
+          transform={`translate(${marker.position[0]} ${marker.position[1]}) rotate(${marker.angleDeg})`}
+          aria-hidden="true"
+        >
+          <path
+            d="M-5 -4L6 0L-5 4L-2 0Z"
+            fill="var(--vg-brand-teal)"
+            stroke="var(--vg-bg)"
+            strokeWidth="1.2"
+          />
+        </g>
+      ))}
+      {spec.distanceMarkers.map((marker) => (
+        <g
+          key={`distance-${marker.distanceM}`}
+          transform={`translate(${marker.position[0]} ${marker.position[1]})`}
+        >
+          <circle r="3.5" fill="var(--vg-bg)" stroke="var(--vg-text)" strokeWidth="1.2" />
+          <text
+            x="6"
+            y="-6"
+            fill="var(--vg-text)"
+            stroke="var(--vg-bg)"
+            strokeWidth="3"
+            paintOrder="stroke"
+            fontSize="9"
+            fontWeight="600"
+          >
+            {marker.label}
+          </text>
+        </g>
       ))}
       {spec.start && (
         <circle
@@ -95,6 +134,34 @@ export function RoutePanel({
           strokeWidth="2"
         />
       )}
+      <g transform={`translate(24 ${height - 20})`} aria-label={`scale ${spec.scaleBar.label}`}>
+        <line
+          x1="0"
+          y1="0"
+          x2={spec.scaleBar.widthPx}
+          y2="0"
+          stroke="var(--vg-text)"
+          strokeWidth="2"
+        />
+        <line x1="0" y1="-4" x2="0" y2="4" stroke="var(--vg-text)" strokeWidth="1.5" />
+        <line
+          x1={spec.scaleBar.widthPx}
+          y1="-4"
+          x2={spec.scaleBar.widthPx}
+          y2="4"
+          stroke="var(--vg-text)"
+          strokeWidth="1.5"
+        />
+        <text x="0" y="-7" fill="var(--vg-text-muted)" fontSize="9" fontWeight="600">
+          {spec.scaleBar.label}
+        </text>
+      </g>
+      <g transform={`translate(${W - 26} 28)`} aria-label="north">
+        <path d="M0 -12L5 6L0 3L-5 6Z" fill="var(--vg-text)" />
+        <text x="0" y="17" textAnchor="middle" fill="var(--vg-text-muted)" fontSize="9">
+          N
+        </text>
+      </g>
     </svg>
   );
 }
