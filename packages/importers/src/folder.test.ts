@@ -91,6 +91,48 @@ describe('walkImportFolder — nested subfolders', () => {
       ].sort(),
     );
   });
+
+  it('fails closed when a nested directory is swapped before it is opened', () => {
+    const outside = tempDir();
+    const outsideName = 'synthetic-outside-only-name.txt';
+    writeFileSync(join(outside, outsideName), 'invented note');
+
+    const root = tempDir();
+    const nested = join(root, 'nested');
+    mkdirSync(nested);
+    writeFileSync(join(nested, 'synthetic-inside.txt'), 'invented note');
+    const symlinkProbe = join(root, 'synthetic-symlink-probe');
+    try {
+      symlinkSync(outside, symlinkProbe, 'dir');
+      unlinkSync(symlinkProbe);
+    } catch {
+      return; // symlinks unsupported in this environment
+    }
+
+    let hookCalls = 0;
+    try {
+      walkImportFolder(
+        root,
+        {},
+        {
+          beforeDirectoryOpen: (relativePath) => {
+            if (relativePath !== 'nested') return;
+            hookCalls++;
+            rmSync(nested, { recursive: true });
+            symlinkSync(outside, nested, 'dir');
+          },
+        },
+      );
+      expect.unreachable('directory replacement should fail the traversal');
+    } catch (err) {
+      expect(err).toBeInstanceOf(FolderImportError);
+      expect((err as FolderImportError).code).toBe('path_changed');
+      expect((err as FolderImportError).message).toBe('folder changed during traversal');
+      expect((err as FolderImportError).message).not.toContain(outsideName);
+      expect((err as FolderImportError).message).not.toContain(outside);
+    }
+    expect(hookCalls).toBe(1);
+  });
 });
 
 describe('walkImportFolder — caps', () => {

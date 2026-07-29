@@ -7,6 +7,7 @@ import {
   type FolderSkipItem,
   type ImportResultBody,
 } from '../api.ts';
+import { requestCurrentFolderPreview } from './import-preview.ts';
 
 interface Picked {
   name: string;
@@ -78,6 +79,7 @@ export function ImportPage() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [folderPath, setFolderPath] = useState('');
+  const folderPathRef = useRef('');
   const [preview, setPreview] = useState<FolderPreviewBody | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -135,11 +137,17 @@ export function ImportPage() {
   };
 
   const loadPreview = async () => {
+    const requestedPath = folderPath.trim();
     setPreviewBusy(true);
     setPreviewError(null);
     setResult(null);
     try {
-      const res = await api.importPathPreview(folderPath.trim());
+      const res = await requestCurrentFolderPreview(
+        requestedPath,
+        () => folderPathRef.current,
+        api.importPathPreview,
+      );
+      if (res.status === 'stale') return;
       setPreview(res.preview);
       if (res.preview.truncated) {
         setPreviewError(
@@ -173,6 +181,7 @@ export function ImportPage() {
       setResult(res.result);
       setResultSkipped(res.skipped);
       setPreview(null);
+      folderPathRef.current = '';
       setFolderPath('');
     } catch (err) {
       if (err instanceof ApiError && STALE_FOLDER_PREVIEW_CODES.has(err.code)) {
@@ -296,6 +305,7 @@ export function ImportPage() {
             placeholder="/path/to/Health Auto Export"
             value={folderPath}
             onChange={(e) => {
+              folderPathRef.current = e.target.value;
               setFolderPath(e.target.value);
               setPreview(null);
               setPreviewError(null);

@@ -22,6 +22,12 @@
   `file_unreadable`.
 - While confirmation cannot recreate a previously previewed root because it was deleted or replaced
   by a non-directory, the API shall return `409 path_changed` so the UI clears the stale preview.
+- While traversal discovers and then opens a nested directory, the system shall bind that directory
+  to its canonical target and device/inode identity before and after enumeration. A replacement
+  shall fail the entire plan with value-free `path_changed`, without returning names from the
+  replacement.
+- While a folder preview request is pending, if the user edits the path field, the eventual response
+  or failure for the earlier path shall not replace the current path's preview or error state.
 - While `pnpm app:dev` is running, when the operating-system browser launcher cannot be spawned,
   the system shall print the loopback URL and keep owning the API child until normal shutdown.
 - While either workflow reports an error, the system shall not log file contents, coordinates,
@@ -35,6 +41,8 @@
   confirmation and never renders or interprets it.
 - A truncated preview shows a stable limit message and disables confirmation. A `path_changed`
   response clears the stale preview and asks the user to preview again.
+- Preview requests capture the submitted path and compare it with the live editable value after the
+  asynchronous request settles; stale successes and stale failures are ignored.
 - Preview ordering remains stable so the user sees the same ride/file order that confirmation
   consumes.
 
@@ -43,6 +51,9 @@
 - `walkImportFolder` consumes `opendir` handles incrementally and produces a metadata-only
   manifest with canonical root and entry identities. Explicit visited-entry, opened-directory,
   recursion-depth, importable-file, and aggregate-byte limits count unsupported entries too.
+- Every enumerated directory captures its canonical target and device/inode identity before open,
+  revalidates them immediately before open and after enumeration, and turns any mismatch into the
+  same value-free `path_changed` failure used for stale plans.
 - A shared grouping function orders association groups by workout type/timestamp key, then orders
   files by relative path. ZIPs and unrecognized files each form deterministic standalone groups.
 - Preview hashes the complete private manifest, grouping result, skips, limits, and root identity.
@@ -71,8 +82,8 @@
 - Authentication/authorization: not applicable to this single-user loopback app. Existing strict
   Host/Origin checks and the custom CSRF header remain server-side requirements.
 - Input: path body cap, checkout guard, traversal/file/byte caps, extension allow-list,
-  canonical-root containment, preview-digest binding, root/file identity checks, regular-file
-  checks, and two-phase ZIP validation all fail closed.
+  canonical-root containment, preview-digest binding, directory/root/file identity checks,
+  regular-file checks, and two-phase ZIP validation all fail closed.
 - Output: API responses remain allow-listed metadata and stable error codes. No source bytes or
   absolute planned-file paths or identity values are returned; the digest is opaque.
 - Rate limiting: incremental traversal bounds, ZIP preflight/output limits, and request-body limits
@@ -90,6 +101,9 @@
 - [x] Add deterministic metadata grouping and lazy, identity-checked group reads.
 - [x] Bind confirmation to the exact bounded preview manifest and reject truncated previews.
 - [x] Replace recursive directory materialization with bounded incremental iteration.
+- [x] Revalidate every enumerated directory around `opendir` and add a deterministic nested-swap
+      regression.
+- [x] Ignore stale asynchronous preview results after the editable folder path changes.
 - [x] Replace eager ZIP inflation with preflight plus a decoder-enforced maximum output length.
 - [x] Add grouped importer consumption while preserving one atomic batch.
 - [x] Switch the path endpoint to the lazy grouped pipeline.
@@ -112,7 +126,8 @@
 
 ## Verification
 
-- `pnpm test`: 32 test files and 235 tests pass, including synthetic traversal bounds,
+- `pnpm test`: 33 test files and 239 tests pass, including synthetic traversal bounds,
+  deterministic nested-directory swap rejection, stale asynchronous preview suppression,
   exact-manifest confirmation, mutation/addition/replacement rejection with no writes, ZIP
   preflight/decoder limits, complete metric/route coverage, transaction rollback, and
   browser-launch lifecycle cases.

@@ -37,11 +37,16 @@ is pre-1.0, and for the release procedure.
   then confirm. The API reads the folder directly from disk, recursing into subfolders,
   through incremental directory handles with explicit visited-entry, directory, depth,
   importable-file, and total-byte bounds; unsupported entries count toward traversal limits
-  too. Preview returns an opaque digest of the exact private manifest. Confirmation repeats
-  the bounded walk and requires that digest to match before reading source bytes or beginning
-  the database transaction, so mutation, addition, deletion, replacement, or a path swap
-  fails closed with `path_changed`; a root deleted or replaced by a non-directory after preview
-  uses that same conflict so the UI clears its stale preview. A truncated preview is visibly
+  too. Each directory's canonical target and device/inode identity are captured before it is
+  opened and revalidated after enumeration, so replacing a nested directory with a symlink
+  during traversal fails the whole value-free plan with `path_changed` rather than returning
+  entries from the replacement. Preview returns an opaque digest of the exact private manifest.
+  Confirmation repeats the bounded walk and requires that digest to match before reading source
+  bytes or beginning the database transaction, so mutation, addition, deletion, replacement, or
+  a path swap fails closed with `path_changed`; a root deleted or replaced by a non-directory
+  after preview uses that same conflict so the UI clears its stale preview. If the editable path
+  changes while a preview request is pending, that request's eventual success or failure is
+  ignored instead of overwriting the new path's state. A truncated preview is visibly
   non-confirmable and the API independently refuses it with `folder_limits_exceeded`. Accepted
   confirmation revalidates
   canonical root/file identity and reads one bounded association group at a time inside one
