@@ -59,6 +59,10 @@ is pre-1.0, and for the release procedure.
   Associated route rows and their segments load in deterministic database order, missing point
   times remain explicit `null`, and timing-derived metrics never bridge an untimed point, segment,
   or route-file boundary while geometry and elevation remain usable (#20).
+- **Analytics snapshots are immutable evidence for their provenance key.** Byte-identical replays
+  are idempotent cache hits, while a differing result for the same formula, settings, and input
+  hashes raises a value-free integrity error without changing the original result or creation
+  timestamp (#21).
 - **Large and partially timed routes render safely and stay synchronized.** Route bounds now use
   one bounded pass instead of spreading every coordinate into `Math.min`/`Math.max`, including
   the persisted route summary. Elevation keeps recorded segment gaps, uses the ride's full time

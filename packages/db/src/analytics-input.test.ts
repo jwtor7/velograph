@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { loadWorkoutData } from './analytics-input.ts';
+import {
+  AnalyticsSnapshotConflictError,
+  loadWorkoutData,
+  saveAnalyticsSnapshot,
+} from './analytics-input.ts';
 import { openDatabase } from './database.ts';
 import { Repository } from './repository.ts';
 
@@ -104,6 +108,74 @@ describe('loadWorkoutData route timestamps', () => {
       [-48.44, -48.45],
     ]);
     expect(route[1]!.points[0]!.t).toBeNull();
+    db.close();
+  });
+});
+
+describe('saveAnalyticsSnapshot immutability', () => {
+  function setupSnapshotDb() {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const workoutId = repo.createWorkout('outdoor_cycling', 1_000, 9_000, 'synthetic-test');
+    return { db, workoutId };
+  }
+
+  it('treats a byte-identical replay as an idempotent cache hit', () => {
+    const { db, workoutId } = setupSnapshotDb();
+    const row = {
+      workoutId,
+      formulaVersion: 'synthetic-formula-v1',
+      settingsHash: 'synthetic-settings-hash',
+      inputHash: 'synthetic-input-hash',
+      resultJson: '{"distanceM":1234}',
+      createdAt: 10_000,
+    };
+
+    expect(saveAnalyticsSnapshot(db, row)).toBe('inserted');
+    expect(saveAnalyticsSnapshot(db, { ...row, createdAt: 20_000 })).toBe('existing');
+    expect(
+      db
+        .prepare(
+          `SELECT result_json, created_at FROM analytics_snapshots
+           WHERE workout_id = ?`,
+        )
+        .get(workoutId),
+    ).toEqual({ result_json: row.resultJson, created_at: row.createdAt });
+    db.close();
+  });
+
+  it('rejects a conflicting replay and preserves the original evidence', () => {
+    const { db, workoutId } = setupSnapshotDb();
+    const row = {
+      workoutId,
+      formulaVersion: 'synthetic-formula-v1',
+      settingsHash: 'synthetic-settings-hash',
+      inputHash: 'synthetic-input-hash',
+      resultJson: '{"distanceM":1234}',
+      createdAt: 10_000,
+    };
+    saveAnalyticsSnapshot(db, row);
+
+    expect(() =>
+      saveAnalyticsSnapshot(db, {
+        ...row,
+        resultJson: '{"distanceM":9876}',
+        createdAt: 20_000,
+      }),
+    ).toThrow(AnalyticsSnapshotConflictError);
+    expect(
+      db
+        .prepare(
+          `SELECT result_json, created_at FROM analytics_snapshots
+           WHERE workout_id = ?`,
+        )
+        .get(workoutId),
+    ).toEqual({ result_json: row.resultJson, created_at: row.createdAt });
+    expect(
+      db
+        .prepare('SELECT COUNT(*) AS count FROM analytics_snapshots WHERE workout_id = ?')
+        .get(workoutId),
+    ).toEqual({ count: 1 });
     db.close();
   });
 });

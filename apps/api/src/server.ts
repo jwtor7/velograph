@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import type { Database } from '@velograph/db';
 import {
+  AnalyticsSnapshotConflictError,
   BackupValidationError,
   Repository,
   RestoreDatabaseError,
@@ -121,14 +122,26 @@ export function createApiServer(opts: ApiOptions): VelographApiServer {
       if (operation) {
         operationPending = true;
         void operation
-          .catch(() => send(res, 500, { error: 'internal_error' }))
+          .catch((error) =>
+            send(res, 500, {
+              error:
+                error instanceof AnalyticsSnapshotConflictError
+                  ? 'analytics_snapshot_conflict'
+                  : 'internal_error',
+            }),
+          )
           .finally(() => {
             operationPending = false;
             finishRequest();
           });
       }
-    } catch {
-      send(res, 500, { error: 'internal_error' });
+    } catch (error) {
+      send(res, 500, {
+        error:
+          error instanceof AnalyticsSnapshotConflictError
+            ? 'analytics_snapshot_conflict'
+            : 'internal_error',
+      });
     }
   });
   return Object.assign(server, {

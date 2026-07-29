@@ -3,8 +3,11 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
-import { openDatabase, type Database } from '@velograph/db';
+import { loadWorkoutData, openDatabase, Repository, type Database } from '@velograph/db';
+import { FORMULA_VERSION } from '@velograph/analytics';
 import { runImport } from '@velograph/importers';
+import { sha256Hex, stableStringify } from '@velograph/shared';
+import { loadSettings } from './analytics-service.ts';
 import { createApiServer } from './server.ts';
 
 const FIXTURES = join(
@@ -180,6 +183,61 @@ describe('loopback API', () => {
       body: JSON.stringify({ settings: { timeZone: 'Not/A_Zone' } }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it('surfaces an analytics snapshot conflict without exposing stored values', async () => {
+    const conflictDb = openDatabase(':memory:');
+    const repo = new Repository(conflictDb);
+    const workoutId = repo.createWorkout('outdoor_cycling', 1_000, 9_000, 'synthetic-test');
+    const input = loadWorkoutData(conflictDb, workoutId)!;
+    const settings = loadSettings(conflictDb);
+    const settingsHash = sha256Hex(stableStringify(settings));
+    const inputHash = sha256Hex(stableStringify(input));
+    conflictDb
+      .prepare(
+        `INSERT INTO analytics_snapshots
+           (workout_id, scope, formula_version, settings_hash, input_hash, result_json, created_at)
+         VALUES (?, 'workout', ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        workoutId,
+        FORMULA_VERSION,
+        settingsHash,
+        inputHash,
+        '{"SECRET_CONFLICTING_RESULT":true}',
+        10_000,
+      );
+    const conflictServer = createApiServer({ db: conflictDb, now: () => 20_000 });
+    await new Promise<void>((resolve) => conflictServer.listen(0, '127.0.0.1', resolve));
+    const address = conflictServer.address();
+    const conflictPort = typeof address === 'object' && address ? address.port : 0;
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${conflictPort}/api/workouts/${workoutId}/repair`,
+        {
+          method: 'POST',
+          headers: { 'x-velograph-request': '1' },
+        },
+      );
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as { error: string };
+      expect(body).toEqual({ error: 'analytics_snapshot_conflict' });
+      expect(JSON.stringify(body)).not.toContain('SECRET_CONFLICTING_RESULT');
+      expect(
+        conflictDb
+          .prepare(
+            `SELECT result_json, created_at FROM analytics_snapshots
+             WHERE workout_id = ?`,
+          )
+          .get(workoutId),
+      ).toEqual({ result_json: '{"SECRET_CONFLICTING_RESULT":true}', created_at: 10_000 });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        conflictServer.close((error) => (error ? reject(error) : resolve())),
+      );
+      conflictDb.close();
+    }
   });
 
   it('404s unknown API routes', async () => {
