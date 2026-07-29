@@ -15,7 +15,8 @@ decimals (elevation to 1 decimal). No clock, locale, network, or randomness is c
 - **Coverage** — sum of interval weights ÷ duration, clamped to [0, 1].
 - **Moving time** — total time of route intervals whose recorded speed ≥ the
   moving-speed threshold. **Default 1.0 m/s — provisional pending PRD §20.3**, stored as a
-  setting, not a constant.
+  setting, not a constant. Every route file and segment is a hard interval boundary; an interval
+  with either timestamp missing is excluded rather than assigned a synthetic instant.
 - **Distance** — sum of distance samples (already canonical metres).
 - **Average speed** — distance ÷ moving time when route timing exists, else distance ÷ duration.
 - **Max speed** — maximum recorded route point speed.

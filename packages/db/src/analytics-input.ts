@@ -49,16 +49,15 @@ export function loadWorkoutData(db: Database, workoutId: number): WorkoutData | 
   }
 
   const route: RouteSegment[] = [];
-  const routeRow = db
-    .prepare('SELECT id FROM routes WHERE workout_id = ? ORDER BY id LIMIT 1')
-    .get(workoutId) as { id: number } | undefined;
-  if (routeRow) {
-    const points = db
-      .prepare(
-        `SELECT segment, t_utc, lat, lon, ele_m, speed_ms, course_deg
-         FROM route_points WHERE route_id = ? ORDER BY segment, seq`,
-      )
-      .all(routeRow.id) as {
+  const routeRows = db
+    .prepare('SELECT id FROM routes WHERE workout_id = ? ORDER BY id')
+    .all(workoutId) as { id: number }[];
+  const loadRoutePoints = db.prepare(
+    `SELECT segment, t_utc, lat, lon, ele_m, speed_ms, course_deg
+     FROM route_points WHERE route_id = ? ORDER BY segment, seq, id`,
+  );
+  for (const routeRow of routeRows) {
+    const points = loadRoutePoints.all(routeRow.id) as {
       segment: number;
       t_utc: number | null;
       lat: number;
@@ -67,14 +66,17 @@ export function loadWorkoutData(db: Database, workoutId: number): WorkoutData | 
       speed_ms: number | null;
       course_deg: number | null;
     }[];
-    let currentSeg = -1;
+    let currentSeg: number | undefined;
     for (const p of points) {
       if (p.segment !== currentSeg) {
         route.push({ points: [] });
         currentSeg = p.segment;
       }
-      const point: RouteSegment['points'][number] = { lat: p.lat, lon: p.lon };
-      if (p.t_utc != null) point.t = p.t_utc;
+      const point: RouteSegment['points'][number] = {
+        t: p.t_utc,
+        lat: p.lat,
+        lon: p.lon,
+      };
       if (p.ele_m != null) point.ele = p.ele_m;
       if (p.speed_ms != null) point.speed = p.speed_ms;
       if (p.course_deg != null) point.course = p.course_deg;

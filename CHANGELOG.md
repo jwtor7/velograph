@@ -55,6 +55,10 @@ is pre-1.0, and for the release procedure.
   SIGINT/SIGTERM drain accepted work and checkpoint/close the current handle. `app:stop` waits 12
   seconds for the verified process, safely escalates, and treats a final `SIGKILL` `ESRCH` race as a
   completed stop (#43, #55).
+- **Analytics now load every route without inventing timestamps or cross-file intervals.**
+  Associated route rows and their segments load in deterministic database order, missing point
+  times remain explicit `null`, and timing-derived metrics never bridge an untimed point, segment,
+  or route-file boundary while geometry and elevation remain usable (#20).
 - **Large and partially timed routes render safely and stay synchronized.** Route bounds now use
   one bounded pass instead of spreading every coordinate into `Math.min`/`Math.max`, including
   the persisted route summary. Elevation keeps recorded segment gaps, uses the ride's full time

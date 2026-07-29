@@ -4,7 +4,7 @@ import { openDatabase } from './database.ts';
 import { Repository } from './repository.ts';
 
 describe('loadWorkoutData route timestamps', () => {
-  it('keeps a missing route timestamp absent instead of substituting epoch zero', () => {
+  it('keeps a missing route timestamp explicit instead of substituting epoch zero', () => {
     const db = openDatabase(':memory:');
     const repo = new Repository(db);
     const batchId = repo.createBatch('synthetic-test', 1);
@@ -35,9 +35,75 @@ describe('loadWorkoutData route timestamps', () => {
 
     const route = loadWorkoutData(db, workoutId)!.route;
 
-    expect(route[0]!.points[0]).toEqual({ lat: 43.1, lon: -79.1, ele: 100 });
-    expect(route[0]!.points[0]).not.toHaveProperty('t');
+    expect(route[0]!.points[0]).toEqual({ t: null, lat: 43.1, lon: -79.1, ele: 100 });
     expect(route[0]!.points[1]!.t).toBe(150);
+    db.close();
+  });
+
+  it('loads every route and keeps equal-numbered segments from separate files distinct', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const batchId = repo.createBatch('synthetic-test', 1);
+    const firstSourceId = repo.insertSourceFile({
+      batchId,
+      sha256: 'synthetic-route-source-a',
+      originalName: 'invented-route-a.gpx',
+      detectedType: 'route:gpx',
+      parserVersion: 'test-v1',
+      status: 'imported',
+      sizeBytes: 120,
+    });
+    const secondSourceId = repo.insertSourceFile({
+      batchId,
+      sha256: 'synthetic-route-source-b',
+      originalName: 'invented-route-b.gpx',
+      detectedType: 'route:gpx',
+      parserVersion: 'test-v1',
+      status: 'imported',
+      sizeBytes: 140,
+    });
+    const workoutId = repo.createWorkout('outdoor_cycling', 1_000, 9_000, 'import');
+    repo.insertRoute({
+      workoutId,
+      sourceFileId: firstSourceId,
+      format: 'gpx',
+      distanceM: null,
+      segments: [
+        {
+          points: [
+            { t: 1_000, lat: -48.41, lon: -123.41 },
+            { t: 2_000, lat: -48.42, lon: -123.42 },
+          ],
+        },
+        {
+          points: [{ t: null, lat: -48.43, lon: -123.43 }],
+        },
+      ],
+    });
+    repo.insertRoute({
+      workoutId,
+      sourceFileId: secondSourceId,
+      format: 'gpx',
+      distanceM: null,
+      segments: [
+        {
+          points: [
+            { t: 7_000, lat: -48.44, lon: -123.44 },
+            { t: 8_000, lat: -48.45, lon: -123.45 },
+          ],
+        },
+      ],
+    });
+
+    const route = loadWorkoutData(db, workoutId)!.route;
+
+    expect(route).toHaveLength(3);
+    expect(route.map((segment) => segment.points.map((point) => point.lat))).toEqual([
+      [-48.41, -48.42],
+      [-48.43],
+      [-48.44, -48.45],
+    ]);
+    expect(route[1]!.points[0]!.t).toBeNull();
     db.close();
   });
 });

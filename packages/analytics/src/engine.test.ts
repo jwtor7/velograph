@@ -123,4 +123,38 @@ describe('deterministic analytics engine', () => {
     expect(a.efficiency).toBeNull();
     expect(Object.keys(a.unavailable).length).toBeGreaterThan(4);
   });
+
+  it('never derives timing across route-file or segment boundaries', () => {
+    const boundaryOnly = mkInput({
+      metrics: {},
+      route: [
+        { points: [{ t: min(0), lat: -48.41, lon: -123.41, ele: 10 }] },
+        { points: [{ t: min(1), lat: -48.42, lon: -123.42, ele: 20 }] },
+      ],
+    });
+    const analytics = computeRideAnalytics(boundaryOnly, settings);
+    expect(analytics.movingTimeS).toBeNull();
+    expect(analytics.maxSpeedMs).toBeNull();
+  });
+
+  it('keeps untimed geometry and elevation without treating it as timing evidence', () => {
+    const mixedTiming = mkInput({
+      metrics: {},
+      route: [
+        {
+          points: [
+            { t: min(0), lat: -48.41, lon: -123.41, ele: 10 },
+            { t: null, lat: -48.42, lon: -123.42, ele: 20 },
+            { t: min(2), lat: -48.43, lon: -123.43, ele: 30 },
+          ],
+        },
+      ],
+    });
+    const analytics = computeRideAnalytics(mixedTiming, settings);
+    expect(analytics.movingTimeS).toBeNull();
+    expect(analytics.maxSpeedMs).toBeNull();
+    expect(analytics.elevation.gainM).toBe(20);
+    expect(analytics.elevation.minM).toBe(10);
+    expect(analytics.elevation.maxM).toBe(30);
+  });
 });
