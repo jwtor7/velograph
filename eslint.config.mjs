@@ -3,7 +3,8 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/coverage/**', 'fixtures/**', '**/*.d.ts'],
+    // '.claude/**' excludes nested agent worktrees (full repo copies) — see .gitignore
+    ignores: ['**/dist/**', '**/coverage/**', 'fixtures/**', '**/*.d.ts', '.claude/**'],
   },
   {
     files: ['**/*.{js,mjs}'],
