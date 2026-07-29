@@ -19,21 +19,80 @@ Your health data never leaves your machine unless you explicitly send it somewhe
 
 ## Quick start
 
-> Velograph is under active development; the build system is landing now. Once scaffolding is complete:
+The build system has landed: a pnpm/TypeScript monorepo with a working import pipeline,
+analytics engine, loopback API, and web client. There is no `pnpm dev` script — the web
+client is built once and served by the API, as below.
 
 ```bash
-pnpm install
-pnpm dev        # starts the local API (127.0.0.1) and web client
-pnpm test       # run the full test suite
+pnpm install                            # install workspace dependencies
+pnpm --filter @velograph/web build      # build the web client (required before the API can serve it)
 ```
 
-Then open the printed local URL in your browser and import a Health Auto Export folder, files, or ZIP.
+### Where your data lives
+
+All persistent state — the SQLite database, quarantined import files — lives in
+`VELO_DATA_DIR`, never inside this checkout. It's optional: left unset, Velograph picks an
+OS-appropriate application-data directory (e.g. `~/Library/Application Support/velograph` on
+macOS, `%APPDATA%\velograph` on Windows, `$XDG_DATA_HOME/velograph` on Linux). Either way, a
+`VELO_DATA_DIR` that resolves inside a git checkout is refused at startup — set one
+explicitly if you'd rather choose the location yourself:
+
+```bash
+export VELO_DATA_DIR=~/velograph-data   # anywhere outside this repo; optional
+```
+
+Import some rides. Use the committed synthetic fixtures to try it without any real data, or
+point at a real [Health Auto Export](https://www.healthyapps.dev/) folder/ZIP:
+
+```bash
+node apps/cli/src/index.ts import fixtures/synthetic/rides
+```
+
+Start the API — it binds `127.0.0.1:5123` by default and serves the built web client from
+that same origin:
+
+```bash
+node apps/api/src/main.ts
+```
+
+Then open `http://127.0.0.1:5123` in your browser.
+
+Run the test suite and the other checks CI runs:
+
+```bash
+pnpm test         # unit, parser, migration, and analytics golden tests
+pnpm lint         # eslint
+pnpm typecheck    # tsc --noEmit across every workspace package
+pnpm format       # prettier --check
+node scripts/privacy-scan.mjs --all   # privacy/data-leak scan
+```
+
+## Project layout
+
+```
+apps/
+  api/      loopback HTTP API (workouts, analytics, trends, import, settings)
+  cli/      velograph-import — CSV/GPX/ZIP importer CLI
+  web/      React client, built with Vite
+packages/
+  analytics/  deterministic ride/conditioning metrics (pure, versioned formulas)
+  db/         SQLite schema, migrations, data-dir resolution
+  importers/  CSV/GPX/ZIP parsing, normalization, workout association
+  insights/   AI provider interface, minimized payload, schema, validation (stub — see docs/ai-privacy.md)
+  shared/     types and utilities shared across packages
+fixtures/synthetic/   invented data used by tests and this quickstart
+```
 
 ## Documentation
 
 - [Product requirements (PRD)](Velograph-PRD.md) — the source of truth for all requirements
 - [Repository guidelines](AGENTS.md) — structure, workflow, and privacy boundaries for contributors
+- [Changelog](CHANGELOG.md) — what shipped, release by release
+- [Release procedure](docs/releasing.md) — versioning scheme and how a release is cut
 - [Design system](docs/design-system.md) — palette, typography, and visual language
+- [Analytics formulas](docs/formulas.md) — every metric definition, versioned
+- [AI insight privacy](docs/ai-privacy.md) — what would leave the machine per provider, and why AI is a stub today
+- [CI supply-chain policy](docs/ci-supply-chain.md) — pinned-SHA GitHub Actions and how to update them
 
 ## License
 

@@ -2,16 +2,21 @@
 
 ## Project Structure & Module Organization
 
-Velograph is in Phase 0: the repository contains the source-of-truth `Velograph-PRD.md`, `CLAUDE.md`, a default-deny `.gitignore`, and cover artwork. No application or test tree exists yet. When scaffolding the TypeScript/pnpm monorepo, place the React client and loopback Node.js API under `apps/`, reusable code under `packages/`, and invented test inputs under `fixtures/synthetic/`. Keep analytics free of framework, database, network, and LLM dependencies. Define module ownership before concurrent work.
+Velograph is a pnpm/TypeScript monorepo: the React web client and the loopback Node.js API
+live under `apps/` (`apps/web`, `apps/api`, `apps/cli`), reusable/pure packages under
+`packages/` (`analytics`, `db`, `importers`, `insights`, `shared`), and invented test inputs
+under `fixtures/synthetic/`. `Velograph-PRD.md` and `CLAUDE.md` remain the source-of-truth
+spec and guardrails. Keep `packages/analytics` free of framework, database, network, and LLM
+dependencies. Define module ownership before concurrent work — see `CLAUDE.md`'s
+multi-agent section.
 
 ## Build, Test, and Development Commands
 
-There is no package manifest or build system yet. For documentation-only changes, run:
-
-- `git diff --check` — detect whitespace errors.
-- `git status --short` — review exactly what will be committed.
-
-Once `package.json` exists, document standard scripts such as `pnpm dev`, `pnpm build`, `pnpm lint`, `pnpm typecheck`, and `pnpm test`. Run only declared scripts.
+See the root [`README.md`](README.md) Quick start for the verified install → import → run
+sequence. In summary: `pnpm install`, then `pnpm --filter @velograph/web build` before the
+API can serve the web client (there is no `pnpm dev` script), then `node apps/cli/src/index.ts import <path>` to import rides and `node apps/api/src/main.ts` to start the API on
+`127.0.0.1:5123`. CI-equivalent checks: `pnpm test`, `pnpm lint`, `pnpm typecheck`,
+`pnpm format`, and `node scripts/privacy-scan.mjs --all`. Run only declared scripts.
 
 ## Coding Style & Naming Conventions
 
@@ -23,7 +28,9 @@ No test framework or numeric coverage threshold is selected. Add proportionate u
 
 ## Commit & Pull Request Guidelines
 
-There is no commit history from which to infer a convention. Start from a typed, prioritized issue; reference relevant PRD requirement IDs; and use `<agent>/<issue>-<short-description>` branches. Write imperative, issue-linked squash titles. Pull requests must state scope, tests and evidence, privacy/data-handling impact, dependency/licence impact, and migration rollback notes. Include synthetic-only UI screenshots and attest that no real health, location, account, credential, or user data is present. Never push directly or force-push to `main`.
+Start from a typed, prioritized issue; reference relevant PRD requirement IDs; and use `<agent>/<issue>-<short-description>` branches. Write imperative, issue-linked squash titles. Pull requests must state scope, tests and evidence, privacy/data-handling impact, dependency/licence impact, and migration rollback notes. Include synthetic-only UI screenshots and attest that no real health, location, account, credential, or user data is present. Never push directly or force-push to `main`.
+
+Any PR that changes behaviour must update `CHANGELOG.md` under `## [Unreleased]` in the same commit. CI's "Changelog enforcement" job fails a PR that touches `packages/**`, `apps/**`, or `scripts/**` without a `CHANGELOG.md` change; for a genuinely non-behavioural change (docs typo, formatting, comment/test-only edit), add a `Changelog-Exempt: <reason>` trailer to a commit message instead of a changelog entry. Milestones bump the version — root and every workspace package move together, in lockstep — and get a git tag. See `CHANGELOG.md` and `docs/releasing.md` for the full procedure.
 
 ## Security & Local-First Boundaries
 
