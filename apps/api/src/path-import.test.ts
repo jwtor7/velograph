@@ -33,6 +33,7 @@ interface PathPreviewResponse {
     confirmationToken: string;
     rides: { files: unknown[] }[];
     ungrouped: unknown[];
+    skipped: { relativePath: string; reason: string }[];
     totalFiles: number;
     truncated: boolean;
   };
@@ -186,6 +187,33 @@ describe('POST /api/import/path', () => {
     }
   });
 
+  it('maps a deleted or type-changed preview root to path_changed without writes', async () => {
+    const before = persistentImportCounts();
+    const changes: ((dir: string) => void)[] = [
+      (dir) => rmSync(dir, { recursive: true, force: true }),
+      (dir) => {
+        rmSync(dir, { recursive: true, force: true });
+        writeFileSync(dir, 'synthetic non-directory');
+      },
+    ];
+
+    for (const change of changes) {
+      const dir = mutationDir();
+      writeFileSync(join(dir, 'Outdoor Cycling-Heart Rate-20260101_070000.csv'), 'x');
+      const { preview } = await previewPath(dir);
+      change(dir);
+
+      const res = await fetch(`${base}/api/import/path`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ path: dir, confirmationToken: preview.confirmationToken }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'path_changed' });
+      expect(persistentImportCounts()).toEqual(before);
+    }
+  });
+
   it('imports a real-shaped export folder by path with complete metric coverage', async () => {
     const { preview } = await previewPath(exportDir);
     expect(preview.truncated).toBe(false);
@@ -238,5 +266,34 @@ describe('POST /api/import/path', () => {
     );
     expect(coveredRides).toBe(4);
     expect(coveredMetricSlots).toBe(totalMetricSlots);
+  });
+
+  it('returns unsupported regular files in both preview and confirmation results', async () => {
+    const dir = mutationDir();
+    for (const [name, content] of generateCorpus({ rides: 1, seed: 4300 })) {
+      writeFileSync(join(dir, name), content);
+    }
+    writeFileSync(join(dir, 'metadata.json'), '{}');
+    writeFileSync(join(dir, 'notes.txt'), 'synthetic note');
+
+    const { preview } = await previewPath(dir);
+    const expectedSkipped = [
+      { relativePath: 'metadata.json', reason: 'unsupported_file_type' },
+      { relativePath: 'notes.txt', reason: 'unsupported_file_type' },
+    ];
+    expect(preview.skipped).toEqual(expectedSkipped);
+
+    const res = await fetch(`${base}/api/import/path`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ path: dir, confirmationToken: preview.confirmationToken }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { quarantined: number };
+      skipped: { relativePath: string; reason: string }[];
+    };
+    expect(body.result.quarantined).toBe(0);
+    expect(body.skipped).toEqual(expectedSkipped);
   });
 });

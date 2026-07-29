@@ -259,6 +259,23 @@ describe('previewImportFolder — grouping', () => {
     expect(preview.skipped.length).toBeGreaterThan(0);
   });
 
+  it('reports every unsupported regular file instead of silently omitting it', () => {
+    const root = tempDir();
+    writeFileSync(join(root, 'Outdoor Cycling-Heart Rate-20260101_070000.csv'), 'x');
+    writeFileSync(join(root, 'metadata.json'), '{}');
+    writeFileSync(join(root, 'notes.txt'), 'synthetic note');
+
+    const preview = previewImportFolder(root);
+    expect(preview.totalFiles).toBe(1);
+    expect(preview.skipped).toEqual([
+      { relativePath: 'metadata.json', reason: 'unsupported_file_type' },
+      { relativePath: 'notes.txt', reason: 'unsupported_file_type' },
+    ]);
+    expect(() =>
+      confirmFolderImportPlan(planFolderImport(root), preview.confirmationToken),
+    ).not.toThrow();
+  });
+
   it('returns an opaque digest and refuses confirmation of a truncated manifest', () => {
     const root = tempDir();
     writeFileSync(join(root, 'Outdoor Cycling-Heart Rate-20260101_070000.csv'), 'x');

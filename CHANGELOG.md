@@ -21,8 +21,10 @@ is pre-1.0, and for the release procedure.
   too. Preview returns an opaque digest of the exact private manifest. Confirmation repeats
   the bounded walk and requires that digest to match before reading source bytes or beginning
   the database transaction, so mutation, addition, deletion, replacement, or a path swap
-  fails closed with `path_changed`. A truncated preview is visibly non-confirmable and the API
-  independently refuses it with `folder_limits_exceeded`. Accepted confirmation revalidates
+  fails closed with `path_changed`; a root deleted or replaced by a non-directory after preview
+  uses that same conflict so the UI clears its stale preview. A truncated preview is visibly
+  non-confirmable and the API independently refuses it with `folder_limits_exceeded`. Accepted
+  confirmation revalidates
   canonical root/file identity and reads one bounded association group at a time inside one
   atomic import transaction, so a large accepted folder is never retained as one giant
   buffer. ZIP groups preflight central-directory and local-header names, counts, and declared
@@ -32,7 +34,8 @@ is pre-1.0, and for the release procedure.
   local-header, and actual-size mismatches fail closed. A group over the resident-byte cap is
   reported and excluded in full rather than importing a partial ride. A symlinked directory
   is never followed, and a symlinked file is only followed when its target stays inside the
-  walked tree. Anything a cap or symlink rule excludes is reported. The destination path is
+  walked tree. Anything a cap or symlink rule excludes is reported, and unsupported regular files
+  are listed as `unsupported_file_type` instead of being silently omitted. The destination path is
   rejected when it resolves inside the repository checkout, reusing `guardAgainstCheckout`
   (the same guard `VELO_DATA_DIR` and database backups use). New endpoints:
   `POST /api/import/path/inventory` (preview) and `POST /api/import/path` (import), both

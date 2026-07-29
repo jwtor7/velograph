@@ -72,6 +72,7 @@ export interface WalkedFile extends EntryIdentity {
 export type FolderSkipReason =
   | 'symlink_directory_skipped'
   | 'symlink_outside_tree'
+  | 'unsupported_file_type'
   | 'not_a_regular_file'
   | 'unreadable'
   | 'max_files_exceeded'
@@ -354,7 +355,14 @@ export function walkImportFolder(rootPath: string, opts: FolderWalkOptions = {})
 
         if (entryStats.isFile()) {
           addManifestEntry(fullPath, 'file', entryStats);
-          if (IMPORTABLE_EXTENSION.test(entry.name)) addFile(fullPath, false);
+          if (IMPORTABLE_EXTENSION.test(entry.name)) {
+            addFile(fullPath, false);
+          } else {
+            skipped.push({
+              relativePath: relativeToRoot(fullPath),
+              reason: 'unsupported_file_type',
+            });
+          }
           continue;
         }
 

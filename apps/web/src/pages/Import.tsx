@@ -15,6 +15,12 @@ interface Picked {
 }
 
 const ACCEPT = '.csv,.gpx,.zip';
+const STALE_FOLDER_PREVIEW_CODES = new Set([
+  'path_changed',
+  'file_changed',
+  'path_not_found',
+  'not_a_directory',
+]);
 
 /**
  * Recursively read every file entry under a dropped `FileSystemEntry`
@@ -169,7 +175,7 @@ export function ImportPage() {
       setPreview(null);
       setFolderPath('');
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'path_changed') {
+      if (err instanceof ApiError && STALE_FOLDER_PREVIEW_CODES.has(err.code)) {
         setPreview(null);
         setPreviewError('The folder changed after preview. Preview it again before importing.');
       } else if (err instanceof ApiError && err.code === 'folder_limits_exceeded') {

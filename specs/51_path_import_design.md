@@ -11,9 +11,14 @@
   transaction (IMP-001, IMP-007).
 - While any traversal or group limit truncates a preview, the UI and API shall refuse
   confirmation; partial previews are never import plans.
+- While traversal encounters a regular file outside the supported CSV/GPX/ZIP allow-list, the
+  preview and confirmation result shall report it as `unsupported_file_type` rather than silently
+  omit it.
 - While an import plan is being consumed, when the root or a planned file changes identity,
   canonical location, type, or size, the system shall fail closed with a value-free error before
   importing bytes from the changed entry.
+- While confirmation cannot recreate a previously previewed root because it was deleted or replaced
+  by a non-directory, the API shall return `409 path_changed` so the UI clears the stale preview.
 - While `pnpm app:dev` is running, when the operating-system browser launcher cannot be spawned,
   the system shall print the loopback URL and keep owning the API child until normal shutdown.
 - While either workflow reports an error, the system shall not log file contents, coordinates,
@@ -40,6 +45,9 @@
 - Preview hashes the complete private manifest, grouping result, skips, limits, and root identity.
   Confirmation repeats the walk, compares the digest, and refuses a mismatch or any truncation
   before source reads or database writes.
+- Unsupported regular files remain part of the private manifest and are returned as
+  `unsupported_file_type` skip records. Confirmation-time missing or non-directory roots normalize
+  to the same `path_changed` conflict used for other stale manifests.
 - A lazy group-loader iterator revalidates the canonical root and opens each planned file by
   descriptor. It checks descriptor identity and size before and after an exact-size bounded read.
 - `runImportGroups` consumes that iterator inside one existing SQLite transaction. The previous
@@ -98,7 +106,7 @@
 
 ## Verification
 
-- `pnpm test`: 32 test files and 228 tests pass, including synthetic traversal bounds,
+- `pnpm test`: 32 test files and 231 tests pass, including synthetic traversal bounds,
   exact-manifest confirmation, mutation/addition/replacement rejection with no writes, ZIP
   preflight/decoder limits, complete metric/route coverage, transaction rollback, and
   browser-launch lifecycle cases.

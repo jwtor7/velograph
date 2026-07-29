@@ -333,7 +333,7 @@ function route(
           return;
         }
         try {
-          const plan = planFolderImport(p);
+          const plan = planFolderImportForConfirmation(p);
           confirmFolderImportPlan(plan, confirmationToken);
           if (plan.totalFiles === 0) {
             send(res, 400, {
@@ -425,6 +425,26 @@ function readPathField(body: unknown): string | undefined {
 function readConfirmationToken(body: unknown): string | undefined {
   const token = (body as { confirmationToken?: unknown } | null)?.confirmationToken;
   return typeof token === 'string' && /^[a-f0-9]{64}$/.test(token) ? token : undefined;
+}
+
+/**
+ * A syntactically valid confirmation token means the client previously
+ * previewed this path. If the root can no longer be planned because it was
+ * removed or replaced with a non-directory, that is a stale-preview conflict,
+ * not a fresh path-validation error.
+ */
+function planFolderImportForConfirmation(path: string) {
+  try {
+    return planFolderImport(path);
+  } catch (err) {
+    if (
+      err instanceof FolderImportError &&
+      (err.code === 'path_not_found' || err.code === 'not_a_directory')
+    ) {
+      throw new FolderImportError('path_changed', 'folder changed after preview');
+    }
+    throw err;
+  }
 }
 
 function folderErrorCode(err: unknown): string {
