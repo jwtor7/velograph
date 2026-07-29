@@ -233,7 +233,15 @@ export async function stopProcess(
     console.error(`Velograph process identity changed before pid ${pid} could be force-stopped.`);
     return 1;
   }
-  kill(pid, 'SIGKILL');
+  try {
+    kill(pid, 'SIGKILL');
+  } catch (error) {
+    if (error?.code === 'ESRCH') {
+      console.log(`Force-stopped Velograph (pid ${pid}).`);
+      return 0;
+    }
+    throw error;
+  }
 
   const forceAttempts = Math.max(1, Math.ceil(forceWaitMs / pollMs));
   for (let i = 0; i < forceAttempts; i++) {

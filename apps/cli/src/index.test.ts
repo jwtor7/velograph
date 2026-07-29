@@ -117,4 +117,16 @@ describe('velograph CLI', () => {
       await main(['backup', join(repoRoot, 'should-not-exist.sqlite3'), '--data-dir', dataDir]),
     ).toBe(1);
   });
+
+  it('reports a stable value-free code for an invalid restore source', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await main(['restore', join(dataDir, 'missing.sqlite3'), '--data-dir', dataDir])).toBe(
+        1,
+      );
+      expect(error).toHaveBeenCalledWith('Restore failed: invalid_backup_file');
+    } finally {
+      error.mockRestore();
+    }
+  });
 });

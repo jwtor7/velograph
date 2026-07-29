@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseConstructor from 'better-sqlite3';
-import { applyMigrations } from './migrate.ts';
+import { applyMigrations, isOrderedMigrationPrefix } from './migrate.ts';
 import { openDatabase } from './database.ts';
 
 describe('ordered migrations', () => {
@@ -53,5 +53,15 @@ describe('ordered migrations', () => {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
     expect(tables.map((r) => (r as { name: string }).name)).not.toContain('ok');
     db.close();
+  });
+
+  it('accepts only an exact ordered migration prefix', () => {
+    const available = ['0001_a.sql', '0002_b.sql', '0003_c.sql'];
+    expect(isOrderedMigrationPrefix([], available)).toBe(true);
+    expect(isOrderedMigrationPrefix(['0001_a.sql', '0002_b.sql'], available)).toBe(true);
+    expect(isOrderedMigrationPrefix(available, available)).toBe(true);
+    expect(isOrderedMigrationPrefix(['0002_b.sql', '0001_a.sql'], available)).toBe(false);
+    expect(isOrderedMigrationPrefix(['0001_a.sql', '0003_c.sql'], available)).toBe(false);
+    expect(isOrderedMigrationPrefix([...available, '9999_future.sql'], available)).toBe(false);
   });
 });

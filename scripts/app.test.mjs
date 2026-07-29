@@ -124,4 +124,33 @@ describe('app:stop graceful-shutdown escalation', () => {
       error.mockRestore();
     }
   });
+
+  it('treats ESRCH during the final SIGKILL race as a completed stop', async () => {
+    const signals = [];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await stopProcess(4242, {
+        getProcessIdentity: () => '4242:start-token',
+        kill: (_pid, signal) => {
+          signals.push(signal);
+          if (signal === 'SIGKILL') {
+            const error = new Error('process already exited');
+            error.code = 'ESRCH';
+            throw error;
+          }
+        },
+        sleep: async () => {},
+        graceMs: 1,
+        pollMs: 1,
+      });
+
+      expect(result).toBe(0);
+      expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+      expect(log).toHaveBeenCalledWith('Force-stopped Velograph (pid 4242).');
+    } finally {
+      log.mockRestore();
+      errorLog.mockRestore();
+    }
+  });
 });

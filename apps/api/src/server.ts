@@ -5,6 +5,7 @@ import type { Database } from '@velograph/db';
 import {
   Repository,
   RestoreDatabaseError,
+  RestoreValidationError,
   backupDatabase,
   loadWorkoutData,
   restoreDatabase,
@@ -431,8 +432,11 @@ function route(
         } catch (error) {
           let status = 400;
           let code = 'restore_failed';
-          if (error instanceof RestoreDatabaseError) {
+          if (error instanceof RestoreValidationError) {
+            code = error.code;
+          } else if (error instanceof RestoreDatabaseError) {
             status = 500;
+            code = error.code;
             if (error.recoveredDatabase) {
               opts.db = error.recoveredDatabase;
             } else {
