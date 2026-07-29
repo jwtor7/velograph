@@ -115,6 +115,17 @@ export interface ImportResultBody {
   quarantinedFiles: { name: string; code: string }[];
 }
 
+export interface DeleteResultBody {
+  deleted: boolean;
+  workoutId: number;
+  removedSourceFiles: number;
+}
+
+export interface RepairResultBody {
+  repaired: boolean;
+  analytics: RideAnalytics;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -142,5 +153,19 @@ export const api = {
     request<{ result: ImportResultBody }>('/api/import', {
       method: 'POST',
       body: JSON.stringify({ files }),
+    }),
+  deleteWorkout: (id: number) =>
+    request<DeleteResultBody>(`/api/workouts/${id}`, { method: 'DELETE' }),
+  repairWorkout: (id: number) =>
+    request<RepairResultBody>(`/api/workouts/${id}/repair`, { method: 'POST' }),
+  backup: (path: string) =>
+    request<{ ok: boolean; totalPages: number }>('/api/backup', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+  restore: (path: string) =>
+    request<{ ok: boolean }>('/api/restore', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
     }),
 };

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type Settings } from '../api.ts';
+import { ConfirmDialog } from '../components/ui.tsx';
 
 /** Settings: HR zones (user-authoritative, never inferred) + thresholds. */
 export function SettingsPage() {
@@ -7,6 +8,13 @@ export function SettingsPage() {
   const [bounds, setBounds] = useState<string[]>(['', '', '', '', '']);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState(false);
+  const [backupPath, setBackupPath] = useState('');
+  const [restorePath, setRestorePath] = useState('');
+  const [backupStatus, setBackupStatus] = useState<string | null>(null);
+  const [restoreStatus, setRestoreStatus] = useState<string | null>(null);
+  const [backingUp, setBackingUp] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [confirmingRestore, setConfirmingRestore] = useState(false);
 
   useEffect(() => {
     api
@@ -32,6 +40,37 @@ export function SettingsPage() {
       setSaved(true);
     } catch {
       setError(true);
+    }
+  };
+
+  const runBackup = async () => {
+    if (!backupPath.trim()) return;
+    setBackingUp(true);
+    setBackupStatus(null);
+    try {
+      await api.backup(backupPath.trim());
+      setBackupStatus('Backup written.');
+    } catch {
+      setBackupStatus(
+        'Backup failed — check the path is writable and outside the Velograph checkout.',
+      );
+    } finally {
+      setBackingUp(false);
+    }
+  };
+
+  const runRestore = async () => {
+    if (!restorePath.trim()) return;
+    setRestoring(true);
+    setRestoreStatus(null);
+    setConfirmingRestore(false);
+    try {
+      await api.restore(restorePath.trim());
+      setRestoreStatus('Restored. Reload to see the restored data.');
+    } catch {
+      setRestoreStatus('Restore failed — check the path points to a Velograph backup file.');
+    } finally {
+      setRestoring(false);
     }
   };
 
@@ -103,6 +142,89 @@ export function SettingsPage() {
         </button>
         {saved && <span style={{ color: 'var(--vg-brand-green)', fontSize: 12 }}>Saved</span>}
       </div>
+
+      <div className="card">
+        <h2 className="card-title">Data management</h2>
+        <p className="muted" style={{ marginTop: 0, fontSize: 12 }}>
+          Export the full local database with SQLite's own backup mechanism, or restore it from a
+          previous export. Both run on this machine — the path is a location on this computer, never
+          uploaded anywhere. Backups must be written outside the Velograph source checkout.
+        </p>
+
+        <div className="stack">
+          <div>
+            <span className="field-label">Back up to path</span>
+            <div className="row">
+              <input
+                type="text"
+                placeholder="/path/to/velograph-backup.sqlite3"
+                value={backupPath}
+                onChange={(e) => setBackupPath(e.target.value)}
+                style={{ flex: 1, minWidth: 260 }}
+              />
+              <button
+                className="btn"
+                onClick={runBackup}
+                disabled={backingUp || !backupPath.trim()}
+              >
+                {backingUp ? 'Backing up…' : 'Back up now'}
+              </button>
+            </div>
+            {backupStatus && (
+              <p className="muted" style={{ fontSize: 12, margin: '6px 0 0' }}>
+                {backupStatus}
+              </p>
+            )}
+          </div>
+
+          <div>
+            <span className="field-label">Restore from path</span>
+            <div className="row">
+              <input
+                type="text"
+                placeholder="/path/to/velograph-backup.sqlite3"
+                value={restorePath}
+                onChange={(e) => setRestorePath(e.target.value)}
+                style={{ flex: 1, minWidth: 260 }}
+              />
+              <button
+                className="btn danger"
+                onClick={() => setConfirmingRestore(true)}
+                disabled={restoring || !restorePath.trim()}
+              >
+                {restoring ? 'Restoring…' : 'Restore'}
+              </button>
+            </div>
+            {restoreStatus && (
+              <p className="muted" style={{ fontSize: 12, margin: '6px 0 0' }}>
+                {restoreStatus}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {confirmingRestore && (
+        <ConfirmDialog
+          title="Restore from backup?"
+          danger
+          busy={restoring}
+          confirmLabel="Restore"
+          onCancel={() => setConfirmingRestore(false)}
+          onConfirm={runRestore}
+          body={
+            <>
+              <p style={{ margin: 0 }}>
+                This replaces everything currently in your Velograph database with the contents of
+                the backup file.
+              </p>
+              <p style={{ margin: '8px 0 0', fontWeight: 600 }}>
+                Anything imported or changed since that backup was taken will be lost.
+              </p>
+            </>
+          }
+        />
+      )}
     </div>
   );
 }

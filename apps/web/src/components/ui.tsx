@@ -59,6 +59,57 @@ export function Dot({ color }: { color: string }) {
   );
 }
 
+/**
+ * Blocking confirmation dialog (used by ride delete / restore, issue #38):
+ * always states what will happen before an irreversible action fires.
+ */
+export function ConfirmDialog({
+  title,
+  body,
+  confirmLabel,
+  danger,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  body: ReactNode;
+  confirmLabel: string;
+  danger?: boolean;
+  busy?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="modal-overlay" role="presentation" onClick={onCancel}>
+      <div
+        className="modal"
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="card-title" style={{ fontSize: 15 }}>
+          {title}
+        </h2>
+        <div className="modal-body">{body}</div>
+        <div className="modal-actions">
+          <button className="btn" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            className={`btn ${danger ? 'danger' : 'primary'}`}
+            onClick={onConfirm}
+            disabled={busy}
+          >
+            {busy ? 'Working…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function EmptyState({ title, action }: { title: string; action?: ReactNode }) {
   return (
     <div className="card" style={{ textAlign: 'center', padding: '48px 20px' }}>

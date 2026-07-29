@@ -381,6 +381,62 @@ tr.row-link:hover td {
   cursor: default;
 }
 
+.btn.danger {
+  background: var(--vg-ch-hr);
+  color: #1a0402;
+  border: none;
+}
+
+.btn.danger:hover {
+  filter: brightness(1.08);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---------- confirmation modal ---------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 3, 12, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 20px;
+}
+
+.modal {
+  background: var(--vg-surface);
+  border: 1px solid var(--vg-border);
+  border-radius: var(--vg-radius);
+  padding: 20px;
+  max-width: 420px;
+  width: 100%;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+}
+
+.modal-body {
+  font-size: 13px;
+  color: var(--vg-text-secondary);
+  margin: 0 0 4px;
+}
+
+.modal-body ul {
+  margin: 8px 0;
+  padding-left: 18px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
 .field-label {
   display: block;
   font-size: 12px;
