@@ -1,0 +1,24 @@
+{
+  "name": "@velograph/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Velograph local loopback HTTP API",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "start": "node src/main.ts"
+  },
+  "dependencies": {
+    "@velograph/analytics": "workspace:*",
+    "@velograph/db": "workspace:*",
+    "@velograph/importers": "workspace:*",
+    "@velograph/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.2"
+  }
+}
