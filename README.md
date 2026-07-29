@@ -69,22 +69,44 @@ the route as a separate GPX. Importing a single CSV produces a ride with only th
 metric. Files are associated into a single workout by type and overlapping sample range, so
 companion files still join correctly if they arrive in a later import.
 
+The web client's Import page can do the same thing without the CLI: paste the export folder's
+path into the "Import from a folder path" field and preview it before confirming. The API
+reads the folder directly from disk — the same way the CLI does, recursively, bounded by a
+file-count/total-size cap — rather than uploading every file through the browser as base64,
+which does not scale to a real export (a single route GPX alone runs a couple of megabytes,
+and a folder holds dozens of files across many rides). The preview groups files by ride
+(workout type + the filename's trailing timestamp) so it's obvious which companion files
+belong together before anything is imported. The multi-file picker and loose-file
+drag-and-drop still work exactly as before; dropping a folder (where the browser supports
+`webkitGetAsEntry`) reads its files into that same picker, since browsers do not expose a
+dropped folder's real filesystem path to a web page — only pasting the path does that.
+
 ### Managing the local server
 
-`pnpm app:start` builds the web client and starts the API in the background, then waits until
-it actually answers before reporting success. The other three tell you what's happening
-rather than leaving you to guess:
+Two ways to run it, background or foreground:
 
 ```bash
+pnpm app:dev       # foreground: build, start, open the browser; Ctrl-C stops everything
+```
+
+`app:dev` is the everyday workflow — one command builds the web client, starts the API in the
+foreground of your terminal, and opens it in your browser once it answers. Ctrl-C (or a
+`kill`) tears it down cleanly: the API child is signaled, waited on, and force-killed if it
+doesn't exit in time, so nothing is ever left holding the port after you stop it.
+
+```bash
+pnpm app:start     # background: same build+wait-for-ready, but detached
 pnpm app:status    # running? which pid, port, data directory, and how many rides
 pnpm app:restart   # pick up code changes
 pnpm app:stop      # clean no-op if nothing is running
 ```
 
-`app:status` is safe to run at any time, and `app:start` refuses to start a second server on
-a port that is already held — which otherwise produces a stale API serving a freshly built
-web client. Server output goes to a log file whose path `app:start` and `app:status` print.
-(Process lookup uses `lsof`; on Windows use Task Manager to stop a stray server.)
+Use the background commands when you want a server that outlives the current shell (or a
+session that needs to run something else in the same terminal). `app:status` is safe to run
+at any time, and `app:start` refuses to start a second server on a port that is already
+held — which otherwise produces a stale API serving a freshly built web client. Server output
+goes to a log file whose path `app:start` and `app:status` print. (Process lookup uses `lsof`;
+on Windows use Task Manager to stop a stray server.)
 
 Run the test suite and the other checks CI runs:
 

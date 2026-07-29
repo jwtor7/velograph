@@ -3,7 +3,14 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import type { Database } from '@velograph/db';
 import { Repository, backupDatabase, loadWorkoutData, restoreDatabase } from '@velograph/db';
-import { inventoryFiles, runImport, type ImportFile } from '@velograph/importers';
+import {
+  FolderImportError,
+  inventoryFiles,
+  previewImportFolder,
+  readFolderFiles,
+  runImport,
+  type ImportFile,
+} from '@velograph/importers';
 import {
   getOrComputeAnalytics,
   loadSettings,
@@ -279,6 +286,53 @@ function route(
     return;
   }
 
+  // Path-based folder import (issue #51): the client posts a folder path
+  // instead of every file as base64. The API reads it directly from disk,
+  // the same way the CLI already does, bounded by walkImportFolder's caps.
+  // Never a folder that resolves inside this checkout (guardAgainstCheckout,
+  // reused — not reimplemented — from @velograph/db).
+  if (method === 'POST' && path === '/api/import/path/inventory') {
+    readJsonBody(req, MAX_PATH_BODY_BYTES)
+      .then((body) => {
+        const p = readPathField(body);
+        if (!p) {
+          send(res, 400, { error: 'invalid_path' });
+          return;
+        }
+        try {
+          send(res, 200, { preview: previewImportFolder(p) });
+        } catch (err) {
+          send(res, folderErrorStatus(err), { error: folderErrorCode(err) });
+        }
+      })
+      .catch(() => send(res, 400, { error: 'invalid_body' }));
+    return;
+  }
+
+  if (method === 'POST' && path === '/api/import/path') {
+    readJsonBody(req, MAX_PATH_BODY_BYTES)
+      .then((body) => {
+        const p = readPathField(body);
+        if (!p) {
+          send(res, 400, { error: 'invalid_path' });
+          return;
+        }
+        try {
+          const { files, skipped, truncated } = readFolderFiles(p);
+          if (files.length === 0) {
+            send(res, 400, { error: 'no_files' });
+            return;
+          }
+          const result = runImport(db, files, { now: now(), timeZone: loadSettings(db).timeZone });
+          send(res, 200, { result, skipped, truncated });
+        } catch (err) {
+          send(res, folderErrorStatus(err), { error: folderErrorCode(err) });
+        }
+      })
+      .catch(() => send(res, 400, { error: 'invalid_body' }));
+    return;
+  }
+
   // Export the database to a user-chosen path via SQLite's backup API
   // (never a raw copy of the live WAL files). The destination must not
   // resolve inside a git checkout — enforced by guardAgainstCheckout inside
@@ -338,6 +392,17 @@ function route(
 function readPathField(body: unknown): string | undefined {
   const p = (body as { path?: unknown } | null)?.path;
   return typeof p === 'string' && p.trim() !== '' ? p : undefined;
+}
+
+function folderErrorCode(err: unknown): string {
+  if (err instanceof FolderImportError) {
+    return err.code === 'inside_checkout' ? 'path_inside_checkout' : err.code;
+  }
+  return 'folder_import_failed';
+}
+
+function folderErrorStatus(err: unknown): number {
+  return err instanceof FolderImportError ? 400 : 500;
 }
 
 function decodeFiles(body: unknown): ImportFile[] {

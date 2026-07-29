@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 /**
- * Local app lifecycle: start / stop / status / restart (issue #49).
+ * Local app lifecycle: start / stop / status / restart / dev (issue #49,
+ * dev mode added in #51).
  *
  * Exists because there was previously no supported way to tell whether a
  * Velograph server was running, which port it held, or which data directory
  * it was serving. Stale servers running pre-rebuild code caused real
  * confusion: a freshly built web client was served by an older API whose
  * endpoints did not exist yet.
+ *
+ * `start`/`stop`/`status`/`restart` run the API detached, in the
+ * background, and outlive the invoking shell — useful for leaving a server
+ * up across sessions, but it's easy to forget one is still running against
+ * stale code. `dev` is the alternative: it runs the API in the foreground
+ * of the current shell, so Ctrl-C (SIGINT) or a `kill` (SIGTERM) tears the
+ * whole thing down immediately, with nothing left holding the port.
  *
  * No dependencies. Process discovery is by listening port rather than a
  * pidfile, so a server started by any means (this script, `pnpm --filter`,
@@ -122,6 +130,94 @@ async function start() {
   return 1;
 }
 
+/** Open `url` in the OS default browser. Best-effort — never fatal. */
+function openBrowser(url) {
+  const plat = platform();
+  const [cmd, args] =
+    plat === 'darwin'
+      ? ['open', [url]]
+      : plat === 'win32'
+        ? ['cmd', ['/c', 'start', '', url]]
+        : ['xdg-open', [url]];
+  try {
+    spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
+  } catch {
+    console.log(`Open ${url} in your browser.`);
+  }
+}
+
+/**
+ * Foreground dev mode (issue #51): build the web client, run the API in the
+ * foreground (inherited stdio, no detach), open the browser once it
+ * answers, and tear the child down on Ctrl-C. One command starts
+ * everything; killing it tears everything down — no separate `app:stop`
+ * needed, and nothing is left holding the port after Ctrl-C.
+ */
+async function dev() {
+  const existing = listenerPid();
+  if (existing) {
+    console.error(`Velograph is already running on port ${PORT} (pid ${existing}).`);
+    console.error('Stop it first with `pnpm app:stop`, or inspect it with `pnpm app:status`.');
+    return 1;
+  }
+  buildWeb();
+  console.log(`Starting Velograph on http://${HOST}:${PORT} (foreground; Ctrl-C to stop)…`);
+
+  const child = spawn(process.execPath, [join(REPO_ROOT, 'apps', 'api', 'src', 'main.ts')], {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+  });
+
+  let exited = false;
+  let exitCode = 0;
+  const exitPromise = new Promise((resolve) => {
+    child.on('exit', (code, signal) => {
+      exited = true;
+      exitCode = code ?? (signal ? 1 : 0);
+      resolve();
+    });
+    child.on('error', () => {
+      exited = true;
+      exitCode = 1;
+      resolve();
+    });
+  });
+
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (exited || shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\nReceived ${signal}, stopping Velograph…`);
+    child.kill('SIGTERM');
+    // Belt-and-braces: if the child ignores SIGTERM, force it so nothing is
+    // ever left holding the port.
+    const killer = setTimeout(() => {
+      if (!exited) child.kill('SIGKILL');
+    }, 5000);
+    killer.unref();
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  // Open the browser once the API actually answers, without blocking
+  // shutdown handling above.
+  void (async () => {
+    for (let i = 0; i < 40 && !exited; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      if (await fetchJson('/api/health')) {
+        openBrowser(`http://${HOST}:${PORT}`);
+        return;
+      }
+    }
+  })();
+
+  await exitPromise;
+  // A requested Ctrl-C/SIGTERM shutdown is success, not failure, even
+  // though the child's own exit is signal-terminated (code null) — don't
+  // surface that as a nonzero exit for an intentional, clean stop.
+  return shuttingDown ? 0 : exitCode;
+}
+
 async function stop() {
   const pid = listenerPid();
   if (!pid) {
@@ -141,7 +237,7 @@ async function stop() {
   return 0;
 }
 
-const COMMANDS = { start, stop, status, restart: async () => (await stop()) || start() };
+const COMMANDS = { start, stop, status, dev, restart: async () => (await stop()) || start() };
 
 const cmd = process.argv[2] ?? 'status';
 const fn = COMMANDS[cmd];
