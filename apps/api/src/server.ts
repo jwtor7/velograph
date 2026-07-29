@@ -10,6 +10,7 @@ import {
   repairWorkout,
   saveSettings,
 } from './analytics-service.ts';
+import { BasemapService, type BasemapTile } from './basemap.ts';
 
 export const API_VERSION = '0.1.0';
 const MAX_IMPORT_BODY_BYTES = 600 * 1024 * 1024; // base64-encoded uploads
@@ -22,6 +23,8 @@ const MAX_PATH_BODY_BYTES = 8 * 1024;
  *  - Host header must be a loopback host with our port.
  *  - Origin, when present, must be a loopback origin with our port
  *    (blocks cross-site requests from other local servers and the web).
+ *  - Browser fetch metadata explicitly marked cross-site is rejected, even
+ *    for GET image requests that browsers may send without Origin.
  *  - Mutating requests additionally require the custom `x-velograph-request`
  *    header (CSRF: cross-site forms cannot set custom headers).
  *  - Self-only CSP, nosniff, no CORS grants, same-origin resource policy.
@@ -39,19 +42,28 @@ export interface ApiOptions {
   host?: string;
   /** Directory of built web assets to serve statically (optional). */
   staticDir?: string;
+  /** Conventional or explicitly configured read-only MBTiles file. */
+  basemapPath?: string;
+  /** True only when basemapPath came from VELO_BASEMAP_PATH. */
+  basemapPathRequired?: boolean;
   now?: () => number;
 }
 
 export function createApiServer(opts: ApiOptions): Server {
   const now = opts.now ?? Date.now;
+  const basemap = BasemapService.open({
+    ...(opts.basemapPath ? { path: opts.basemapPath } : {}),
+    ...(opts.basemapPathRequired === undefined ? {} : { required: opts.basemapPathRequired }),
+  });
 
   const server = createServer((req, res) => {
     try {
-      handle(req, res, opts, now, server);
+      handle(req, res, opts, now, server, basemap);
     } catch {
       send(res, 500, { error: 'internal_error' });
     }
   });
+  server.once('close', () => basemap.close());
   return server;
 }
 
@@ -119,6 +131,7 @@ function handle(
   opts: ApiOptions,
   now: () => number,
   server: Server,
+  basemap: BasemapService,
 ): void {
   const port = expectedPort(server);
   if (!hostAllowed(req.headers.host, port)) {
@@ -133,6 +146,11 @@ function handle(
   const path = url.pathname;
   const method = req.method ?? 'GET';
 
+  if (path.startsWith('/api/') && !fetchSiteAllowed(req.headers['sec-fetch-site'])) {
+    send(res, 403, { error: 'cross_site_request' });
+    return;
+  }
+
   if (method !== 'GET' && method !== 'HEAD') {
     if (req.headers['x-velograph-request'] !== '1') {
       send(res, 403, { error: 'missing_csrf_header' });
@@ -141,7 +159,7 @@ function handle(
   }
 
   if (path.startsWith('/api/')) {
-    route(req, res, opts, url, method, now);
+    route(req, res, opts, url, method, now, basemap);
     return;
   }
   serveStatic(res, opts.staticDir, path);
@@ -154,12 +172,29 @@ function route(
   url: URL,
   method: string,
   now: () => number,
+  basemap: BasemapService,
 ): void {
   const db = opts.db;
   const path = url.pathname;
 
   if (method === 'GET' && path === '/api/health') {
     send(res, 200, { ok: true, version: API_VERSION });
+    return;
+  }
+
+  if (method === 'GET' && path === '/api/basemap') {
+    send(res, 200, basemap.getManifest());
+    return;
+  }
+
+  const basemapTile = /^\/api\/basemap\/tiles\/(\d+)\/(\d+)\/(\d+)$/.exec(path);
+  if (method === 'GET' && basemapTile) {
+    const tile = basemap.getTile(
+      Number(basemapTile[1]),
+      Number(basemapTile[2]),
+      Number(basemapTile[3]),
+    );
+    sendBasemapTile(res, tile);
     return;
   }
 
@@ -333,6 +368,38 @@ function route(
   }
 
   send(res, 404, { error: 'not_found' });
+}
+
+function sendBasemapTile(res: ServerResponse, tile: BasemapTile): void {
+  if (tile.state !== 'ok') {
+    const statuses: Record<Exclude<BasemapTile['state'], 'ok'>, number> = {
+      unavailable: 404,
+      not_found: 404,
+      too_large: 413,
+      invalid: 400,
+    };
+    const errors: Record<Exclude<BasemapTile['state'], 'ok'>, string> = {
+      unavailable: 'basemap_unavailable',
+      not_found: 'tile_not_found',
+      too_large: 'tile_too_large',
+      invalid: 'invalid_tile',
+    };
+    send(res, statuses[tile.state], { error: errors[tile.state] });
+    return;
+  }
+
+  securityHeaders(res);
+  res.writeHead(200, {
+    'Content-Type': tile.contentType,
+    'Content-Length': tile.data.byteLength,
+  });
+  res.end(tile.data);
+}
+
+function fetchSiteAllowed(value: string | string[] | undefined): boolean {
+  if (value === undefined) return true;
+  if (Array.isArray(value)) return false;
+  return ['same-origin', 'same-site', 'none'].includes(value.trim().toLowerCase());
 }
 
 function readPathField(body: unknown): string | undefined {
