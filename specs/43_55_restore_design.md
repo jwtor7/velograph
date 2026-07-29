@@ -75,8 +75,9 @@
 
 1. Canonicalize the destination, capture its parent-directory device/inode identity, reject
    live-database/sidecar conflicts, and acquire both the in-process operation turn and a
-   cross-process SQLite lock keyed by the parent device/inode. This conservative parent lock
-   serializes case-only aliases on case-insensitive filesystems.
+   cross-process SQLite lock inside the reserved `.velograph-backup.lock` directory in that
+   canonical parent. This shared-filesystem lock is independent of process `TMPDIR` and
+   conservatively serializes case-only aliases on case-insensitive filesystems.
 2. Create and verify a mode-`0700` operation directory in the destination parent.
 3. If a destination already exists, copy it to a `0600`, fsynced prior-snapshot file inside that
    operation directory. Create a different `0600` stage there; SQLite's backup API writes only to
@@ -106,9 +107,19 @@
   installed backup comes from a `0600` stage.
 - Live database and sidecar identities are not valid backup destinations.
 - Same-process requests in one verified parent use an in-memory turn. Separate processes
-  additionally hold an exclusive transaction in a `0600` SQLite lock file, keyed by a SHA-256 of
-  the parent device/inode inside a private `0700` OS-temp registry. SQLite releases that lock when
-  a process exits or crashes, and the lock contains no path, health data, or location data.
+  additionally hold an exclusive transaction in `lock.sqlite3` inside the persistent
+  `.velograph-backup.lock` directory on the shared canonical parent filesystem. The directory is
+  accepted only as a current-user-owned, non-symlink mode-`0700` directory and the file only as a
+  current-user-owned, non-symlink, single-link mode-`0600` regular file. No-follow descriptors pin
+  both inodes; descriptor/path identities are revalidated around the separate SQLite open and lock
+  acquisition, then a second zero-timeout SQLite connection must contend on the pinned path to
+  prove that the primary connection locked the validated inode. The directory, lock, and SQLite
+  sidecar names are reserved backup destinations. SQLite releases the transaction when a process
+  exits or crashes, and the lock contains no path, health data, or location data.
+- The hidden lock directory remains after a completed operation. Automatic removal would allow a
+  new process to lock replacement directory/file inodes while another process still holds or waits
+  on the old inode. It may be removed manually only while no Velograph process can back up into
+  that parent; the next backup recreates it.
 - Backup staging rechecks the originally captured parent directory identity after every
   asynchronous boundary and immediately around final install. Node/macOS does not expose
   `renameat(2)` through the standard filesystem API, so the synchronous pre/post checks close
@@ -151,10 +162,14 @@
   validated `0600` stage.
 - Injected backup-copy and post-install failures preserve the older backup and clean the stage.
 - Concurrent same-destination failure/success leaves the later success installed.
-- A separate-process failure/success barrier proves the second writer does not begin staging until
-  the first writer has completed rollback and cleanup.
+- A separate-process failure/success barrier with distinct `TMPDIR` values waits for an observed
+  SQLite contention callback and proves the second writer does not begin staging until the first
+  writer has completed rollback and cleanup; no negative timing window is used.
 - A separate-process case-only alias barrier proves the parent-identity lock also serializes
   spellings that resolve to one entry on default macOS filesystems.
+- The persistent lock directory and main/sidecar names are reserved as backup destinations.
+  Directory, symlink, and ABA lock-entry substitutions at the SQLite-open boundary are rejected
+  without following or accepting a different inode.
 - Live database, sidecars, and hard-link aliases are rejected without disrupting the live handle.
 - Replacing the verified destination parent with a symlink during staging rejects before install
   and leaves later live-handle writes present after reopen.

@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
@@ -49,6 +50,20 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 async function waitForPath(path: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     if (existsSync(path)) return;
+    await new Promise<void>((resolveDelay) => {
+      setTimeout(resolveDelay, 25);
+    });
+  }
+  throw new Error('test_barrier_timeout');
+}
+
+async function waitForEitherPath(
+  expectedPath: string,
+  unexpectedPath: string,
+): Promise<'expected' | 'unexpected'> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (existsSync(unexpectedPath)) return 'unexpected';
+    if (existsSync(expectedPath)) return 'expected';
     await new Promise<void>((resolveDelay) => {
       setTimeout(resolveDelay, 25);
     });
@@ -318,6 +333,96 @@ describe('backupDatabase / restoreDatabase', () => {
       db.close();
     }));
 
+  it('reserves the persistent backup lock and its SQLite sidecar names', () =>
+    withTempDir(async (dir) => {
+      const db = openDatabase(join(dir, 'live.sqlite3'));
+      await backupDatabase(db, join(dir, 'export.sqlite3'));
+
+      const lockDirectory = join(dir, '.velograph-backup.lock');
+      const lockPath = join(lockDirectory, 'lock.sqlite3');
+      expect(statSync(lockDirectory).mode & 0o777).toBe(0o700);
+      expect(statSync(lockPath).mode & 0o777).toBe(0o600);
+
+      chmodSync(lockPath, 0o644);
+      await expectBackupValidationError(
+        backupDatabase(db, join(dir, 'second-export.sqlite3')),
+        'invalid_backup_destination',
+      );
+      expect(statSync(lockPath).mode & 0o777).toBe(0o644);
+      chmodSync(lockPath, 0o600);
+
+      await expectBackupValidationError(
+        backupDatabase(db, lockDirectory),
+        'invalid_backup_destination',
+      );
+      for (const suffix of ['', '-wal', '-shm', '-journal']) {
+        await expectBackupValidationError(
+          backupDatabase(db, `${lockPath}${suffix}`),
+          'invalid_backup_destination',
+        );
+      }
+      await expectBackupValidationError(
+        backupDatabase(db, join(dir, '.VELOGRAPH-BACKUP.LOCK')),
+        'invalid_backup_destination',
+      );
+
+      expect(statSync(lockDirectory).mode & 0o777).toBe(0o700);
+      expect(statSync(lockPath).mode & 0o777).toBe(0o600);
+      expect(db.open).toBe(true);
+      expect(db.pragma('integrity_check', { simple: true })).toBe('ok');
+      db.close();
+    }));
+
+  it('refuses to follow a substituted persistent backup lock', () =>
+    withTempDir(async (dir) => {
+      const protectedPath = join(dir, 'synthetic-protected.txt');
+      const lockDirectory = join(dir, '.velograph-backup.lock');
+      writeFileSync(protectedPath, 'synthetic protected content');
+      symlinkSync(protectedPath, lockDirectory);
+      const db = openDatabase(join(dir, 'live.sqlite3'));
+
+      await expectBackupValidationError(
+        backupDatabase(db, join(dir, 'export.sqlite3')),
+        'invalid_backup_destination',
+      );
+
+      expect(readFileSync(protectedPath, 'utf8')).toBe('synthetic protected content');
+      expect(db.open).toBe(true);
+      expect(db.pragma('integrity_check', { simple: true })).toBe('ok');
+      db.close();
+    }));
+
+  it('rejects an ABA lock entry substitution across the SQLite open boundary', () =>
+    withTempDir(async (dir) => {
+      const lockDirectory = join(dir, '.velograph-backup.lock');
+      const lockPath = join(lockDirectory, 'lock.sqlite3');
+      const movedLockPath = join(lockDirectory, 'moved-lock.sqlite3');
+      const substituteLockPath = join(lockDirectory, 'substitute-lock.sqlite3');
+      const db = openDatabase(join(dir, 'live.sqlite3'));
+      await backupDatabase(db, join(dir, 'first-export.sqlite3'));
+
+      await expectBackupValidationError(
+        backupDatabase(db, join(dir, 'second-export.sqlite3'), {
+          beforeLockOpen: () => {
+            renameSync(lockPath, movedLockPath);
+            writeFileSync(lockPath, '', { mode: 0o600 });
+          },
+          afterLockOpen: () => {
+            renameSync(lockPath, substituteLockPath);
+            renameSync(movedLockPath, lockPath);
+          },
+        }),
+        'invalid_backup_destination',
+      );
+
+      expect(statSync(lockPath).mode & 0o777).toBe(0o600);
+      expect(statSync(substituteLockPath).mode & 0o777).toBe(0o600);
+      expect(existsSync(join(dir, 'second-export.sqlite3'))).toBe(false);
+      expect(db.open).toBe(true);
+      expect(db.pragma('integrity_check', { simple: true })).toBe('ok');
+      db.close();
+    }));
+
   it('rejects a destination whose verified parent is swapped before install', () =>
     withTempDir(async (dir) => {
       const liveDir = join(dir, 'live');
@@ -494,7 +599,7 @@ describe('backupDatabase / restoreDatabase', () => {
     }));
 
   it(
-    'serializes same-destination failure and success across separate processes',
+    'serializes same-destination processes with distinct TMPDIR roots',
     () =>
       withTempDir(async (dir) => {
         const backupPath = join(dir, 'shared-export.sqlite3');
@@ -504,7 +609,12 @@ describe('backupDatabase / restoreDatabase', () => {
         const firstReady = join(dir, 'first-ready');
         const releaseFirst = join(dir, 'release-first');
         const secondAttempting = join(dir, 'second-attempting');
+        const secondContended = join(dir, 'second-contended');
         const secondStarted = join(dir, 'second-started');
+        const firstTmpRoot = join(dir, 'first-tmp');
+        const secondTmpRoot = join(dir, 'second-tmp');
+        mkdirSync(firstTmpRoot);
+        mkdirSync(secondTmpRoot);
 
         const seed = openDatabase(seedDbPath);
         seed
@@ -532,7 +642,10 @@ describe('backupDatabase / restoreDatabase', () => {
               releaseFirst,
               join(dir, 'first-started'),
             ],
-            { stdio: ['ignore', 'pipe', 'pipe'] },
+            {
+              stdio: ['ignore', 'pipe', 'pipe'],
+              env: { ...process.env, TMPDIR: firstTmpRoot },
+            },
           );
           children.push(first);
           const firstResult = waitForChild(first);
@@ -549,17 +662,18 @@ describe('backupDatabase / restoreDatabase', () => {
               secondAttempting,
               join(dir, 'unused-release'),
               secondStarted,
+              secondContended,
             ],
-            { stdio: ['ignore', 'pipe', 'pipe'] },
+            {
+              stdio: ['ignore', 'pipe', 'pipe'],
+              env: { ...process.env, TMPDIR: secondTmpRoot },
+            },
           );
           children.push(second);
           const secondResult = waitForChild(second);
           childResults.push(secondResult);
           await waitForPath(secondAttempting);
-          await new Promise<void>((resolveDelay) => {
-            setTimeout(resolveDelay, 150);
-          });
-          expect(existsSync(secondStarted)).toBe(false);
+          expect(await waitForEitherPath(secondContended, secondStarted)).toBe('expected');
 
           writeFileSync(releaseFirst, 'release');
           const [firstExit, secondExit] = await Promise.all([firstResult, secondResult]);
@@ -573,6 +687,14 @@ describe('backupDatabase / restoreDatabase', () => {
             .get() as { value_json: string };
           expect(JSON.parse(row.value_json)).toBe('second-success');
           probe.close();
+
+          const persistentLockDirectory = join(dir, '.velograph-backup.lock');
+          const persistentLock = join(persistentLockDirectory, 'lock.sqlite3');
+          expect(statSync(persistentLockDirectory).mode & 0o777).toBe(0o700);
+          expect(statSync(persistentLock).mode & 0o777).toBe(0o600);
+          const lockBytes = readFileSync(persistentLock);
+          expect(lockBytes.includes(Buffer.from(dir))).toBe(false);
+          expect(lockBytes.includes(Buffer.from('second-success'))).toBe(false);
         } finally {
           if (!existsSync(releaseFirst)) writeFileSync(releaseFirst, 'release');
           for (const child of children) {
@@ -596,6 +718,7 @@ describe('backupDatabase / restoreDatabase', () => {
         const firstReady = join(dir, 'case-first-ready');
         const releaseFirst = join(dir, 'case-release-first');
         const secondAttempting = join(dir, 'case-second-attempting');
+        const secondContended = join(dir, 'case-second-contended');
         const secondStarted = join(dir, 'case-second-started');
 
         const seed = openDatabase(seedDbPath);
@@ -636,6 +759,7 @@ describe('backupDatabase / restoreDatabase', () => {
               secondAttempting,
               join(dir, 'case-unused-release'),
               secondStarted,
+              secondContended,
             ],
             { stdio: ['ignore', 'pipe', 'pipe'] },
           );
@@ -643,10 +767,7 @@ describe('backupDatabase / restoreDatabase', () => {
           const secondResult = waitForChild(second);
           childResults.push(secondResult);
           await waitForPath(secondAttempting);
-          await new Promise<void>((resolveDelay) => {
-            setTimeout(resolveDelay, 150);
-          });
-          expect(existsSync(secondStarted)).toBe(false);
+          expect(await waitForEitherPath(secondContended, secondStarted)).toBe('expected');
 
           writeFileSync(releaseFirst, 'release');
           const [firstExit, secondExit] = await Promise.all([firstResult, secondResult]);

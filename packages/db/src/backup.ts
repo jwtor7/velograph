@@ -1,11 +1,14 @@
 import DatabaseConstructor, { type Database } from 'better-sqlite3';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   chmodSync,
   chownSync,
   closeSync,
+  constants as fsConstants,
   copyFileSync,
   existsSync,
+  fchmodSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -15,8 +18,7 @@ import {
   rmSync,
   statSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { guardAgainstCheckout } from './datadir.ts';
 import { checkpointDatabase, MIGRATIONS_DIR, openDatabase } from './database.ts';
 import { isOrderedMigrationPrefix, listMigrationFiles } from './migrate.ts';
@@ -49,6 +51,12 @@ export interface BackupOptions {
   afterInstall?: () => void | Promise<void>;
   /** @internal Deterministic fault-injection seam. */
   syncDirectory?: (path: string) => void;
+  /** @internal Deterministic cross-process lock-contention seam. */
+  onLockContention?: () => void;
+  /** @internal Deterministic lock-entry substitution seam. */
+  beforeLockOpen?: () => void;
+  /** @internal Deterministic lock-entry ABA substitution seam. */
+  afterLockOpen?: () => void;
 }
 
 export type RestoreValidationErrorCode =
@@ -142,8 +150,19 @@ interface CrossProcessBackupLock {
   release(): void;
 }
 
+interface PreparedPrivateBackupLock {
+  directoryPath: string;
+  directoryIdentity: FileIdentity;
+  directoryDescriptor: number;
+  filePath: string;
+  fileIdentity: FileIdentity;
+  fileDescriptor: number;
+}
+
 const backupDestinationLocks = new Map<string, Promise<void>>();
 const BACKUP_LOCK_RETRY_MS = 25;
+const BACKUP_LOCK_DIRECTORY_NAME = '.velograph-backup.lock';
+const BACKUP_LOCK_FILENAME = 'lock.sqlite3';
 
 function validationGuardAgainstCheckout(path: string): void {
   try {
@@ -229,66 +248,190 @@ function assertDestinationDoesNotConflictWithLiveDatabase(db: Database, target: 
   }
 }
 
-function backupLockDirectory(): string {
-  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
-  const root = join(tmpdir(), `velograph-backup-locks-${uid ?? 'portable'}`);
-  try {
-    mkdirSync(root, { mode: 0o700 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-      throw new BackupValidationError('invalid_backup_destination');
-    }
-  }
+function backupLockDirectoryPath(parent: string): string {
+  return join(parent, BACKUP_LOCK_DIRECTORY_NAME);
+}
 
-  try {
-    const stats = lstatSync(root);
-    if (
-      stats.isSymbolicLink() ||
-      !stats.isDirectory() ||
-      (uid !== undefined && stats.uid !== uid)
-    ) {
-      throw new BackupValidationError('invalid_backup_destination');
-    }
-    chmodSync(root, 0o700);
-    return realpathSync(root);
-  } catch (error) {
-    if (error instanceof BackupValidationError) throw error;
+function backupLockFilePath(parent: string): string {
+  return join(backupLockDirectoryPath(parent), BACKUP_LOCK_FILENAME);
+}
+
+function pathUsesReservedBackupLockDirectory(path: string): boolean {
+  let current = resolve(path);
+  for (;;) {
+    if (basename(current).toLowerCase() === BACKUP_LOCK_DIRECTORY_NAME.toLowerCase()) return true;
+    const next = dirname(current);
+    if (next === current) return false;
+    current = next;
+  }
+}
+
+function reservedBackupLockFiles(parent: string): string[] {
+  const lockPath = backupLockFilePath(parent);
+  return [lockPath, `${lockPath}-wal`, `${lockPath}-shm`, `${lockPath}-journal`];
+}
+
+function assertTargetDoesNotConflictWithBackupLock(target: string, parent: string): void {
+  const reservedPaths = reservedBackupLockFiles(parent);
+  const targetIdentity = fileIdentity(target);
+  if (
+    pathUsesReservedBackupLockDirectory(target) ||
+    reservedPaths.some(
+      (reservedPath) =>
+        target.toLowerCase() === reservedPath.toLowerCase() ||
+        identitiesMatch(targetIdentity, fileIdentity(reservedPath)),
+    )
+  ) {
     throw new BackupValidationError('invalid_backup_destination');
   }
 }
 
-function pathIsInside(path: string, parent: string): boolean {
-  const rel = relative(parent, path);
-  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
-}
-
-function backupLockPath(lockKey: string): string {
-  const key = createHash('sha256').update(lockKey).digest('hex');
-  return join(backupLockDirectory(), `${key}.sqlite3`);
-}
-
-function preparePrivateLockFile(path: string): void {
+function privateLockDirectoryIsStable(
+  lock: PreparedPrivateBackupLock,
+  parent: string,
+  parentIdentity: FileIdentity,
+): boolean {
   try {
-    createPrivateArtifact(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+    const descriptorStats = fstatSync(lock.directoryDescriptor);
+    const descriptorIdentity = fstatSync(lock.directoryDescriptor, { bigint: true });
+    const pathStats = lstatSync(lock.directoryPath);
+    const pathIdentity = lstatSync(lock.directoryPath, { bigint: true });
+    const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+    return (
+      stableCanonicalDirectory(parent, parentIdentity) &&
+      descriptorStats.isDirectory() &&
+      (descriptorStats.mode & 0o777) === 0o700 &&
+      (uid === undefined || descriptorStats.uid === uid) &&
+      !pathStats.isSymbolicLink() &&
+      pathStats.isDirectory() &&
+      (pathStats.mode & 0o777) === 0o700 &&
+      (uid === undefined || pathStats.uid === uid) &&
+      identitiesMatch(lock.directoryIdentity, {
+        dev: descriptorIdentity.dev,
+        ino: descriptorIdentity.ino,
+      }) &&
+      identitiesMatch(lock.directoryIdentity, {
+        dev: pathIdentity.dev,
+        ino: pathIdentity.ino,
+      })
+    );
+  } catch {
+    return false;
+  }
+}
+
+function privateLockFileIsStable(
+  lock: PreparedPrivateBackupLock,
+  parent: string,
+  parentIdentity: FileIdentity,
+): boolean {
+  try {
+    if (!privateLockDirectoryIsStable(lock, parent, parentIdentity)) return false;
+    const descriptorStats = fstatSync(lock.fileDescriptor);
+    const descriptorIdentity = fstatSync(lock.fileDescriptor, { bigint: true });
+    const pathStats = lstatSync(lock.filePath);
+    const pathIdentity = lstatSync(lock.filePath, { bigint: true });
+    const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+    return (
+      descriptorStats.isFile() &&
+      descriptorStats.nlink === 1 &&
+      (descriptorStats.mode & 0o777) === 0o600 &&
+      (uid === undefined || descriptorStats.uid === uid) &&
+      !pathStats.isSymbolicLink() &&
+      pathStats.isFile() &&
+      pathStats.nlink === 1 &&
+      (pathStats.mode & 0o777) === 0o600 &&
+      (uid === undefined || pathStats.uid === uid) &&
+      identitiesMatch(lock.fileIdentity, {
+        dev: descriptorIdentity.dev,
+        ino: descriptorIdentity.ino,
+      }) &&
+      identitiesMatch(lock.fileIdentity, {
+        dev: pathIdentity.dev,
+        ino: pathIdentity.ino,
+      })
+    );
+  } catch {
+    return false;
+  }
+}
+
+function preparePrivateBackupLock(
+  parent: string,
+  parentIdentity: FileIdentity,
+): PreparedPrivateBackupLock {
+  const directoryPath = backupLockDirectoryPath(parent);
+  const filePath = backupLockFilePath(parent);
+  let directoryDescriptor: number | undefined;
+  let fileDescriptor: number | undefined;
+  try {
+    if (!stableCanonicalDirectory(parent, parentIdentity)) {
       throw new BackupValidationError('invalid_backup_destination');
     }
-  }
+    try {
+      mkdirSync(directoryPath, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw new BackupValidationError('invalid_backup_destination');
+      }
+    }
 
-  try {
-    const stats = lstatSync(path);
+    directoryDescriptor = openSync(
+      directoryPath,
+      fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+    );
+    const directoryStats = fstatSync(directoryDescriptor);
+    const directoryIdentity = fstatSync(directoryDescriptor, { bigint: true });
     const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
     if (
-      stats.isSymbolicLink() ||
-      !stats.isFile() ||
-      stats.nlink !== 1 ||
-      (uid !== undefined && stats.uid !== uid)
+      !directoryStats.isDirectory() ||
+      (directoryStats.mode & 0o777) !== 0o700 ||
+      (uid !== undefined && directoryStats.uid !== uid)
     ) {
       throw new BackupValidationError('invalid_backup_destination');
     }
-    chmodSync(path, 0o600);
+    fchmodSync(directoryDescriptor, 0o700);
+
+    try {
+      fileDescriptor = openSync(
+        filePath,
+        fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+        0o600,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw new BackupValidationError('invalid_backup_destination');
+      }
+      fileDescriptor = openSync(filePath, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
+    }
+
+    const fileStats = fstatSync(fileDescriptor);
+    const fileIdentity = fstatSync(fileDescriptor, { bigint: true });
+    if (
+      !fileStats.isFile() ||
+      fileStats.nlink !== 1 ||
+      (fileStats.mode & 0o777) !== 0o600 ||
+      (uid !== undefined && fileStats.uid !== uid)
+    ) {
+      throw new BackupValidationError('invalid_backup_destination');
+    }
+    fchmodSync(fileDescriptor, 0o600);
+
+    const lock: PreparedPrivateBackupLock = {
+      directoryPath,
+      directoryIdentity: { dev: directoryIdentity.dev, ino: directoryIdentity.ino },
+      directoryDescriptor,
+      filePath,
+      fileIdentity: { dev: fileIdentity.dev, ino: fileIdentity.ino },
+      fileDescriptor,
+    };
+    if (!privateLockFileIsStable(lock, parent, parentIdentity)) {
+      throw new BackupValidationError('invalid_backup_destination');
+    }
+    return lock;
   } catch (error) {
+    closeDescriptorQuietly(fileDescriptor);
+    closeDescriptorQuietly(directoryDescriptor);
     if (error instanceof BackupValidationError) throw error;
     throw new BackupValidationError('invalid_backup_destination');
   }
@@ -299,26 +442,92 @@ function isSqliteLockContention(error: unknown): boolean {
   return code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED';
 }
 
-async function acquireCrossProcessBackupLock(lockKey: string): Promise<CrossProcessBackupLock> {
-  const path = backupLockPath(lockKey);
-  preparePrivateLockFile(path);
+function assertExclusiveLockCoversPreparedFile(
+  lock: PreparedPrivateBackupLock,
+  parent: string,
+  parentIdentity: FileIdentity,
+): void {
+  let verifier: Database | undefined;
+  try {
+    if (!privateLockFileIsStable(lock, parent, parentIdentity)) {
+      throw new Error('backup_lock_identity_changed');
+    }
+    verifier = new DatabaseConstructor(lock.filePath, {
+      timeout: 0,
+      fileMustExist: true,
+    });
+    if (!privateLockFileIsStable(lock, parent, parentIdentity)) {
+      throw new Error('backup_lock_identity_changed');
+    }
+    let observedExpectedContention = false;
+    try {
+      verifier.exec('BEGIN EXCLUSIVE');
+      verifier.exec('ROLLBACK');
+    } catch (error) {
+      if (!isSqliteLockContention(error)) throw error;
+      observedExpectedContention = true;
+    }
+    if (!observedExpectedContention) {
+      throw new Error('backup_lock_opened_different_inode');
+    }
+    if (!privateLockFileIsStable(lock, parent, parentIdentity)) {
+      throw new Error('backup_lock_identity_changed');
+    }
+  } finally {
+    closeQuietly(verifier);
+  }
+}
+
+async function acquireCrossProcessBackupLock(
+  parent: string,
+  parentIdentity: FileIdentity,
+  onContention: (() => void) | undefined,
+  beforeLockOpen: (() => void) | undefined,
+  afterLockOpen: (() => void) | undefined,
+): Promise<CrossProcessBackupLock> {
+  const lock = preparePrivateBackupLock(parent, parentIdentity);
 
   let lockDb: Database | undefined;
   try {
-    lockDb = new DatabaseConstructor(path, { timeout: BACKUP_LOCK_RETRY_MS });
+    if (!privateLockFileIsStable(lock, parent, parentIdentity)) {
+      throw new Error('backup_lock_identity_changed');
+    }
+    beforeLockOpen?.();
+    lockDb = new DatabaseConstructor(lock.filePath, {
+      timeout: BACKUP_LOCK_RETRY_MS,
+      fileMustExist: true,
+    });
+    afterLockOpen?.();
+    if (!privateLockFileIsStable(lock, parent, parentIdentity)) {
+      throw new Error('backup_lock_identity_changed');
+    }
+    let reportedContention = false;
     for (;;) {
       try {
+        if (!privateLockFileIsStable(lock, parent, parentIdentity)) {
+          throw new Error('backup_lock_identity_changed');
+        }
         lockDb.exec('BEGIN EXCLUSIVE');
         break;
       } catch (error) {
         if (!isSqliteLockContention(error)) throw error;
+        if (!reportedContention) {
+          reportedContention = true;
+          onContention?.();
+        }
         await new Promise<void>((resolveDelay) => {
           setTimeout(resolveDelay, BACKUP_LOCK_RETRY_MS);
         });
       }
     }
+    if (!privateLockFileIsStable(lock, parent, parentIdentity)) {
+      throw new Error('backup_lock_identity_changed');
+    }
+    assertExclusiveLockCoversPreparedFile(lock, parent, parentIdentity);
   } catch {
     closeQuietly(lockDb);
+    closeDescriptorQuietly(lock.fileDescriptor);
+    closeDescriptorQuietly(lock.directoryDescriptor);
     throw new BackupValidationError('invalid_backup_destination');
   }
 
@@ -334,6 +543,8 @@ async function acquireCrossProcessBackupLock(lockKey: string): Promise<CrossProc
         // an explicit rollback cannot be completed.
       }
       closeQuietly(lockDb);
+      closeDescriptorQuietly(lock.fileDescriptor);
+      closeDescriptorQuietly(lock.directoryDescriptor);
     },
   };
 }
@@ -366,6 +577,9 @@ function backupParentIsStable(db: Database, prepared: PreparedBackupTarget): boo
 async function withBackupDestinationLock<T>(
   db: Database,
   prepared: PreparedBackupTarget,
+  onContention: (() => void) | undefined,
+  beforeLockOpen: (() => void) | undefined,
+  afterLockOpen: (() => void) | undefined,
   operation: () => Promise<T>,
 ): Promise<T> {
   const lockKey = prepared.lockKey;
@@ -379,7 +593,14 @@ async function withBackupDestinationLock<T>(
   await previous;
   let crossProcessLock: CrossProcessBackupLock | undefined;
   try {
-    crossProcessLock = await acquireCrossProcessBackupLock(lockKey);
+    assertBackupParentStable(db, prepared);
+    crossProcessLock = await acquireCrossProcessBackupLock(
+      prepared.parent,
+      prepared.parentIdentity,
+      onContention,
+      beforeLockOpen,
+      afterLockOpen,
+    );
     assertBackupParentStable(db, prepared);
     return await operation();
   } finally {
@@ -395,6 +616,7 @@ function prepareBackupTarget(db: Database, destPath: string): PreparedBackupTarg
   const lexicalTarget = resolve(destPath);
   const lexicalParent = dirname(lexicalTarget);
   validationGuardAgainstCheckout(lexicalParent);
+  assertTargetDoesNotConflictWithBackupLock(lexicalTarget, lexicalParent);
   try {
     mkdirSync(lexicalParent, { recursive: true });
   } catch {
@@ -403,9 +625,7 @@ function prepareBackupTarget(db: Database, destPath: string): PreparedBackupTarg
   const target = canonicalEntryPath(lexicalTarget);
   const parent = dirname(target);
   validationGuardAgainstCheckout(parent);
-  if (pathIsInside(target, backupLockDirectory())) {
-    throw new BackupValidationError('invalid_backup_destination');
-  }
+  assertTargetDoesNotConflictWithBackupLock(target, parent);
   assertDestinationDoesNotConflictWithLiveDatabase(db, target);
   const parentIdentity = requiredDirectoryIdentity(parent);
   return {
@@ -432,8 +652,13 @@ export async function backupDatabase(
   options: BackupOptions = {},
 ): Promise<BackupResult> {
   const prepared = prepareBackupTarget(db, destPath);
-  return withBackupDestinationLock(db, prepared, () =>
-    backupDatabaseAtTarget(db, prepared, options),
+  return withBackupDestinationLock(
+    db,
+    prepared,
+    options.onLockContention,
+    options.beforeLockOpen,
+    options.afterLockOpen,
+    () => backupDatabaseAtTarget(db, prepared, options),
   );
 }
 
@@ -894,6 +1119,15 @@ function applyRecoveryArtifactMetadata(path: string, metadata: DatabaseMetadata)
     chownSync(path, metadata.uid, metadata.gid);
   }
   chmodSync(path, 0o600);
+}
+
+function closeDescriptorQuietly(descriptor: number | undefined): void {
+  if (descriptor === undefined) return;
+  try {
+    closeSync(descriptor);
+  } catch {
+    // Cleanup must not replace a stable backup validation error.
+  }
 }
 
 function closeQuietly(db: Database | undefined): void {
