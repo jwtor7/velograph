@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseGpx, DEFAULT_GPX_LIMITS } from './gpx.ts';
+import { assertGpxByteLength, parseGpx, DEFAULT_GPX_LIMITS } from './gpx.ts';
 
 const HARDENING_FIXTURES = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -85,6 +85,13 @@ describe('secure GPX parser (ROUTE-001/004/005)', () => {
     );
   });
 
+  it('enforces the raw-byte boundary before decoding without a large fixture', () => {
+    expect(() => assertGpxByteLength(10, 10)).not.toThrow();
+    expect(() => assertGpxByteLength(11, 10)).toThrowError(
+      expect.objectContaining({ code: 'gpx_limits_exceeded' }),
+    );
+  });
+
   it('enforces the nesting-depth limit', () => {
     const deep = '<a>'.repeat(40) + '</a>'.repeat(40);
     expect(() => parseGpx(`<gpx>${deep}</gpx>`)).toThrowError(
@@ -97,6 +104,23 @@ describe('secure GPX parser (ROUTE-001/004/005)', () => {
     expect(() =>
       parseGpx(`<gpx${attributes}/>`, { ...DEFAULT_GPX_LIMITS, maxAttributes: 10 }),
     ).toThrowError(expect.objectContaining({ code: 'gpx_limits_exceeded' }));
+  });
+
+  it('keeps the default attribute budget coherent with the point contract', () => {
+    expect(DEFAULT_GPX_LIMITS.maxAttributes).toBeGreaterThanOrEqual(
+      DEFAULT_GPX_LIMITS.maxPoints * 2,
+    );
+    const twoPoints =
+      '<gpx><trk><trkseg>' +
+      '<trkpt lat="-48" lon="-123"/><trkpt lat="-48.1" lon="-123.1"/>' +
+      '</trkseg></trk></gpx>';
+    expect(() =>
+      parseGpx(twoPoints, {
+        ...DEFAULT_GPX_LIMITS,
+        maxPoints: 2,
+        maxAttributes: 4,
+      }),
+    ).not.toThrow();
   });
 
   it('drops out-of-range coordinates instead of importing them', () => {

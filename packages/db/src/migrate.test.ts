@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import DatabaseConstructor from 'better-sqlite3';
 import {
   applyMigrations,
@@ -10,6 +11,8 @@ import {
   readAppliedMigrations,
 } from './migrate.ts';
 import { MIGRATIONS_DIR, openDatabase } from './database.ts';
+
+const BUNDLED_MIGRATIONS = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
 
 describe('ordered migrations', () => {
   it('applies the bundled schema and is idempotent', () => {
@@ -30,11 +33,77 @@ describe('ordered migrations', () => {
       'insight_runs',
       'user_settings',
       'notes_tags',
+      'source_file_reprocessing_failures',
       'schema_migrations',
     ]) {
       expect(tables).toContain(t);
     }
+    expect(
+      db
+        .prepare('SELECT name FROM schema_migrations ORDER BY name')
+        .all()
+        .map((row) => (row as { name: string }).name),
+    ).toEqual(['0001_init.sql', '0002_source_file_reprocessing_failures.sql']);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+    db.close();
+  });
+
+  it('upgrades a populated v1 database without changing existing source data', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'velo-mig-'));
+    writeFileSync(
+      join(dir, '0001_init.sql'),
+      readFileSync(join(BUNDLED_MIGRATIONS, '0001_init.sql')),
+    );
+    const db = new DatabaseConstructor(':memory:');
+    db.pragma('foreign_keys = ON');
+    expect(applyMigrations(db, dir)).toEqual(['0001_init.sql']);
+    db.prepare(
+      `INSERT INTO import_batches
+         (id, created_at, status, importer_version, counts_json)
+       VALUES (1, 1, 'committed', 'synthetic-v1', '{}')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO source_files
+         (id, batch_id, sha256, original_name, detected_type, parser_version,
+          status, error_code, size_bytes)
+       VALUES (1, 1, 'synthetic-hash', 'synthetic.csv', 'metric:cadence',
+               'synthetic-parser-v1', 'imported', NULL, 10)`,
+    ).run();
+    const sourceBefore = db.prepare('SELECT * FROM source_files').get();
+
+    writeFileSync(
+      join(dir, '0002_source_file_reprocessing_failures.sql'),
+      readFileSync(join(BUNDLED_MIGRATIONS, '0002_source_file_reprocessing_failures.sql')),
+    );
+    expect(applyMigrations(db, dir)).toEqual(['0002_source_file_reprocessing_failures.sql']);
+    expect(db.prepare('SELECT * FROM source_files').get()).toEqual(sourceBefore);
+    expect(
+      db
+        .prepare('PRAGMA table_info(source_file_reprocessing_failures)')
+        .all()
+        .map((row) => (row as { name: string }).name),
+    ).toEqual([
+      'id',
+      'source_file_id',
+      'batch_id',
+      'attempted_parser_version',
+      'error_code',
+      'created_at',
+    ]);
+    expect(
+      (
+        db.prepare('PRAGMA foreign_key_list(source_file_reprocessing_failures)').all() as {
+          from: string;
+          table: string;
+          on_delete: string;
+        }[]
+      )
+        .map((row) => ({ from: row.from, table: row.table, onDelete: row.on_delete }))
+        .sort((a, b) => a.from.localeCompare(b.from)),
+    ).toEqual([
+      { from: 'batch_id', table: 'import_batches', onDelete: 'NO ACTION' },
+      { from: 'source_file_id', table: 'source_files', onDelete: 'CASCADE' },
+    ]);
     db.close();
   });
 

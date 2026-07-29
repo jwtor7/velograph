@@ -118,12 +118,28 @@ export class Repository {
   }
 
   /**
-   * Remove normalized rows owned by one source before a parser-version
-   * reprocessing pass. Empty workouts are retained temporarily so their
-   * previous time span can corroborate the replacement parse; callers must
-   * always invoke finalizeSourceFileReprocessing before commit.
+   * Record a value-free parser-upgrade failure without changing the canonical
+   * source row or its last-known-good normalized data.
    */
-  detachSourceFileData(sourceFileId: number): number[] {
+  recordSourceFileReprocessingFailure(row: {
+    sourceFileId: number;
+    batchId: number;
+    attemptedParserVersion: string;
+    errorCode: QuarantineCode;
+    createdAt: number;
+  }): number {
+    const result = this.db
+      .prepare(
+        `INSERT INTO source_file_reprocessing_failures
+           (source_file_id, batch_id, attempted_parser_version, error_code, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(row.sourceFileId, row.batchId, row.attemptedParserVersion, row.errorCode, row.createdAt);
+    return Number(result.lastInsertRowid);
+  }
+
+  /** Distinct workouts whose normalized rows are owned by one source file. */
+  workoutIdsForSourceFile(sourceFileId: number): number[] {
     const rows = this.db
       .prepare(
         `SELECT workout_id AS id FROM metric_series WHERE source_file_id = ?
@@ -132,7 +148,17 @@ export class Repository {
          ORDER BY id`,
       )
       .all(sourceFileId, sourceFileId) as { id: number }[];
-    const workoutIds = rows.map((row) => row.id);
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * Remove normalized rows owned by one source before a parser-version
+   * reprocessing pass. Empty workout shells are retained so successful
+   * replacement can preserve stable identity and user-authored children;
+   * callers must always invoke finalizeSourceFileReprocessing before commit.
+   */
+  detachSourceFileData(sourceFileId: number): number[] {
+    const workoutIds = this.workoutIdsForSourceFile(sourceFileId);
 
     this.db.prepare('DELETE FROM metric_series WHERE source_file_id = ?').run(sourceFileId);
     this.db.prepare('DELETE FROM routes WHERE source_file_id = ?').run(sourceFileId);
@@ -153,23 +179,13 @@ export class Repository {
   }
 
   /**
-   * Complete a parser-version replacement by deleting any old workout that
-   * remained empty, or deriving the surviving workout span from current rows.
+   * Complete a parser-version replacement by deriving surviving workout spans
+   * from current rows. A workout shell is never deleted here: stable workout
+   * identity and user-authored children such as notes/tags are not parser-owned.
    */
   finalizeSourceFileReprocessing(workoutIds: readonly number[]): void {
-    const hasNormalizedData = this.db.prepare(
-      `SELECT 1 AS present FROM metric_series WHERE workout_id = ?
-       UNION ALL
-       SELECT 1 AS present FROM routes WHERE workout_id = ?
-       LIMIT 1`,
-    );
-    const deleteWorkout = this.db.prepare('DELETE FROM workouts WHERE id = ?');
     for (const workoutId of workoutIds) {
-      if (hasNormalizedData.get(workoutId, workoutId) === undefined) {
-        deleteWorkout.run(workoutId);
-      } else {
-        this.recomputeWorkoutSpan(workoutId);
-      }
+      this.recomputeWorkoutSpan(workoutId);
     }
   }
 

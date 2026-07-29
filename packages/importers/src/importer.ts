@@ -14,7 +14,7 @@ import {
   DEFAULT_ASSOCIATION_TOLERANCE_MS,
   sampleTimeRange,
 } from './association.ts';
-import { GPX_PARSER_VERSION } from './gpx.ts';
+import { assertGpxByteLength, GPX_PARSER_VERSION, GpxError } from './gpx.ts';
 import {
   createZipDecodedBudget,
   DEFAULT_ZIP_LIMITS,
@@ -49,7 +49,9 @@ interface PreparedImportFile extends ImportFile {
  *
  * Idempotency (IMP-003/010): files whose SHA-256 and parser version already
  * exist are skipped. When that version changes, the hash-unique inventory row
- * is reused and its normalized rows are transactionally replaced.
+ * is reused and its normalized rows are transactionally replaced only after a
+ * complete replacement parse succeeds. Failed attempts are recorded separately
+ * without mutating last-known-good source, workout, or user-authored data.
  *
  * GPX is preferred for route geometry; a route CSV is only used when the
  * workout has no GPX route, and a GPX arriving later replaces a CSV route
@@ -112,7 +114,7 @@ export function runImport(
         counts.skippedDuplicates++;
         continue;
       }
-      const detachedWorkoutIds = existing ? repo.detachSourceFileData(existing.id) : [];
+      const ownedWorkoutIds = existing ? repo.workoutIdsForSourceFile(existing.id) : [];
       const persistSourceFile = (row: {
         detectedType: string;
         parserVersion: string;
@@ -134,22 +136,28 @@ export function runImport(
         }
         return repo.insertSourceFile({ ...source, sha256: hash });
       };
-      const finalizeReprocessing = () => {
-        if (existing) repo.finalizeSourceFileReprocessing(detachedWorkoutIds);
-      };
 
       const quarantine = (
         code: QuarantineCode,
         detectedType = 'unknown',
         parserVersion = currentParserVersion,
       ) => {
-        persistSourceFile({
-          detectedType,
-          parserVersion,
-          status: 'quarantined',
-          errorCode: code,
-        });
-        finalizeReprocessing();
+        if (existing) {
+          repo.recordSourceFileReprocessingFailure({
+            sourceFileId: existing.id,
+            batchId: id,
+            attemptedParserVersion: parserVersion,
+            errorCode: code,
+            createdAt: now,
+          });
+        } else {
+          persistSourceFile({
+            detectedType,
+            parserVersion,
+            status: 'quarantined',
+            errorCode: code,
+          });
+        }
         counts.quarantined++;
         quarantinedFiles.push({ name: safeName, code });
       };
@@ -182,22 +190,50 @@ export function runImport(
 
       const detectedType =
         parsed.kind === 'metric' ? `metric:${parsed.metric}` : `route:${parsed.format}`;
-      const candidates = repo.findCandidateWorkouts(
-        parsed.workoutType,
-        range.start,
-        range.end,
-        toleranceMs,
-      );
-      const association = associateWorkout(candidates, range, filenameTimestamps, toleranceMs);
-      if (association.status === 'ambiguous') {
+      let matchedWorkoutId: number | undefined;
+      if (existing && ownedWorkoutIds.length > 1) {
+        // A source spanning multiple workouts has no unique stable identity.
+        // Do not delete or move any of its existing normalized rows.
         quarantine('association_ambiguous', detectedType);
         continue;
       }
-      if (association.status === 'conflict') {
-        quarantine('association_conflict', detectedType);
-        continue;
+      if (existing && ownedWorkoutIds.length === 1) {
+        // The source relationship is stronger than corrected parser timestamps:
+        // keep the stable workout id, while still requiring the file's own
+        // filename/internal timestamps and workout type to agree.
+        const fileEvidence = associateWorkout([], range, filenameTimestamps, toleranceMs);
+        const ownedWorkout = repo.getWorkout(ownedWorkoutIds[0]!);
+        if (
+          fileEvidence.status === 'conflict' ||
+          !ownedWorkout ||
+          ownedWorkout.type !== parsed.workoutType
+        ) {
+          quarantine('association_conflict', detectedType);
+          continue;
+        }
+        matchedWorkoutId = ownedWorkout.id;
+      } else {
+        const candidates = repo.findCandidateWorkouts(
+          parsed.workoutType,
+          range.start,
+          range.end,
+          toleranceMs,
+        );
+        const association = associateWorkout(candidates, range, filenameTimestamps, toleranceMs);
+        if (association.status === 'ambiguous') {
+          quarantine('association_ambiguous', detectedType);
+          continue;
+        }
+        if (association.status === 'conflict') {
+          quarantine('association_conflict', detectedType);
+          continue;
+        }
+        if (association.status === 'matched') matchedWorkoutId = association.workout.id;
       }
 
+      // All parsing, validation, and ownership resolution has succeeded. Only
+      // now may this transaction remove the old parser-owned rows.
+      const detachedWorkoutIds = existing ? repo.detachSourceFileData(existing.id) : [];
       const sourceFileId = persistSourceFile({
         detectedType,
         parserVersion: currentParserVersion,
@@ -205,8 +241,8 @@ export function runImport(
       });
 
       let workoutId: number;
-      if (association.status === 'matched') {
-        workoutId = association.workout.id;
+      if (matchedWorkoutId !== undefined) {
+        workoutId = matchedWorkoutId;
         repo.invalidateWorkoutDerivedOutputs(workoutId);
         repo.extendWorkoutSpan(workoutId, range.start, range.end);
         counts.workoutsUpdated++;
@@ -247,7 +283,7 @@ export function runImport(
         // gpx already present, or csv arriving when a route exists: keep the
         // preferred geometry; the source file row preserves provenance.
       }
-      finalizeReprocessing();
+      if (existing) repo.finalizeSourceFileReprocessing(detachedWorkoutIds);
       counts.imported++;
     }
 
@@ -263,8 +299,10 @@ function parseFile(file: ImportFile, timeZone?: string): ParsedFile {
   if (lower.endsWith('.gpx')) {
     let text: string;
     try {
+      assertGpxByteLength(file.data.byteLength);
       text = new TextDecoder('utf-8', { fatal: true }).decode(file.data);
-    } catch {
+    } catch (err) {
+      if (err instanceof GpxError) throw new AdapterError(err.code, err.message);
       throw new AdapterError('malformed_xml', 'GPX is not valid UTF-8');
     }
     return parseHaeGpx(file.name, text);

@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zipSync } from 'fflate';
 import { loadWorkoutData, openDatabase, Repository } from '@velograph/db';
+import { sha256Hex } from '@velograph/shared';
+import { DEFAULT_GPX_LIMITS } from './gpx.ts';
 import { runImport, runImportGroups, type ImportFile } from './importer.ts';
 
 const SYNTHETIC_ROOT = join(
@@ -89,6 +91,19 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
        VALUES (?, 'disabled', NULL, 'synthetic-old', 'synthetic-old', 'i',
                '{}', NULL, 'valid', ?)`,
     ).run(workout.id, FIXED_NOW);
+    db.prepare(
+      `INSERT INTO notes_tags (workout_id, kind, content, created_at)
+       VALUES (?, 'note', 'Synthetic reprocessing note', ?)`,
+    ).run(workout.id, FIXED_NOW);
+    db.prepare(
+      `INSERT INTO notes_tags (workout_id, kind, content, created_at)
+       VALUES (?, 'tag', 'synthetic-retained-tag', ?)`,
+    ).run(workout.id, FIXED_NOW);
+    db.prepare('UPDATE workouts SET start_utc = ?, end_utc = ?, duration_s = 60 WHERE id = ?').run(
+      Date.UTC(2040, 0, 1),
+      Date.UTC(2040, 0, 1, 0, 1),
+      workout.id,
+    );
     db.prepare("UPDATE source_files SET parser_version = 'hae-csv-v1' WHERE id = ?").run(source.id);
 
     const second = runImport(db, [file], { now: FIXED_NOW + 1000 });
@@ -104,6 +119,21 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     expect(db.prepare('SELECT COUNT(*) AS n FROM source_files').get()).toEqual({ n: 1 });
     expect(db.prepare('SELECT COUNT(*) AS n FROM metric_series').get()).toEqual({ n: 1 });
     expect(db.prepare('SELECT COUNT(*) AS n FROM workouts').get()).toEqual({ n: 1 });
+    expect(db.prepare('SELECT id FROM workouts').get()).toEqual({ id: workout.id });
+    expect(
+      db.prepare('SELECT workout_id, kind, content FROM notes_tags ORDER BY id').all(),
+    ).toEqual([
+      {
+        workout_id: workout.id,
+        kind: 'note',
+        content: 'Synthetic reprocessing note',
+      },
+      {
+        workout_id: workout.id,
+        kind: 'tag',
+        content: 'synthetic-retained-tag',
+      },
+    ]);
     expect(
       db
         .prepare(
@@ -119,6 +149,190 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     });
     expect(db.prepare('SELECT COUNT(*) AS n FROM analytics_snapshots').get()).toEqual({ n: 0 });
     expect(db.prepare('SELECT COUNT(*) AS n FROM insight_runs').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM source_file_reprocessing_failures').get()).toEqual(
+      { n: 0 },
+    );
+    db.close();
+  });
+
+  it('records a failed parser upgrade without deleting last-known-good data or notes', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const file = hardeningFixture('Outdoor Cycling-Route-20310608_080000-invalid-time.gpx');
+    const legacyBatchId = repo.createBatch('synthetic-legacy-importer', FIXED_NOW);
+    const sourceFileId = repo.insertSourceFile({
+      batchId: legacyBatchId,
+      sha256: sha256Hex(file.data),
+      originalName: file.name,
+      detectedType: 'route:gpx',
+      parserVersion: 'gpx-v3',
+      status: 'imported',
+      sizeBytes: file.data.length,
+    });
+    const start = Date.UTC(2031, 5, 8, 8, 0, 0);
+    const workoutId = repo.createWorkout(
+      'outdoor_cycling',
+      start,
+      start + 60_000,
+      'synthetic-legacy-import',
+    );
+    repo.insertRoute({
+      workoutId,
+      sourceFileId,
+      format: 'gpx',
+      distanceM: null,
+      segments: [
+        {
+          points: [
+            { t: start, lat: -48.4, lon: -123.4 },
+            { t: start + 60_000, lat: -48.41, lon: -123.41 },
+          ],
+        },
+      ],
+    });
+    db.prepare(
+      `INSERT INTO notes_tags (workout_id, kind, content, created_at)
+       VALUES (?, 'note', 'Synthetic retained note', ?)`,
+    ).run(workoutId, FIXED_NOW);
+    db.prepare(
+      `INSERT INTO notes_tags (workout_id, kind, content, created_at)
+       VALUES (?, 'tag', 'synthetic-retained-tag', ?)`,
+    ).run(workoutId, FIXED_NOW);
+    db.prepare(
+      `INSERT INTO analytics_snapshots
+         (workout_id, scope, formula_version, settings_hash, input_hash, result_json, created_at)
+       VALUES (?, 'workout', 'synthetic-old', 's', 'i', '{}', ?)`,
+    ).run(workoutId, FIXED_NOW);
+    db.prepare(
+      `INSERT INTO insight_runs
+         (workout_id, provider, model_id, prompt_version, schema_version, input_hash,
+          payload_json, output_json, validation_status, created_at)
+       VALUES (?, 'disabled', NULL, 'synthetic-old', 'synthetic-old', 'i',
+               '{}', NULL, 'valid', ?)`,
+    ).run(workoutId, FIXED_NOW);
+    repo.finishBatch(legacyBatchId, 'committed', {
+      imported: 1,
+      skippedDuplicates: 0,
+      quarantined: 0,
+      workoutsCreated: 1,
+      workoutsUpdated: 0,
+    });
+    const preservedTables = [
+      'source_files',
+      'workouts',
+      'routes',
+      'route_points',
+      'notes_tags',
+      'analytics_snapshots',
+      'insight_runs',
+    ] as const;
+    const before = Object.fromEntries(
+      preservedTables.map((table) => [
+        table,
+        db.prepare(`SELECT * FROM ${table} ORDER BY id`).all(),
+      ]),
+    );
+
+    const result = runImport(db, [file], { now: FIXED_NOW + 1000 });
+
+    expect(result).toMatchObject({
+      imported: 0,
+      quarantined: 1,
+      workoutsCreated: 0,
+      workoutsUpdated: 0,
+      quarantinedFiles: [{ name: file.name, code: 'timestamps_invalid' }],
+    });
+    expect(repo.getWorkout(workoutId)).toBeDefined();
+    expect(repo.countRows('routes')).toBe(1);
+    expect(repo.countRows('route_points')).toBe(2);
+    for (const table of preservedTables) {
+      expect(db.prepare(`SELECT * FROM ${table} ORDER BY id`).all()).toEqual(before[table]);
+    }
+    expect(
+      db
+        .prepare(
+          `SELECT source_file_id, batch_id, attempted_parser_version, error_code, created_at
+           FROM source_file_reprocessing_failures`,
+        )
+        .get(),
+    ).toEqual({
+      source_file_id: sourceFileId,
+      batch_id: result.batchId,
+      attempted_parser_version: 'gpx-v4',
+      error_code: 'timestamps_invalid',
+      created_at: FIXED_NOW + 1000,
+    });
+    db.close();
+  });
+
+  it('fails closed when one stale source owns normalized rows in multiple workouts', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const file = hardeningFixture('Outdoor Cycling-Cycling Cadence-20310604_080000.csv');
+    runImport(db, [file], { now: FIXED_NOW });
+    const source = db.prepare('SELECT id FROM source_files').get() as { id: number };
+    const secondStart = Date.UTC(2031, 5, 5, 8, 0, 0);
+    const secondWorkoutId = repo.createWorkout(
+      'outdoor_cycling',
+      secondStart,
+      secondStart + 60_000,
+      'synthetic-shared-source',
+    );
+    repo.insertMetricSeries({
+      workoutId: secondWorkoutId,
+      sourceFileId: source.id,
+      metric: 'cadence',
+      unit: 'rpm',
+      source: null,
+      samples: [
+        { t: secondStart, value: 75 },
+        { t: secondStart + 60_000, value: 77 },
+      ],
+    });
+    db.prepare("UPDATE source_files SET parser_version = 'hae-csv-v1' WHERE id = ?").run(source.id);
+    const preservedTables = [
+      'source_files',
+      'workouts',
+      'metric_series',
+      'metric_samples',
+    ] as const;
+    const before = Object.fromEntries(
+      preservedTables.map((table) => [
+        table,
+        db.prepare(`SELECT * FROM ${table} ORDER BY id`).all(),
+      ]),
+    );
+
+    const result = runImport(db, [file], { now: FIXED_NOW + 1000 });
+
+    expect(result).toMatchObject({
+      imported: 0,
+      quarantined: 1,
+      workoutsCreated: 0,
+      workoutsUpdated: 0,
+      quarantinedFiles: [{ name: file.name, code: 'association_ambiguous' }],
+    });
+    expect(repo.countRows('workouts')).toBe(2);
+    expect(repo.countRows('metric_series')).toBe(2);
+    expect(repo.workoutIdsForSourceFile(source.id)).toHaveLength(2);
+    for (const table of preservedTables) {
+      expect(db.prepare(`SELECT * FROM ${table} ORDER BY id`).all()).toEqual(before[table]);
+    }
+    expect(
+      db.prepare('SELECT parser_version, status FROM source_files WHERE id = ?').get(source.id),
+    ).toEqual({ parser_version: 'hae-csv-v1', status: 'imported' });
+    expect(
+      db
+        .prepare(
+          `SELECT source_file_id, attempted_parser_version, error_code
+           FROM source_file_reprocessing_failures`,
+        )
+        .get(),
+    ).toEqual({
+      source_file_id: source.id,
+      attempted_parser_version: 'hae-csv-v2',
+      error_code: 'association_ambiguous',
+    });
     db.close();
   });
 
@@ -207,6 +421,9 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
       .prepare("SELECT COUNT(*) AS n FROM source_files WHERE status = 'quarantined'")
       .get() as { n: number };
     expect(quarantined.n).toBe(3);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM source_file_reprocessing_failures').get()).toEqual(
+      { n: 0 },
+    );
     expect(result.imported).toBe(6);
     db.close();
   });
@@ -394,6 +611,29 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
       {
         name: 'Outdoor Cycling-Route-20310609_080000.gpx',
         code: 'malformed_xml',
+      },
+    ]);
+    expect(new Repository(db).countRows('route_points')).toBe(0);
+    db.close();
+  });
+
+  it('rejects an oversized GPX by raw byte length before decoding', () => {
+    class SyntheticOversizedBytes extends Uint8Array {
+      override get byteLength(): number {
+        return DEFAULT_GPX_LIMITS.maxBytes + 1;
+      }
+    }
+    const data = new SyntheticOversizedBytes(Buffer.from('<gpx/>'));
+    const db = openDatabase(':memory:');
+
+    const result = runImport(db, [{ name: 'Outdoor Cycling-Route-20310610_080000.gpx', data }], {
+      now: FIXED_NOW,
+    });
+
+    expect(result.quarantinedFiles).toEqual([
+      {
+        name: 'Outdoor Cycling-Route-20310610_080000.gpx',
+        code: 'gpx_limits_exceeded',
       },
     ]);
     expect(new Repository(db).countRows('route_points')).toBe(0);

@@ -70,6 +70,29 @@ skipped as a duplicate'`) and `apps/cli/src/index.test.ts` (`'imports, deletes, 
 workout end to end'`) both exercise the full round trip: import → delete → re-import the
 identical bytes → the ride comes back.
 
+## Parser-version reprocessing
+
+An identical content hash is skipped only while its stored parser version is current. When a
+parser version changes, the importer first parses, validates, and resolves ownership without
+changing the canonical `source_files` row or any normalized data:
+
+- A source that owns normalized rows in exactly one workout replaces only those parser-owned
+  rows and keeps the same workout ID. Notes/tags and other user-authored workout children are
+  never parser-owned and remain attached.
+- A source that appears to own more than one workout is ambiguous and fails closed without
+  detaching anything. The current importer does not create this shape, but the schema permits it,
+  so the guard is defensive.
+- A failed replacement parse or association leaves the prior source metadata and
+  last-known-good metrics/routes untouched. The additive
+  `source_file_reprocessing_failures` table records only the source ID, import batch ID,
+  attempted parser version, stable value-free error code, and timestamp. It stores no filename,
+  sample value, route coordinate, raw input, or exception text.
+
+The replacement and its cache invalidation still occur inside the confirmed import transaction;
+an unexpected storage error rolls every mutation back. Initial imports remain different: a new
+malformed source has no last-known-good state, so its canonical `source_files` row is created with
+`status = 'quarantined'` as before.
+
 ## Backup / restore
 
 `packages/db/src/backup.ts`:

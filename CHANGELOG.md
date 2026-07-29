@@ -212,15 +212,17 @@ is pre-1.0, and for the release procedure.
   the privacy-safe `malformed_xml` code (#15).
 - **Parser upgrades now replace prior normalized output transactionally.**
   Matching content hashes are skipped only when the stored parser version is
-  current; otherwise the existing source inventory row is reused, dependent
-  metrics/routes are rebuilt, affected analytics and insight caches are
-  invalidated, and a failed new parse is quarantined without retaining stale
-  normalized data (#12).
+  current; otherwise a complete replacement parse and unique ownership check
+  must succeed before old parser-owned rows are detached. Successful upgrades
+  reuse the existing source and stable workout IDs, preserving notes/tags;
+  failed or ambiguously owned upgrades retain all last-known-good data and add a
+  value-free failure record instead (#12).
 - **Large and partially timed GPX routes stay bounded and truthful.** Route
   time ranges and geographic bounds are reduced in one pass rather than spread
   into function arguments, untimed points remain nullable through database,
   analytics, API, and web types, namespace scopes no longer clone inherited
-  maps, total XML attributes are capped, invalid UTF-8 is rejected, and XML
+  maps, raw bytes are capped before UTF-8 decoding, the total-attribute budget
+  accommodates the documented point limit, invalid UTF-8 is rejected, and XML
   declarations must describe XML 1.0 UTF-8 input (#13, #15).
 - **"Choose export folder" could not select a folder.** The directory input carried
   `accept=".csv,.gpx,.zip"`; since a directory matches none of those extensions, the OS

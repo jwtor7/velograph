@@ -32,7 +32,9 @@ export const DEFAULT_GPX_LIMITS: GpxLimits = {
   maxBytes: 50 * 1024 * 1024,
   maxPoints: 500_000,
   maxDepth: 32,
-  maxAttributes: 100_000,
+  // Every valid trkpt consumes required lat + lon attributes. Keep enough
+  // document-wide headroom for all 500k points plus metadata/extensions.
+  maxAttributes: 1_100_000,
 };
 
 export type GpxErrorCode =
@@ -51,6 +53,27 @@ export class GpxError extends Error {
 export interface GpxResult {
   segments: RouteSegment[];
   droppedPoints: number;
+}
+
+/**
+ * Enforce the raw-byte cap before UTF-8 decoding allocates a second full-size
+ * representation. The optional limit keeps boundary tests small.
+ */
+export function assertGpxByteLength(
+  byteLength: number,
+  maxBytes = DEFAULT_GPX_LIMITS.maxBytes,
+): void {
+  if (
+    !Number.isSafeInteger(byteLength) ||
+    !Number.isSafeInteger(maxBytes) ||
+    byteLength < 0 ||
+    maxBytes < 0
+  ) {
+    throw new GpxError('gpx_limits_exceeded', 'GPX byte limit is invalid');
+  }
+  if (byteLength > maxBytes) {
+    throw new GpxError('gpx_limits_exceeded', 'input exceeds size limit');
+  }
 }
 
 type PointField = 'ele' | 'time' | 'speed' | 'course';
