@@ -51,3 +51,20 @@ jobs:
           outputs: type=oci,dest=/tmp/velograph-multiarch.oci.tar
           sbom: true
           provenance: mode=max
+      - name: Audit exact multi-architecture OCI output and attestations
+        run: node scripts/privacy-audit-release.mjs --oci-image /tmp/velograph-multiarch.oci.tar
+      - name: Record exact OCI archive and image-index digests
+        run: |
+          sha256sum /tmp/velograph-multiarch.oci.tar > /tmp/velograph-multiarch.oci.tar.sha256
+          tar -xOf /tmp/velograph-multiarch.oci.tar index.json > /tmp/velograph-multiarch.index.json
+      - name: Retain audited OCI output and digest evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: velograph-multiarch-oci-${{ github.sha }}
+          path: |
+            /tmp/velograph-multiarch.oci.tar
+            /tmp/velograph-multiarch.oci.tar.sha256
+            /tmp/velograph-multiarch.index.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

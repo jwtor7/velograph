@@ -160,9 +160,12 @@ before doing so. Do not change the checked-in `127.0.0.1:5123:5123` port mapping
 to a wildcard or LAN address: the app has no authentication for network use.
 
 The runtime is read-only except for its data volume and a small temporary
-filesystem. For an advanced external-volume setup, create a local ignored
-Compose override and mount only a directory outside the checkout. Never mount
-an export folder or credential cache into the container.
+filesystem. The final image contains only the built web client, the API
+production deployment, and the checked-in entrypoint/relay; build tools,
+development dependencies, and reviewed install-only compiler/archive material
+remain outside the runtime stage. For an advanced external-volume setup, create
+a local ignored Compose override and mount only a directory outside the
+checkout. Never mount an export folder or credential cache into the container.
 
 Run the test suite and the other checks CI runs:
 

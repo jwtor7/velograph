@@ -3,28 +3,87 @@
  * Release privacy audit (PRD §12.2 and §18.13).
  *
  * Extends the tracked-worktree scanner to public release surfaces that are
- * easy to overlook: every reachable Git blob, an extracted release artifact,
- * and every file in every layer of a Docker image. Reports rule + synthetic
- * audit path only; never prints matched content.
+ * easy to overlook: every reachable Git blob, extracted release artifacts,
+ * native Docker image application payloads, and the exact multi-platform OCI
+ * archive retained by CI. Reports rule + opaque audit path only; never prints
+ * matched content or host filesystem paths.
  *
  * Usage:
  *   node scripts/privacy-audit-release.mjs --working-tree
  *   node scripts/privacy-audit-release.mjs --history
  *   node scripts/privacy-audit-release.mjs --artifact path/to/extracted-output
  *   node scripts/privacy-audit-release.mjs --image velograph:local
+ *   node scripts/privacy-audit-release.mjs --oci-image path/to/image.oci.tar
  */
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import {
+  closeSync,
+  createReadStream,
+  createWriteStream,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, relative } from 'node:path';
+import { basename, isAbsolute, join, relative } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { pipeline } from 'node:stream/promises';
+import { createGunzip } from 'node:zlib';
 import { scanFile } from './privacy-scan.mjs';
 
-function command(program, args, options = {}) {
-  return execFileSync(program, args, {
-    encoding: 'utf8',
-    maxBuffer: 128 * 1024 * 1024,
-    ...options,
-  });
+export const MAX_AUDIT_ENTRY_BYTES = 64 * 1024 * 1024;
+const COMMAND_BUFFER_BYTES = MAX_AUDIT_ENTRY_BYTES + 1;
+const TARGET_PLATFORMS = ['linux/amd64', 'linux/arm64'];
+const APP_ENTRYPOINTS = new Set([
+  'usr/local/bin/docker-entrypoint.sh',
+  'usr/local/bin/docker-proxy.mjs',
+]);
+
+class AuditFailure extends Error {
+  constructor(code) {
+    super(code);
+    this.name = 'AuditFailure';
+    this.code = code;
+  }
+}
+
+function fail(code) {
+  throw new AuditFailure(code);
+}
+
+export function assertAuditableSize(size, code = 'entry_exceeds_64_mib') {
+  if (!Number.isSafeInteger(size) || size < 0) fail('invalid_entry_size');
+  if (size > MAX_AUDIT_ENTRY_BYTES) fail(code);
+}
+
+function commandText(program, args, code, options = {}) {
+  try {
+    return execFileSync(program, args, {
+      encoding: 'utf8',
+      maxBuffer: COMMAND_BUFFER_BYTES,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      ...options,
+    });
+  } catch {
+    fail(code);
+  }
+}
+
+function commandBuffer(program, args, code, options = {}) {
+  try {
+    return execFileSync(program, args, {
+      maxBuffer: COMMAND_BUFFER_BYTES,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      ...options,
+    });
+  } catch {
+    fail(code);
+  }
 }
 
 function report(scope, violations) {
@@ -42,8 +101,69 @@ function report(scope, violations) {
   return 1;
 }
 
-function scanContent(path, content) {
-  return scanFile(path.replaceAll('\\', '/'), content);
+function normalizedArchivePath(path) {
+  const normalized = path
+    .replaceAll('\\', '/')
+    .replace(/^\.\/+/, '')
+    .replace(/^\/+/, '');
+  const segments = normalized.split('/');
+  if (
+    normalized.length === 0 ||
+    normalized.includes('\0') ||
+    segments.some((segment) => segment === '..')
+  ) {
+    fail('unsafe_archive_entry_path');
+  }
+  return normalized;
+}
+
+function opaquePath(scope, identity) {
+  const digest = createHash('sha256').update(identity).digest('hex').slice(0, 16);
+  return `${scope}/${digest}`;
+}
+
+function hasNativeAddonMagic(content) {
+  if (content.length < 4) return false;
+  const magic = content.subarray(0, 4).toString('hex');
+  return (
+    new Set([
+      '7f454c46', // ELF (Linux)
+      'cafebabe', // Mach-O universal
+      'cffaedfe', // Mach-O 64-bit, little endian
+      'cefaedfe', // Mach-O 32-bit, little endian
+      'feedfacf', // Mach-O 64-bit, big endian
+      'feedface', // Mach-O 32-bit, big endian
+    ]).has(magic) || content.subarray(0, 2).toString('latin1') === 'MZ'
+  );
+}
+
+function isExpectedBetterSqliteAddon(path, content) {
+  return (
+    path.startsWith('app/api/node_modules/') &&
+    path.includes('/better-sqlite3/') &&
+    path.endsWith('/better_sqlite3.node') &&
+    hasNativeAddonMagic(content)
+  );
+}
+
+function scanContent(logicalPath, content, reportPath = logicalPath) {
+  let violations = scanFile(logicalPath.replaceAll('\\', '/'), content);
+  if (isExpectedBetterSqliteAddon(logicalPath, content)) {
+    violations = violations.filter(({ rule }) => rule !== 'unexpected-binary-file');
+  }
+  if (
+    /^app\/api\/node_modules\/\.pnpm\/bindings@1\.5\.0\/node_modules\/bindings\/bindings\.js$/.test(
+      logicalPath,
+    ) &&
+    createHash('sha256').update(content).digest('hex') ===
+      '8e32a0d37f20bd6f7d5bdbf99d041aa27be47cbbe5172ac13ebf7380a10b3bf6'
+  ) {
+    // Upstream's locked public source contains one example `/home/...` path
+    // in a comment. Suppress only that rule and only for the reviewed bytes;
+    // any package update or content change is audited normally.
+    violations = violations.filter(({ rule }) => rule !== 'home-directory-absolute-path');
+  }
+  return violations.map((violation) => ({ ...violation, path: reportPath }));
 }
 
 function scanHistoryContent(path, content) {
@@ -53,59 +173,155 @@ function scanHistoryContent(path, content) {
   }));
 }
 
-function walkFiles(root) {
+function walkArtifactFiles(root) {
   const files = [];
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const absolute = join(root, entry.name);
-    if (entry.isDirectory()) files.push(...walkFiles(absolute));
-    else if (entry.isFile()) files.push(absolute);
+    if (entry.isDirectory()) {
+      files.push(...walkArtifactFiles(absolute));
+    } else if (entry.isFile()) {
+      files.push(absolute);
+    } else {
+      fail('artifact_non_regular_entry');
+    }
   }
   return files;
 }
 
 export function auditArtifact(path) {
-  const stat = statSync(path);
-  const files = stat.isDirectory() ? walkFiles(path) : [path];
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    fail('artifact_unreadable');
+  }
+  if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) {
+    fail('artifact_non_regular_entry');
+  }
+
+  const files = stat.isDirectory() ? walkArtifactFiles(path) : [path];
   const violations = [];
   for (const file of files) {
+    let fileStat;
+    try {
+      fileStat = lstatSync(file);
+    } catch {
+      fail('artifact_entry_unreadable');
+    }
+    if (!fileStat.isFile()) fail('artifact_non_regular_entry');
+    assertAuditableSize(fileStat.size, 'artifact_entry_exceeds_64_mib');
+
     const artifactPath = stat.isDirectory() ? relative(path, file) : basename(file);
-    const auditPath = `artifact/${artifactPath || basename(file)}`;
-    violations.push(...scanContent(auditPath, readFileSync(file)));
+    const auditPath = `artifact/${artifactPath || basename(file)}`.replaceAll('\\', '/');
+    let content;
+    try {
+      content = readFileSync(file);
+    } catch {
+      fail('artifact_entry_unreadable');
+    }
+    assertAuditableSize(content.length, 'artifact_entry_exceeds_64_mib');
+    violations.push(...scanContent(auditPath, content, opaquePath('artifact-entry', artifactPath)));
   }
   return report(`artifact (${files.length} file(s))`, violations);
 }
 
-export function auditHistory() {
-  // `rev-list --objects --all` walks every blob reachable from local and
-  // fetched refs. CI uses checkout fetch-depth 0; a release mirror is needed
-  // to audit refs that have already been deleted from every remote.
-  const lines = command('git', ['rev-list', '--objects', '--all']).split('\n').filter(Boolean);
-  const seen = new Set();
-  const violations = [];
-  for (const line of lines) {
-    const separator = line.indexOf(' ');
-    if (separator === -1) continue;
-    const objectId = line.slice(0, separator);
-    const path = line.slice(separator + 1);
-    if (!path || seen.has(`${objectId}\0${path}`)) continue;
-    let objectType;
-    try {
-      objectType = command('git', ['cat-file', '-t', objectId], {
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-    } catch {
-      continue;
+function walkProductionDeployment(root, current = root) {
+  const files = [];
+  for (const entry of readdirSync(current, { withFileTypes: true })) {
+    const absolute = join(current, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...walkProductionDeployment(root, absolute));
+    } else if (entry.isFile()) {
+      files.push(absolute);
+    } else if (entry.isSymbolicLink()) {
+      let target;
+      try {
+        target = realpathSync(absolute);
+      } catch {
+        fail('production_deploy_broken_symlink');
+      }
+      const targetPath = relative(root, target);
+      if (isAbsolute(targetPath) || targetPath === '..' || targetPath.startsWith('../')) {
+        fail('production_deploy_external_symlink');
+      }
+      // pnpm's physical package targets are traversed under node_modules/.pnpm.
+      // Avoid scanning the same bytes again through each symlink alias.
+    } else {
+      fail('production_deploy_non_regular_entry');
     }
-    if (objectType !== 'blob') continue;
-    seen.add(`${objectId}\0${path}`);
+  }
+  return files;
+}
+
+export function auditProductionDeploy(path) {
+  let root;
+  try {
+    root = realpathSync(path);
+  } catch {
+    fail('production_deploy_unreadable');
+  }
+  if (!lstatSync(root).isDirectory()) fail('production_deploy_not_directory');
+
+  const files = walkProductionDeployment(root);
+  const violations = [];
+  for (const file of files) {
+    const deploymentPath = relative(root, file).replaceAll('\\', '/');
+    const logicalPath = `app/api/${deploymentPath}`;
     let content;
     try {
-      content = execFileSync('git', ['cat-file', 'blob', objectId], {
-        maxBuffer: 64 * 1024 * 1024,
-      });
-    } catch {
-      continue;
+      const stat = lstatSync(file);
+      if (!stat.isFile()) fail('production_deploy_non_regular_entry');
+      assertAuditableSize(stat.size, 'production_deploy_entry_exceeds_64_mib');
+      content = readFileSync(file);
+    } catch (error) {
+      if (error instanceof AuditFailure) throw error;
+      fail('production_deploy_entry_unreadable');
     }
+    assertAuditableSize(content.length, 'production_deploy_entry_exceeds_64_mib');
+    violations.push(
+      ...scanContent(logicalPath, content, opaquePath('production-entry', deploymentPath)),
+    );
+  }
+  return report(`production API deployment (${files.length} file(s))`, violations);
+}
+
+export function auditHistory() {
+  const lines = commandText(
+    'git',
+    ['rev-list', '--objects', '--all'],
+    'history_object_list_unreadable',
+  )
+    .split('\n')
+    .filter(Boolean);
+  const seen = new Set();
+  const violations = [];
+
+  for (const line of lines) {
+    const separator = line.indexOf(' ');
+    const objectId = separator === -1 ? line : line.slice(0, separator);
+    const listedPath = separator === -1 ? '' : line.slice(separator + 1);
+    const path = listedPath || `unpathed/${objectId.slice(0, 16)}.blob`;
+    if (seen.has(`${objectId}\0${path}`)) continue;
+
+    const objectType = commandText(
+      'git',
+      ['cat-file', '-t', objectId],
+      'history_object_type_unreadable',
+    ).trim();
+    if (objectType !== 'blob') continue;
+
+    const rawSize = commandText(
+      'git',
+      ['cat-file', '-s', objectId],
+      'history_blob_size_unreadable',
+    ).trim();
+    const size = Number(rawSize);
+    assertAuditableSize(size, 'history_blob_exceeds_64_mib');
+
+    const content = commandBuffer('git', ['cat-file', 'blob', objectId], 'history_blob_unreadable');
+    if (content.length !== size) fail('history_blob_size_mismatch');
+
+    seen.add(`${objectId}\0${path}`);
     // Keep the repository-relative path for scanner policy (notably the
     // synthetic fixture allowlist), then prefix only the human-safe report.
     violations.push(...scanHistoryContent(path, content));
@@ -113,64 +329,395 @@ export function auditHistory() {
   return report(`history (${seen.size} reachable blob path(s))`, violations);
 }
 
+function listTarEntries(archive, code) {
+  const entries = commandText('tar', ['-tf', archive], code).split('\n').filter(Boolean);
+  const index = new Map();
+  for (const entry of entries) {
+    const canonical = normalizedArchivePath(entry);
+    if (index.has(canonical)) fail('duplicate_archive_entry');
+    index.set(canonical, entry);
+  }
+  return index;
+}
+
+function readTarEntry(archive, archiveIndex, canonicalPath, code) {
+  const entry = archiveIndex.get(canonicalPath);
+  if (!entry) fail(code);
+  return commandBuffer('tar', ['-xOf', archive, '--', entry], code);
+}
+
+function extractTarEntry(archive, archiveIndex, canonicalPath, destination, code) {
+  const entry = archiveIndex.get(canonicalPath);
+  if (!entry) fail(code);
+  let descriptor;
+  try {
+    descriptor = openSync(destination, 'wx', 0o600);
+    const result = spawnSync('tar', ['-xOf', archive, '--', entry], {
+      stdio: ['ignore', descriptor, 'ignore'],
+    });
+    if (result.error || result.status !== 0) fail(code);
+  } catch (error) {
+    if (error instanceof AuditFailure) throw error;
+    fail(code);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function parseJson(content, code) {
+  try {
+    return JSON.parse(content.toString('utf8'));
+  } catch {
+    fail(code);
+  }
+}
+
+function isApplicationEntry(path) {
+  return path === 'app' || path.startsWith('app/') || APP_ENTRYPOINTS.has(path);
+}
+
+function auditLayerTar(layerTar, layerIdentity, violations) {
+  const entries = listTarEntries(layerTar, 'container_layer_index_unreadable');
+  for (const [entry] of entries) {
+    if (entry.endsWith('/') || !isApplicationEntry(entry)) continue;
+    const content = readTarEntry(
+      layerTar,
+      entries,
+      entry,
+      'container_entry_unreadable_or_exceeds_64_mib',
+    );
+    assertAuditableSize(content.length, 'container_entry_exceeds_64_mib');
+    violations.push(
+      ...scanContent(entry, content, opaquePath('container-entry', `${layerIdentity}\0${entry}`)),
+    );
+  }
+}
+
 export function auditImage(image) {
   const directory = mkdtempSync(join(tmpdir(), 'velograph-image-audit-'));
   const archive = join(directory, 'image.tar');
   try {
-    command('docker', ['image', 'save', '--output', archive, image]);
-    const topLevel = command('tar', ['-tf', archive]).split('\n').filter(Boolean);
-    const layerNames = topLevel.filter((entry) => entry.endsWith('/layer.tar'));
-    const violations = [];
-    for (const layerName of layerNames) {
-      const layer = execFileSync('tar', ['-xOf', archive, layerName], {
-        maxBuffer: 1024 * 1024 * 1024,
-      });
-      // Stream the nested tar directly; never extract untrusted layer paths to
-      // the checkout or another filesystem location.
-      const layerEntries = command('tar', ['-tf', '-'], { input: layer })
-        .split('\n')
-        .filter(Boolean);
-      for (const entry of layerEntries) {
-        if (entry.endsWith('/') || entry.includes('../')) continue;
-        let content;
-        try {
-          content = execFileSync('tar', ['-xOf', '-', entry], {
-            input: layer,
-            maxBuffer: 64 * 1024 * 1024,
-          });
-        } catch {
-          continue;
-        }
-        violations.push(...scanContent(`container/${image}/${layerName}/${entry}`, content));
-      }
+    commandText(
+      'docker',
+      ['image', 'save', '--output', archive, image],
+      'docker_image_save_failed',
+    );
+    const archiveIndex = listTarEntries(archive, 'docker_archive_index_unreadable');
+    const manifestContent = readTarEntry(
+      archive,
+      archiveIndex,
+      'manifest.json',
+      'docker_manifest_unreadable',
+    );
+    assertAuditableSize(manifestContent.length, 'docker_manifest_exceeds_64_mib');
+    const manifest = parseJson(manifestContent, 'docker_manifest_invalid');
+    if (!Array.isArray(manifest) || manifest.length !== 1) fail('docker_manifest_invalid');
+
+    const imageRecord = manifest[0];
+    if (
+      !imageRecord ||
+      typeof imageRecord.Config !== 'string' ||
+      !Array.isArray(imageRecord.Layers)
+    ) {
+      fail('docker_manifest_invalid');
     }
-    return report(`container image ${image}`, violations);
+
+    const violations = [];
+    const config = readTarEntry(
+      archive,
+      archiveIndex,
+      normalizedArchivePath(imageRecord.Config),
+      'docker_config_unreadable',
+    );
+    assertAuditableSize(config.length, 'docker_config_exceeds_64_mib');
+    violations.push(
+      ...scanContent(
+        'container/config.json',
+        config,
+        opaquePath('container-config', imageRecord.Config),
+      ),
+    );
+
+    for (const [index, rawLayerName] of imageRecord.Layers.entries()) {
+      if (typeof rawLayerName !== 'string') fail('docker_manifest_invalid');
+      const layerName = normalizedArchivePath(rawLayerName);
+      const layer = join(directory, `layer-${index}.tar`);
+      extractTarEntry(archive, archiveIndex, layerName, layer, 'docker_layer_unreadable');
+      auditLayerTar(layer, `native:${index}`, violations);
+    }
+
+    return report(
+      `container application payload (${imageRecord.Layers.length} layer(s))`,
+      violations,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 }
 
-export function run(argv) {
+function descriptorDigest(descriptor, code) {
+  const digest = descriptor?.digest;
+  if (typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(digest)) fail(code);
+  return digest;
+}
+
+function blobArchivePath(descriptor, code) {
+  return `blobs/sha256/${descriptorDigest(descriptor, code).slice('sha256:'.length)}`;
+}
+
+function verifyBufferDigest(content, descriptor, code) {
+  const expected = descriptorDigest(descriptor, code);
+  const actual = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+  if (actual !== expected) fail(code);
+}
+
+async function sha256File(path) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return `sha256:${hash.digest('hex')}`;
+}
+
+async function verifyFileDigest(path, descriptor, code) {
+  const expected = descriptorDigest(descriptor, code);
+  let actual;
+  try {
+    actual = await sha256File(path);
+  } catch {
+    fail(code);
+  }
+  if (actual !== expected) fail(code);
+}
+
+function readOciBlob(archive, archiveIndex, descriptor, code) {
+  const content = readTarEntry(archive, archiveIndex, blobArchivePath(descriptor, code), code);
+  assertAuditableSize(content.length, 'oci_blob_exceeds_64_mib');
+  verifyBufferDigest(content, descriptor, 'oci_blob_digest_mismatch');
+  return content;
+}
+
+function evidenceKind(content) {
+  const statement = parseJson(content, 'oci_attestation_invalid');
+  const predicateType = statement?.predicateType;
+  if (
+    typeof statement?._type !== 'string' ||
+    !statement._type.startsWith('https://in-toto.io/Statement/') ||
+    typeof predicateType !== 'string' ||
+    !statement.predicate ||
+    typeof statement.predicate !== 'object' ||
+    Array.isArray(statement.predicate)
+  ) {
+    fail('oci_attestation_invalid');
+  }
+  const normalized = predicateType.toLowerCase();
+  if (normalized.includes('spdx')) return 'sbom';
+  if (normalized.includes('slsa.dev/provenance')) return 'provenance';
+  return 'other';
+}
+
+function platformKey(descriptor) {
+  const os = descriptor?.platform?.os;
+  const architecture = descriptor?.platform?.architecture;
+  return typeof os === 'string' && typeof architecture === 'string' ? `${os}/${architecture}` : '';
+}
+
+function isAttestationDescriptor(descriptor) {
+  return (
+    descriptor?.annotations?.['vnd.docker.reference.type'] === 'attestation-manifest' ||
+    platformKey(descriptor) === 'unknown/unknown'
+  );
+}
+
+function attestationSubject(descriptor) {
+  const subject = descriptor?.annotations?.['vnd.docker.reference.digest'];
+  if (typeof subject !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(subject)) {
+    fail('oci_attestation_subject_invalid');
+  }
+  return subject;
+}
+
+async function materializeOciLayer(archive, archiveIndex, descriptor, directory, sequence) {
+  const blob = join(directory, `blob-${sequence}`);
+  extractTarEntry(
+    archive,
+    archiveIndex,
+    blobArchivePath(descriptor, 'oci_layer_descriptor_invalid'),
+    blob,
+    'oci_layer_unreadable',
+  );
+  await verifyFileDigest(blob, descriptor, 'oci_layer_digest_mismatch');
+
+  const mediaType = descriptor?.mediaType;
+  if (
+    mediaType === 'application/vnd.oci.image.layer.v1.tar' ||
+    mediaType === 'application/vnd.docker.image.rootfs.diff.tar'
+  ) {
+    return blob;
+  }
+  if (
+    mediaType === 'application/vnd.oci.image.layer.v1.tar+gzip' ||
+    mediaType === 'application/vnd.docker.image.rootfs.diff.tar.gzip'
+  ) {
+    const layerTar = join(directory, `layer-${sequence}.tar`);
+    try {
+      await pipeline(
+        createReadStream(blob),
+        createGunzip(),
+        createWriteStream(layerTar, { mode: 0o600 }),
+      );
+    } catch {
+      fail('oci_layer_decompression_failed');
+    }
+    return layerTar;
+  }
+  fail('oci_unsupported_layer_media_type');
+}
+
+export async function auditOciArchive(archive) {
+  const directory = mkdtempSync(join(tmpdir(), 'velograph-oci-audit-'));
+  try {
+    const archiveIndex = listTarEntries(archive, 'oci_archive_index_unreadable');
+    const layoutContent = readTarEntry(
+      archive,
+      archiveIndex,
+      'oci-layout',
+      'oci_layout_unreadable',
+    );
+    const layout = parseJson(layoutContent, 'oci_layout_invalid');
+    if (layout?.imageLayoutVersion !== '1.0.0') fail('oci_layout_invalid');
+
+    const indexContent = readTarEntry(archive, archiveIndex, 'index.json', 'oci_index_unreadable');
+    assertAuditableSize(indexContent.length, 'oci_index_exceeds_64_mib');
+    const index = parseJson(indexContent, 'oci_index_invalid');
+    if (!Array.isArray(index?.manifests)) fail('oci_index_invalid');
+
+    const violations = [
+      ...scanContent('oci/index.json', indexContent, opaquePath('oci-index', 'index.json')),
+    ];
+    const imagesByPlatform = new Map();
+    const evidenceBySubject = new Map();
+    let layerSequence = 0;
+
+    for (const descriptor of index.manifests) {
+      const manifestDigest = descriptorDigest(descriptor, 'oci_manifest_descriptor_invalid');
+      const manifestContent = readOciBlob(
+        archive,
+        archiveIndex,
+        descriptor,
+        'oci_manifest_unreadable',
+      );
+      const manifest = parseJson(manifestContent, 'oci_manifest_invalid');
+      if (!Array.isArray(manifest?.layers) || !manifest?.config) fail('oci_manifest_invalid');
+
+      violations.push(
+        ...scanContent(
+          'oci/manifest.json',
+          manifestContent,
+          opaquePath('oci-manifest', manifestDigest),
+        ),
+      );
+      const configContent = readOciBlob(
+        archive,
+        archiveIndex,
+        manifest.config,
+        'oci_config_unreadable',
+      );
+      violations.push(
+        ...scanContent('oci/config.json', configContent, opaquePath('oci-config', manifestDigest)),
+      );
+
+      if (isAttestationDescriptor(descriptor)) {
+        const subject = attestationSubject(descriptor);
+        const evidence = evidenceBySubject.get(subject) ?? new Set();
+        for (const layerDescriptor of manifest.layers) {
+          if (layerDescriptor?.mediaType !== 'application/vnd.in-toto+json') {
+            fail('oci_attestation_media_type_invalid');
+          }
+          const content = readOciBlob(
+            archive,
+            archiveIndex,
+            layerDescriptor,
+            'oci_attestation_unreadable',
+          );
+          violations.push(
+            ...scanContent(
+              'oci/attestation.json',
+              content,
+              opaquePath(
+                'oci-attestation',
+                descriptorDigest(layerDescriptor, 'oci_attestation_invalid'),
+              ),
+            ),
+          );
+          evidence.add(evidenceKind(content));
+        }
+        evidenceBySubject.set(subject, evidence);
+        continue;
+      }
+
+      const platform = platformKey(descriptor);
+      if (imagesByPlatform.has(platform)) fail('oci_duplicate_platform_manifest');
+      imagesByPlatform.set(platform, manifestDigest);
+      for (const layerDescriptor of manifest.layers) {
+        const layerTar = await materializeOciLayer(
+          archive,
+          archiveIndex,
+          layerDescriptor,
+          directory,
+          layerSequence,
+        );
+        auditLayerTar(layerTar, `${platform}:${layerSequence}`, violations);
+        layerSequence += 1;
+      }
+    }
+
+    for (const platform of TARGET_PLATFORMS) {
+      const subject = imagesByPlatform.get(platform);
+      if (!subject) fail(`oci_missing_${platform.replace('/', '_')}`);
+      const evidence = evidenceBySubject.get(subject);
+      if (!evidence?.has('sbom'))
+        fail(`oci_${platform.replace('/', '_')}_missing_sbom_attestation`);
+      if (!evidence?.has('provenance')) {
+        fail(`oci_${platform.replace('/', '_')}_missing_provenance_attestation`);
+      }
+    }
+
+    return report(
+      `exact OCI archive (${TARGET_PLATFORMS.length} platform(s), SBOM + provenance)`,
+      violations,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+export async function run(argv) {
   const [mode, value] = argv;
   try {
     if (mode === '--working-tree') {
-      const output = command('node', ['scripts/privacy-scan.mjs', '--all']);
+      const output = commandText(
+        'node',
+        ['scripts/privacy-scan.mjs', '--all'],
+        'working_tree_audit_failed',
+      );
       process.stdout.write(output);
       return 0;
     }
     if (mode === '--history') return auditHistory();
     if (mode === '--artifact' && value) return auditArtifact(value);
+    if (mode === '--production-deploy' && value) return auditProductionDeploy(value);
     if (mode === '--image' && value) return auditImage(value);
+    if (mode === '--oci-image' && value) return auditOciArchive(value);
   } catch (error) {
-    console.error(
-      `RELEASE PRIVACY AUDIT FAILED — ${error instanceof Error ? error.message : 'unknown error'}`,
-    );
+    const code = error instanceof AuditFailure ? error.code : 'unexpected_audit_error';
+    console.error(`RELEASE PRIVACY AUDIT FAILED — [${code}]`);
     return 1;
   }
-  console.error('Usage: --working-tree | --history | --artifact <path> | --image <reference>');
+  console.error(
+    'Usage: --working-tree | --history | --artifact <path> | --production-deploy <path> | --image <reference> | --oci-image <archive>',
+  );
   return 64;
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  process.exit(run(process.argv.slice(2)));
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exit(await run(process.argv.slice(2)));
 }

@@ -53,7 +53,8 @@ may instead use a `Changelog-Exempt: <reason>` commit trailer; see
 Do not mount exports, credentials, or a data directory inside the checkout
 into a container. The checked-in Compose file uses a Docker-managed local
 volume and publishes only to host loopback. Before a release, run the history,
-artifact, and container checks in [the release privacy audit guide](docs/release-privacy-audit.md).
+artifact, native-container, and exact OCI output checks in
+[the release privacy audit guide](docs/release-privacy-audit.md).
 
 ## Licence status
 

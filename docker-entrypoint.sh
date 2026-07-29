@@ -19,7 +19,11 @@ esac
 export VELO_HOST
 export VELO_PORT="$VELO_INTERNAL_PORT"
 
-node apps/api/src/main.ts &
+if [ -f /app/api/dist/velograph-api.mjs ]; then
+  node /app/api/dist/velograph-api.mjs &
+else
+  node /app/api/src/main.ts &
+fi
 api_pid=$!
 node /usr/local/bin/docker-proxy.mjs &
 proxy_pid=$!

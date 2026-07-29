@@ -116,11 +116,15 @@ is pre-1.0, and for the release procedure.
   runtime filesystem, dropped capabilities, bounded temporary storage, and no
   source-export or credential mounts. CI now verifies clean frozen-lockfile
   installs on Node 20 and Node 26, audits worktree/Git-history/container
-  layers for privacy leaks, and performs a non-publishing `amd64`/`arm64`
-  Buildx build with SBOM and provenance attestations. Security reporting,
-  contribution rules, threat model, privacy incident response, and release
-  audit procedures are documented; selecting an open-source licence remains an
-  explicit maintainer decision (#60).
+  application payloads for privacy leaks, and performs a non-publishing
+  `amd64`/`arm64` Buildx build with per-platform SBOM and provenance
+  attestations. The fail-closed audit verifies and scans the exact OCI output;
+  CI retains it with its archive checksum and image-index digests. Container
+  installs can run outside Git, while the runtime includes only the built web
+  client and API production deployment. Security reporting, contribution
+  rules, threat model, privacy incident response, and release audit procedures
+  are documented; selecting an open-source licence remains an explicit
+  maintainer decision (#60).
 - **Local server lifecycle commands**: `pnpm app:start`, `app:stop`, `app:status`, and
   `app:restart`. `app:start` builds the web client, refuses to start when a server already
   holds the port, and waits for the API to actually answer before reporting success.

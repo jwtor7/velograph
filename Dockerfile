@@ -21,10 +21,22 @@ COPY packages/db/package.json packages/db/package.json
 COPY packages/importers/package.json packages/importers/package.json
 COPY packages/insights/package.json packages/insights/package.json
 COPY packages/shared/package.json packages/shared/package.json
+COPY scripts/configure-git-hooks.mjs scripts/configure-git-hooks.mjs
 RUN pnpm install --frozen-lockfile
 
 COPY . .
 RUN pnpm --filter @velograph/web build
+# Issue #11 adds a bundled Node 20-compatible API. Build it when that branch is
+# present; current main falls back to Node 22's TypeScript runtime.
+RUN pnpm --filter @velograph/api --if-present run build
+# Deploy only the API package and its production dependency graph. Lifecycle
+# scripts remain enabled so production native dependencies are built normally.
+RUN pnpm --filter @velograph/api deploy --prod --legacy /opt/velograph/api
+# The published tar-fs package contains an install-only test archive. Remove
+# that exact reviewed fixture and fail if any other archive or dev package
+# appears in the production deployment.
+RUN node scripts/prune-deployed-api.mjs /opt/velograph/api \
+    && node scripts/privacy-audit-release.mjs --production-deploy /opt/velograph/api
 
 FROM node:22.22.3-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752 AS runtime
 
@@ -43,7 +55,8 @@ RUN apt-get update \
     && apt-get install --no-install-recommends -y tini \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build --chown=node:node /app /app
+COPY --from=build --chown=node:node /opt/velograph/api /app/api
+COPY --from=build --chown=node:node /app/apps/web/dist /app/web/dist
 COPY --chown=node:node docker-entrypoint.sh docker-proxy.mjs /usr/local/bin/
 RUN chmod 0555 /usr/local/bin/docker-entrypoint.sh \
     && mkdir -p /var/lib/velograph \
