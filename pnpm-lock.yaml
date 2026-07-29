@@ -27,6 +27,28 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.3)(supports-color@7.2.0)
 
+  apps/api:
+    dependencies:
+      '@velograph/analytics':
+        specifier: workspace:*
+        version: link:../../packages/analytics
+      '@velograph/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@velograph/importers':
+        specifier: workspace:*
+        version: link:../../packages/importers
+      '@velograph/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+    devDependencies:
+      '@types/node':
+        specifier: ^24.13.3
+        version: 24.13.3
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
   apps/cli:
     dependencies:
       '@velograph/db':
