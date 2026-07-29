@@ -13,7 +13,7 @@
     "format": "prettier --check .",
     "format:fix": "prettier --write .",
     "lint": "eslint .",
-    "typecheck": "tsc --build",
+    "typecheck": "pnpm -r --if-present run typecheck",
     "test": "vitest run",
     "privacy:scan": "node scripts/privacy-scan.mjs --all",
     "privacy:scan:staged": "node scripts/privacy-scan.mjs --staged",
