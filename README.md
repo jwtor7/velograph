@@ -19,21 +19,87 @@ Your health data never leaves your machine unless you explicitly send it somewhe
 
 ## Quick start
 
-> Velograph is under active development; the build system is landing now. Once scaffolding is complete:
+The build system has landed: a pnpm/TypeScript monorepo with a working import pipeline,
+analytics engine, loopback API, and web client. There is no `pnpm dev` script — the web
+client is built once and served by the API, as below.
 
 ```bash
-pnpm install
-pnpm dev        # starts the local API (127.0.0.1) and web client
-pnpm test       # run the full test suite
+pnpm install                            # install workspace dependencies
+pnpm --filter @velograph/web build      # build the web client (required before the API can serve it)
 ```
 
-Then open the printed local URL in your browser and import a Health Auto Export folder, files, or ZIP.
+### Try it with the synthetic fixtures
+
+**Do not import the synthetic fixtures into a data directory that holds real rides.**
+There is no way to remove a ride yet (deletion is unimplemented, tracked in issue #38) — the
+only way to undo an accidental import today is deleting the whole database. Point this
+walkthrough at an explicit throwaway directory instead, so it can't touch real data:
+
+```bash
+export VELO_DATA_DIR=$(mktemp -d)                        # throwaway directory for this demo
+node apps/cli/src/index.ts import fixtures/synthetic/rides
+node apps/api/src/main.ts
+```
+
+Then open `http://127.0.0.1:5123` in your browser. `VELO_DATA_DIR` stays set for the rest of
+this shell session, so the API command above serves the same fixture rides you just
+imported. Close the shell (or `unset VELO_DATA_DIR`) when you're done, and delete the
+temporary directory if you want to reclaim the space.
+
+### Import your own data
+
+When you're ready to use a real [Health Auto Export](https://www.healthyapps.dev/) export,
+start a fresh shell (so the throwaway `VELO_DATA_DIR` above is gone) and either set
+`VELO_DATA_DIR` explicitly to where your real database should live, or leave it unset —
+Velograph then picks an OS-appropriate application-data directory: `~/Library/Application
+Support/velograph` on macOS, `%APPDATA%\velograph` on Windows, or
+`$XDG_DATA_HOME/velograph` (falling back to `~/.local/share/velograph`) on Linux. Either way,
+all persistent state — the SQLite database, quarantined import files — lives there, never
+inside this checkout; a `VELO_DATA_DIR` that resolves inside a git checkout is refused at
+startup.
+
+```bash
+node apps/cli/src/index.ts import /path/to/your/health-auto-export
+node apps/api/src/main.ts
+```
+
+Run the test suite and the other checks CI runs:
+
+```bash
+pnpm test         # unit, parser, migration, and analytics golden tests
+pnpm lint         # eslint
+pnpm typecheck    # tsc --noEmit across every workspace package
+pnpm format       # prettier --check
+node scripts/privacy-scan.mjs --all   # privacy/data-leak scan
+```
+
+## Project layout
+
+```
+apps/
+  api/      loopback HTTP API (workouts, analytics, trends, import, settings)
+  cli/      velograph-import — CSV/GPX/ZIP importer CLI
+  web/      React client, built with Vite
+packages/
+  analytics/  deterministic ride/conditioning metrics (pure, versioned formulas)
+  db/         SQLite schema, migrations, data-dir resolution
+  importers/  CSV/GPX/ZIP parsing, normalization, workout association
+  insights/   AI provider interface, minimized payload, schema, validation (stub — see docs/ai-privacy.md)
+  shared/     types and utilities shared across packages
+fixtures/synthetic/   invented data used by tests and this quickstart
+```
 
 ## Documentation
 
 - [Product requirements (PRD)](Velograph-PRD.md) — the source of truth for all requirements
 - [Repository guidelines](AGENTS.md) — structure, workflow, and privacy boundaries for contributors
+- [Changelog](CHANGELOG.md) — what shipped, release by release
+- [Release procedure](docs/releasing.md) — versioning scheme and how a release is cut
 - [Design system](docs/design-system.md) — palette, typography, and visual language
+- [Analytics formulas](docs/formulas.md) — every metric definition, versioned
+- [Data management](docs/data-management.md) — delete, backup, restore, and repair: cascade behaviour and the delete/re-import idempotency decision
+- [AI insight privacy](docs/ai-privacy.md) — what would leave the machine per provider, and why AI is a stub today
+- [CI supply-chain policy](docs/ci-supply-chain.md) — pinned-SHA GitHub Actions and how to update them
 
 ## License
 
