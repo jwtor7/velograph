@@ -32,13 +32,17 @@ is pre-1.0, and for the release procedure.
   closed/fsynced before cutover. Recovery installs an independent copy of the original, retaining a
   separate canonical `0600` rollback snapshot whenever reopen cannot be proven. Backup rejects the
   live database and sidecars as destinations, serializes identical and case-only alias paths across
-  API/CLI processes by verified parent identity through rollback and cleanup, rejects a destination
-  parent replaced during staging, and retains an independent prior snapshot until rollback
-  durability is proven. Restore binds and revalidates the canonical live parent and expected inode
-  across asynchronous cutover/recovery boundaries; existing-file, canonical-identity reopen checks
-  prevent a substituted or missing path from creating or adopting an empty database. API and CLI
-  surfaces expose only stable value-free codes, including data-directory and live-database
-  open/close failures. The API rejects concurrent work during the restore barrier, tracks
+  API/CLI processes through rollback and cleanup using one private persistent lock in the shared
+  canonical destination parent, independent of each process's `TMPDIR`. The hidden lock lives in a
+  descriptor-verified owner-only directory; an independent contention probe proves SQLite locked
+  the pinned inode. The lock stores no path or ride data, reserves its SQLite sidecar names, and
+  remains after completion to avoid split-inode locking. Backup rejects a destination parent
+  replaced during staging and retains an independent prior snapshot until rollback durability is
+  proven. Restore binds and revalidates the canonical live parent and expected inode across
+  asynchronous cutover/recovery boundaries; existing-file, canonical-identity reopen checks prevent
+  a substituted or missing path from creating or adopting an empty database. API and CLI surfaces
+  expose only stable value-free codes, including data-directory and live-database open/close
+  failures. The API rejects concurrent work during the restore barrier, tracks
   asynchronous work after client disconnect, and fails closed only when recovery cannot be proven.
   SIGINT/SIGTERM drain accepted work and checkpoint/close the current handle. `app:stop` waits 12
   seconds for the verified process, safely escalates, and treats a final `SIGKILL` `ESRCH` race as a

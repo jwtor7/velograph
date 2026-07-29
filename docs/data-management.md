@@ -77,12 +77,20 @@ identical bytes → the ride comes back.
 - `backupDatabase(db, destPath)` canonicalizes each destination, captures the verified parent
   directory's device/inode identity, calls `guardAgainstCheckout` before writing anything, and
   rejects the live database, its SQLite sidecars, and filesystem aliases as destinations. An
-  in-process turn and an exclusive SQLite transaction in a private OS-temp lock registry
-  conservatively serialize every backup in the same verified parent across API/CLI processes.
-  Locking by parent device/inode means case-only aliases on a default case-insensitive macOS
-  filesystem cannot acquire separate locks; the `0600` lock is keyed by a SHA-256 and stores no
-  path or ride data. Backup creates a verified mode-`0700` operation directory and a `0600` stage
-  inside it, then writes that stage through `better-sqlite3`'s
+  in-process turn and an exclusive SQLite transaction inside `.velograph-backup.lock` in that
+  verified canonical parent conservatively serialize every backup there across API/CLI processes,
+  even when those processes have different `TMPDIR` values. Locking by parent device/inode
+  in-process and by one shared directory on the canonical parent filesystem means case-only aliases
+  on a default case-insensitive macOS filesystem cannot acquire separate locks. The hidden
+  directory is a current-user-owned, non-symlink mode-`0700` directory; its `lock.sqlite3` is a
+  current-user-owned, non-symlink, single-link mode-`0600` regular file. Both are opened without
+  following symlinks, pinned by descriptors, and checked by descriptor and pathname identity around
+  the separate SQLite open and lock acquisition. After acquisition, a second zero-timeout SQLite
+  connection to the pinned path must observe contention, proving that the primary connection
+  actually locked the validated inode. The lock stores no path or ride data. The directory, lock,
+  and SQLite `-wal`, `-shm`, and `-journal` sidecar names are reserved and cannot be backup
+  destinations. Backup creates a verified mode-`0700` operation directory and a `0600` stage inside
+  it, then writes that stage through `better-sqlite3`'s
   `Database.prototype.backup()` (SQLite's `sqlite3_backup_init`/`step`/`finish`), then verifies
   canonical schema, migration history, integrity, and foreign keys. The stage is closed, sidecars
   removed, and file fsynced. Backup revalidates the original parent identity and live-database
@@ -100,6 +108,11 @@ identical bytes → the ride comes back.
   cannot be proven, Velograph keeps the independent prior snapshot in its `0700` operation
   directory rather than deleting the only known-good backup. Completed operations and failures
   with a proven outcome remove their operation directories.
+- The hidden `.velograph-backup.lock` directory intentionally remains after backup completion.
+  Removing it automatically could let a new process create and lock a different directory/file
+  inode while another process still holds or waits on the old inode, breaking serialization. An
+  operator may remove the directory only while no Velograph process can be backing up into that
+  parent; the next backup recreates the private lock.
 - `restoreDatabase(liveDb, dbPath, backupPath)` opens the selected source once, read-only, then
   binds the canonical live path, its file identity, and its parent device/inode before creating a
   verified mode-`0700` operation directory. Restore backs the source into that directory through
@@ -154,13 +167,14 @@ Both directions are exercised end to end (round trip, checkout rejection, and li
 destination rejection), along with forged/incomplete/current/future migration histories, corrupt
 input, foreign-key failure, copy and migration failure, serialized atomic replacement of an
 existing permissive backup, failed-backup preservation/cleanup, independent prior-snapshot
-retention until directory durability, identical-path and case-alias cross-process ordering,
-backup/restore/rollback parent substitution without writes into the replacement path, private
-operation-directory and artifact modes, original-mode preservation, failures before and after
-replacement install, expected-inode replacement-open rollback, no-create recovery after a
-post-close parent swap, separate recovery retention when reopen cannot be proven, spawned-CLI
-corrupt-database handling, graceful WAL checkpoint/close, privacy-safe surface codes, and stop
-escalation/`ESRCH`, in
+retention until directory durability, identical-path cross-process ordering across distinct
+`TMPDIR` values, case-alias cross-process ordering, reserved/tampered lock-artifact rejection,
+lock-entry ABA rejection across SQLite open, backup/restore/rollback parent substitution without
+writes into the replacement path, private operation-directory and artifact modes, original-mode
+preservation, failures before and after replacement install, expected-inode replacement-open
+rollback, no-create recovery after a post-close parent swap, separate recovery retention when
+reopen cannot be proven, spawned-CLI corrupt-database handling, graceful WAL checkpoint/close,
+privacy-safe surface codes, and stop escalation/`ESRCH`, in
 `packages/db/src/backup.test.ts`, `packages/db/src/migrate.test.ts`,
 `apps/api/src/shutdown.test.ts`, `apps/api/src/shutdown-coordinator.test.ts`,
 `apps/api/src/data-management.test.ts`, `scripts/app.test.mjs`, and

@@ -24,8 +24,16 @@
 - [x] Failed backup creation preserves the prior backup and removes incomplete stages.
 - [x] Backup rejects the live database, its sidecars, and filesystem aliases as destinations.
 - [x] Same-destination and case-only alias backup requests are conservatively serialized by
-      verified parent identity in-process and across processes, with the filesystem-backed lock
-      held through rollback and cleanup.
+      verified parent identity in-process and by one persistent lock on the shared canonical
+      parent filesystem across processes, including processes with distinct `TMPDIR` values. The
+      lock is held through rollback and cleanup inside a current-user-owned, non-symlink
+      mode-`0700` directory. Its single-link mode-`0600` regular file and directory are pinned by
+      no-follow descriptors and revalidated by descriptor/path identity around SQLite open. A
+      second zero-timeout connection must contend on the pinned path, proving the primary SQLite
+      connection locked the validated inode.
+- [x] The persistent directory, lock, and SQLite sidecar names are reserved backup destinations.
+      The lock stores no path or ride data and remains after completion to prevent split-inode
+      locking; the directory may be removed only while no process can be backing up there.
 - [x] The verified destination parent device/inode and canonical path are checked after
       asynchronous staging and immediately around final install; cleanup never follows a changed
       parent.

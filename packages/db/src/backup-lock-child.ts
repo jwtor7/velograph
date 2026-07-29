@@ -21,14 +21,16 @@ async function waitForFile(path: string): Promise<void> {
 }
 
 async function run(): Promise<void> {
-  const [mode, dbPath, backupPath, readyPath, releasePath, startedPath] = process.argv.slice(2);
+  const [mode, dbPath, backupPath, readyPath, releasePath, startedPath, contentionPath] =
+    process.argv.slice(2);
   if (
     (mode !== 'hold-and-fail' && mode !== 'succeed') ||
     !dbPath ||
     !backupPath ||
     !readyPath ||
     !releasePath ||
-    !startedPath
+    !startedPath ||
+    (mode === 'succeed' && !contentionPath)
   ) {
     throw new Error('invalid_test_arguments');
   }
@@ -56,6 +58,9 @@ async function run(): Promise<void> {
 
     writeFileSync(readyPath, 'attempting');
     await backupDatabase(db, backupPath, {
+      onLockContention: () => {
+        writeFileSync(contentionPath!, 'contended');
+      },
       stageBackup: (source, destination) => {
         writeFileSync(startedPath, 'started');
         return source.backup(destination);
