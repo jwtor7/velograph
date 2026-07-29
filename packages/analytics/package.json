@@ -1,0 +1,22 @@
+{
+  "name": "@velograph/analytics",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure deterministic analytics engine — no framework, db, network, or LLM deps",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@velograph/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@velograph/db": "workspace:*",
+    "@velograph/importers": "workspace:*",
+    "typescript": "^5.9.2"
+  }
+}
