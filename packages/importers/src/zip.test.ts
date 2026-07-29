@@ -111,36 +111,37 @@ describe('guarded ZIP extraction', () => {
     );
   });
 
-  it('counts actual streamed bytes and stops before a later entry after forged low sizes', () => {
-    let seed = 0x12345678;
-    const bomb = new Uint8Array(500_000);
-    for (let i = 0; i < bomb.length; i++) {
-      seed ^= seed << 13;
-      seed ^= seed >>> 17;
-      seed ^= seed << 5;
-      bomb[i] = seed & 0xff;
-    }
+  it('caps highly compressible forged output before materializing it or starting a later entry', () => {
+    const maxOutputBytes = 50_000;
+    const bomb = new Uint8Array(10_000_000).fill(65);
     const original = zipSync({
       'bomb.csv': bomb,
       'later.csv': strToU8('must-not-start'),
     });
+    expect(original.length).toBeLessThan(maxOutputBytes);
     const forged = forgeFirstDeclaredSize(original, 1, 1);
-    const started: string[] = [];
-    let observed = 0;
-    expect(() =>
-      extractZip(
-        forged,
-        { ...DEFAULT_ZIP_LIMITS, maxEntryBytes: 50_000, maxTotalBytes: 1_000_000 },
-        {
-          onEntryStart: (name) => started.push(name),
-          onChunk: (_name, bytes) => {
-            observed += bytes;
+
+    for (const limits of [
+      { maxEntryBytes: maxOutputBytes, maxTotalBytes: 1_000_000 },
+      { maxEntryBytes: 1_000_000, maxTotalBytes: maxOutputBytes },
+    ]) {
+      const started: string[] = [];
+      let observed = 0;
+      expect(() =>
+        extractZip(
+          forged,
+          { ...DEFAULT_ZIP_LIMITS, ...limits },
+          {
+            onEntryStart: (name) => started.push(name),
+            onChunk: (_name, bytes) => {
+              observed += bytes;
+            },
           },
-        },
-      ),
-    ).toThrowError(expect.objectContaining({ code: 'zip_limits_exceeded' }));
-    expect(started).toEqual(['bomb.csv']);
-    expect(observed).toBeGreaterThan(50_000);
+        ),
+      ).toThrowError(expect.objectContaining({ code: 'zip_limits_exceeded' }));
+      expect(started).toEqual(['bomb.csv']);
+      expect(observed).toBe(0);
+    }
   });
 
   it('rejects a forged declared size that differs from final streamed output', () => {

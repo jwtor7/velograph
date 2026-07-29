@@ -54,6 +54,20 @@ function mutationDir(): string {
   return dir;
 }
 
+function persistentImportCounts(): Record<string, number> {
+  const count = (sql: string): number => (db.prepare(sql).get() as { count: number }).count;
+  return {
+    importBatches: count('SELECT COUNT(*) AS count FROM import_batches'),
+    sourceFiles: count('SELECT COUNT(*) AS count FROM source_files'),
+    quarantined: count("SELECT COUNT(*) AS count FROM source_files WHERE status = 'quarantined'"),
+    workouts: count('SELECT COUNT(*) AS count FROM workouts'),
+    metricSeries: count('SELECT COUNT(*) AS count FROM metric_series'),
+    metricSamples: count('SELECT COUNT(*) AS count FROM metric_samples'),
+    routes: count('SELECT COUNT(*) AS count FROM routes'),
+    routePoints: count('SELECT COUNT(*) AS count FROM route_points'),
+  };
+}
+
 beforeAll(async () => {
   exportDir = mkdtempSync(join(tmpdir(), 'velograph-path-import-'));
   const corpus = generateCorpus({ rides: 4, seed: 4200 });
@@ -142,9 +156,7 @@ describe('POST /api/import/path', () => {
   });
 
   it('rejects mutation, addition, and same-size replacement after preview without writes', async () => {
-    const before = (await (await fetch(`${base}/api/workouts`)).json()) as {
-      workouts: unknown[];
-    };
+    const before = persistentImportCounts();
     const changes: ((dir: string, path: string) => void)[] = [
       (_dir, path) => writeFileSync(path, 'changed-size'),
       (dir) => writeFileSync(join(dir, 'Outdoor Cycling-Cycling Cadence-20260101_070000.csv'), 'x'),
@@ -170,12 +182,8 @@ describe('POST /api/import/path', () => {
       });
       expect(res.status).toBe(409);
       expect(await res.json()).toEqual({ error: 'path_changed' });
+      expect(persistentImportCounts()).toEqual(before);
     }
-
-    const after = (await (await fetch(`${base}/api/workouts`)).json()) as {
-      workouts: unknown[];
-    };
-    expect(after.workouts).toHaveLength(before.workouts.length);
   });
 
   it('imports a real-shaped export folder by path with complete metric coverage', async () => {

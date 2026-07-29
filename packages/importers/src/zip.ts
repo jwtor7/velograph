@@ -1,4 +1,4 @@
-import { Unzip, UnzipInflate, type UnzipFile } from 'fflate';
+import { inflateRawSync } from 'node:zlib';
 
 /**
  * Guarded ZIP extraction (PRD §12.3). Entries are extracted to memory only —
@@ -6,8 +6,9 @@ import { Unzip, UnzipInflate, type UnzipFile } from 'fflate';
  * two bounded phases:
  *  1. parse the central directory and matching local headers without
  *     inflating, validating names/counts/declared sizes;
- *  2. stream compressed input through fflate and stop as soon as actual
- *     per-entry or aggregate output exceeds a limit.
+ *  2. inflate each validated compressed range with Node's `maxOutputLength`
+ *     configured before decoding, so actual output cannot be materialized
+ *     beyond the remaining per-entry or aggregate limit.
  */
 export interface ZipLimits {
   maxEntries: number;
@@ -38,7 +39,6 @@ const EOCD_SIGNATURE = 0x06054b50;
 const CENTRAL_SIGNATURE = 0x02014b50;
 const LOCAL_SIGNATURE = 0x04034b50;
 const MAX_EOCD_SEARCH = 65_535 + 22;
-const INPUT_CHUNK_BYTES = 64 * 1024;
 
 export interface ZipEntry {
   /** Base filename (directories are flattened; HAE exports are flat). */
@@ -50,6 +50,7 @@ interface PreparedZipEntry {
   name: string;
   outputName?: string;
   localOffset: number;
+  dataOffset: number;
   compression: number;
   compressedBytes: number;
   declaredBytes: number;
@@ -250,6 +251,7 @@ function prepareZip(zipData: Uint8Array, limits: ZipLimits): PreparedZipEntry[] 
       name,
       ...(outputName ? { outputName } : {}),
       localOffset,
+      dataOffset: localHeaderEnd,
       compression,
       compressedBytes,
       declaredBytes,
@@ -262,26 +264,6 @@ function prepareZip(zipData: Uint8Array, limits: ZipLimits): PreparedZipEntry[] 
   return entries.sort((a, b) => a.localOffset - b.localOffset);
 }
 
-function joinChunks(chunks: Uint8Array[], size: number): Uint8Array {
-  const output = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    output.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return output;
-}
-
-function terminate(files: Set<UnzipFile>): void {
-  for (const file of files) {
-    try {
-      file.terminate();
-    } catch {
-      // Extraction is already failing closed.
-    }
-  }
-}
-
 export function extractZip(
   zipData: Uint8Array,
   limits: ZipLimits = DEFAULT_ZIP_LIMITS,
@@ -289,89 +271,51 @@ export function extractZip(
 ): ZipEntry[] {
   const prepared = prepareZip(zipData, limits);
   const entries: ZipEntry[] = [];
-  const active = new Set<UnzipFile>();
-  let nextEntry = 0;
   let actualTotal = 0;
-  let failure: ZipError | undefined;
 
-  const fail = (error: ZipError, file?: UnzipFile): never => {
-    failure = error;
-    if (file) {
-      try {
-        file.terminate();
-      } catch {
-        // Throwing the stable error below is the fail-closed boundary.
-      }
+  for (const expected of prepared) {
+    if (!expected.inflate) continue;
+
+    const remainingTotal = limits.maxTotalBytes - actualTotal;
+    const remainingOutput = Math.min(limits.maxEntryBytes, remainingTotal);
+    if (remainingOutput <= 0) {
+      throw new ZipError('zip_limits_exceeded', 'decompressed size exceeds limit');
     }
-    throw error;
-  };
 
-  const unzip = new Unzip((file) => {
-    const expected =
-      prepared[nextEntry++] ??
-      fail(new ZipError('zip_entry_rejected', 'streamed entry does not match its manifest'), file);
-    if (
-      file.name !== expected.name ||
-      file.compression !== expected.compression ||
-      (file.size !== undefined && file.size !== expected.compressedBytes) ||
-      (file.originalSize !== undefined && file.originalSize !== expected.declaredBytes)
-    ) {
-      fail(new ZipError('zip_entry_rejected', 'streamed entry does not match its manifest'), file);
-    }
-    if (!expected.inflate) return;
-
-    const chunks: Uint8Array[] = [];
-    let actualBytes = 0;
-    active.add(file);
     hooks?.onEntryStart?.(expected.name);
-    file.ondata = (err, chunk, final) => {
-      if (failure) return;
-      if (err) fail(new ZipError('io_error', 'zip could not be read'), file);
+    const compressed = zipData.subarray(
+      expected.dataOffset,
+      expected.dataOffset + expected.compressedBytes,
+    );
+    let data: Uint8Array;
 
-      const nextActual = actualBytes + chunk.length;
-      const nextTotal = actualTotal + chunk.length;
-      hooks?.onChunk?.(expected.name, chunk.length);
-      if (nextActual > limits.maxEntryBytes || nextTotal > limits.maxTotalBytes) {
-        fail(new ZipError('zip_limits_exceeded', 'decompressed size exceeds limit'), file);
+    if (expected.compression === 0) {
+      if (compressed.length > remainingOutput) {
+        throw new ZipError('zip_limits_exceeded', 'decompressed size exceeds limit');
       }
-      actualBytes = nextActual;
-      actualTotal = nextTotal;
-      if (chunk.length > 0) chunks.push(chunk.slice());
-
-      if (final) {
-        active.delete(file);
-        if (actualBytes !== expected.declaredBytes) {
-          fail(
-            new ZipError('zip_entry_rejected', 'entry output does not match its declared size'),
-            file,
-          );
+      data = compressed.slice();
+    } else {
+      try {
+        data = inflateRawSync(compressed, { maxOutputLength: remainingOutput });
+      } catch (err) {
+        if (
+          err &&
+          typeof err === 'object' &&
+          'code' in err &&
+          err.code === 'ERR_BUFFER_TOO_LARGE'
+        ) {
+          throw new ZipError('zip_limits_exceeded', 'decompressed size exceeds limit');
         }
-        entries.push({
-          name: expected.outputName!,
-          data: joinChunks(chunks, actualBytes),
-        });
+        throw new ZipError('io_error', 'zip could not be read');
       }
-    };
-    file.start();
-  });
-  unzip.register(UnzipInflate);
+    }
 
-  try {
-    for (let offset = 0; offset < zipData.length; offset += INPUT_CHUNK_BYTES) {
-      const end = Math.min(offset + INPUT_CHUNK_BYTES, zipData.length);
-      unzip.push(zipData.subarray(offset, end), end === zipData.length);
-      if (failure) throw failure;
+    if (data.length !== expected.declaredBytes) {
+      throw new ZipError('zip_entry_rejected', 'entry output does not match its declared size');
     }
-    if (
-      nextEntry !== prepared.length ||
-      entries.length !== prepared.filter((e) => e.inflate).length
-    ) {
-      throw new ZipError('zip_entry_rejected', 'streamed archive does not match its manifest');
-    }
-  } catch (err) {
-    terminate(active);
-    if (err instanceof ZipError) throw err;
-    throw new ZipError('io_error', 'zip could not be read');
+    actualTotal += data.length;
+    hooks?.onChunk?.(expected.name, data.length);
+    entries.push({ name: expected.outputName!, data });
   }
 
   return entries.sort((a, b) => a.name.localeCompare(b.name));
