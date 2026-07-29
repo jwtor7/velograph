@@ -99,6 +99,12 @@ is pre-1.0, and for the release procedure.
   components, and re-checks the canonical destination after creating directories. Outside and
   nested symlink aliases into a checkout are rejected with privacy-safe errors that never echo
   local absolute paths (#44).
+- **AI insight output now fails closed against its declared schema and cited evidence.**
+  Runtime validation rejects unexpected root, section, and finding properties with value-free
+  errors, and numeric claims can match only facts authorized by the finding's cited metric IDs.
+  Explicit zone-share percentage representations remain supported without allowing unrelated
+  metrics with colliding values to validate a claim (#34, #35).
+
 - **"Choose export folder" could not select a folder.** The directory input carried
   `accept=".csv,.gpx,.zip"`; since a directory matches none of those extensions, the OS
   picker greyed folders out. Because Health Auto Export writes one CSV per metric, this

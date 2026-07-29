@@ -1,4 +1,4 @@
-import { evidenceIdsForPayload } from './payload.ts';
+import { evidenceIdsForPayload, zoneMetricId } from './payload.ts';
 import type { InsightPayload } from './payload.ts';
 import { containsDiagnosticPhrasing } from './guidance.ts';
 import type { InsightFinding } from './schema.ts';
@@ -23,8 +23,12 @@ export interface FindingValidationResult {
 }
 
 export interface NumericFact {
-  metricId: string;
+  /** Evidence ID that authorizes this numeric representation. */
+  evidenceId: string;
   value: number;
+  /** Payload unit or explicitly approved display representation. */
+  unit: string;
+  representation: 'payload' | 'percent';
 }
 
 export interface NumericToleranceOptions {
@@ -43,11 +47,29 @@ export const DEFAULT_NUMERIC_TOLERANCE: NumericToleranceOptions = {
 export function deriveFactsFromPayload(payload: InsightPayload): NumericFact[] {
   const facts: NumericFact[] = [];
   for (const m of payload.metrics) {
-    if (m.value !== null) facts.push({ metricId: m.id, value: m.value });
+    if (m.value !== null) {
+      facts.push({
+        evidenceId: m.id,
+        value: m.value,
+        unit: m.unit,
+        representation: 'payload',
+      });
+    }
   }
   for (const z of payload.zones ?? []) {
-    facts.push({ metricId: `hr_zone_${z.zone}_share`, value: z.shareOfTime });
-    facts.push({ metricId: `hr_zone_${z.zone}_share_pct`, value: z.shareOfTime * 100 });
+    const evidenceId = zoneMetricId(z.zone);
+    facts.push({
+      evidenceId,
+      value: z.shareOfTime,
+      unit: 'ratio',
+      representation: 'payload',
+    });
+    facts.push({
+      evidenceId,
+      value: z.shareOfTime * 100,
+      unit: '%',
+      representation: 'percent',
+    });
   }
   return facts;
 }
@@ -96,7 +118,10 @@ export function validateFinding(
     return { status: 'removed', reasonCode: 'diagnostic_phrasing' };
   }
 
-  const facts = deriveFactsFromPayload(payload);
+  const citedEvidenceIds = new Set(finding.evidence);
+  const facts = deriveFactsFromPayload(payload).filter((fact) =>
+    citedEvidenceIds.has(fact.evidenceId),
+  );
   const numbers = extractNumbers(finding.text);
   const hasUnsupportedNumber = numbers.some((n) => !isNumberSupported(n, facts, options));
   if (hasUnsupportedNumber) {

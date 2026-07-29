@@ -62,8 +62,8 @@ describe('validateFinding (AI-006, AI-007)', () => {
 
   it('deriveFactsFromPayload includes zone shares as both ratio and percent facts', () => {
     const facts = deriveFactsFromPayload(payload);
-    const zoneFact = facts.find((f) => f.metricId === 'hr_zone_2_share_pct');
-    expect(zoneFact).toBeDefined();
+    const zoneFacts = facts.filter((f) => f.evidenceId === 'hr_zone_2_share');
+    expect(zoneFacts.map((fact) => fact.representation)).toEqual(['payload', 'percent']);
   });
 
   it('tolerates small rounding differences without flagging', () => {
@@ -76,5 +76,77 @@ describe('validateFinding (AI-006, AI-007)', () => {
       payload,
     );
     expect(result.status).toBe('valid');
+  });
+
+  it('does not support a number from an unrelated uncited metric', () => {
+    const duration = payload.metrics.find((metric) => metric.id === 'duration_s')!.value;
+    const result = validateFinding(
+      {
+        text: `Maximum heart rate was ${duration} bpm.`,
+        evidence: ['heart_rate_max_bpm'],
+      },
+      payload,
+    );
+    expect(result).toEqual({
+      status: 'flagged',
+      reasonCode: 'unsupported_numeric_value',
+    });
+  });
+
+  it('keeps equal-valued metrics isolated by cited evidence ID', () => {
+    const collidingPayload = {
+      ...payload,
+      metrics: payload.metrics.map((metric) =>
+        metric.id === 'duration_s' || metric.id === 'heart_rate_max_bpm'
+          ? { ...metric, value: 180 }
+          : metric,
+      ),
+    };
+    const supported = validateFinding(
+      {
+        text: 'Maximum heart rate was 180 bpm.',
+        evidence: ['heart_rate_max_bpm'],
+      },
+      collidingPayload,
+    );
+    const unrelated = validateFinding(
+      {
+        text: 'Average speed was 180 m/s.',
+        evidence: ['avg_speed_ms'],
+      },
+      collidingPayload,
+    );
+    expect(supported).toEqual({ status: 'valid', reasonCode: null });
+    expect(unrelated).toEqual({
+      status: 'flagged',
+      reasonCode: 'unsupported_numeric_value',
+    });
+  });
+
+  it('accepts an explicitly represented zone share percentage only when that zone is cited', () => {
+    const zone = payload.zones?.[1];
+    expect(zone).toBeDefined();
+    const percent = (zone!.shareOfTime * 100).toFixed(1);
+    expect(
+      validateFinding(
+        {
+          text: `Time in the cited zone was ${percent}%.`,
+          evidence: [`hr_zone_${zone!.zone}_share`],
+        },
+        payload,
+      ),
+    ).toEqual({ status: 'valid', reasonCode: null });
+    expect(
+      validateFinding(
+        {
+          text: `Time in another zone was ${percent}%.`,
+          evidence: ['hr_zone_1_share'],
+        },
+        payload,
+      ),
+    ).toEqual({
+      status: 'flagged',
+      reasonCode: 'unsupported_numeric_value',
+    });
   });
 });
