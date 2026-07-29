@@ -47,6 +47,11 @@ is pre-1.0, and for the release procedure.
   SIGINT/SIGTERM drain accepted work and checkpoint/close the current handle. `app:stop` waits 12
   seconds for the verified process, safely escalates, and treats a final `SIGKILL` `ESRCH` race as a
   completed stop (#43, #55).
+- **Backup destinations cannot bypass checkout protection through symlinks.** Destination
+  validation now resolves the nearest existing ancestor, appends only validated missing path
+  components, and re-checks the canonical destination after creating directories. Outside and
+  nested symlink aliases into a checkout are rejected with privacy-safe errors that never echo
+  local absolute paths (#44).
 - **"Choose export folder" could not select a folder.** The directory input carried
   `accept=".csv,.gpx,.zip"`; since a directory matches none of those extensions, the OS
   picker greyed folders out. Because Health Auto Export writes one CSV per metric, this

@@ -76,7 +76,10 @@ identical bytes → the ride comes back.
 
 - `backupDatabase(db, destPath)` canonicalizes each destination, captures the verified parent
   directory's device/inode identity, calls `guardAgainstCheckout` before writing anything, and
-  rejects the live database, its SQLite sidecars, and filesystem aliases as destinations. An
+  rejects the live database, its SQLite sidecars, and filesystem aliases as destinations. The
+  guard resolves the nearest existing ancestor and validates each missing component, so an
+  outside-looking symlink cannot redirect a backup into a checkout; the destination is checked
+  again after directory creation. An
   in-process turn and an exclusive SQLite transaction inside `.velograph-backup.lock` in that
   verified canonical parent conservatively serialize every backup there across API/CLI processes,
   even when those processes have different `TMPDIR` values. Locking by parent device/inode
