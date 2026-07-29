@@ -288,7 +288,13 @@ export function RideDetail() {
               </span>
             </span>
           </div>
-          <ElevationProfile segments={detail.route} cursorT={cursorT} height={90} />
+          <ElevationProfile
+            segments={detail.route}
+            cursorT={cursorT}
+            tMin={w.startUtc}
+            tMax={w.endUtc}
+            height={90}
+          />
         </div>
       </div>
 

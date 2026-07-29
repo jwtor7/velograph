@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildLineSpec,
   buildRouteSpec,
+  buildSegmentedLineSpec,
   downsample,
   fmtDuration,
   routeIndexAt,
@@ -89,6 +90,19 @@ describe('pure chart specs (§9.3 determinism contract)', () => {
     }
   });
 
+  it('computes bounds for a high-point-count route without spreading arguments', () => {
+    const points = Array.from({ length: 150_000 }, (_, i) => ({
+      lat: 43 + i / 10_000_000,
+      lon: -79 + i / 20_000_000,
+    }));
+
+    const spec = buildRouteSpec([{ points }], 400, 300)!;
+
+    expect(spec.start).not.toBeNull();
+    expect(spec.finish).not.toBeNull();
+    expect(spec.segmentPaths).toHaveLength(1);
+  });
+
   it('adds deterministic direction, distance, and scale context (ROUTE-003)', () => {
     const spec = buildRouteSpec(
       [
@@ -132,6 +146,30 @@ describe('pure chart specs (§9.3 determinism contract)', () => {
       320,
     )!;
     expect(withGap.totalDistanceM).toBeLessThan(2_000);
+  });
+
+  it('uses the explicit workout domain and preserves elevation segment gaps', () => {
+    const spec = buildSegmentedLineSpec(
+      [
+        [
+          { t: 400, v: 100 },
+          { t: 500, v: 110 },
+        ],
+        [
+          { t: 600, v: 115 },
+          { t: 700, v: 105 },
+        ],
+      ],
+      1_000,
+      100,
+      { tMin: 0, tMax: 1_000 },
+    )!;
+
+    expect(spec.tMin).toBe(0);
+    expect(spec.tMax).toBe(1_000);
+    expect(spec.path.match(/M/g)).toHaveLength(2);
+    expect(spec.area.match(/Z/g)).toHaveLength(2);
+    expect(spec.path.startsWith('M400 ')).toBe(true);
   });
 
   it('cursor mapping: timeAtX and valueAt interpolate', () => {
