@@ -13,11 +13,16 @@ import {
   restoreDatabaseWithReport,
 } from '@velograph/db';
 import {
+  DEFAULT_MAX_GROUP_BYTES,
+  DEFAULT_ZIP_LIMITS,
+  confirmFolderImportPlan,
   FolderImportError,
   inventoryFiles,
+  planFolderImport,
   previewImportFolder,
-  readFolderFiles,
+  readFolderFileGroups,
   runImport,
+  runImportGroups,
   type ImportFile,
 } from '@velograph/importers';
 import { APP_VERSION } from '@velograph/shared';
@@ -34,6 +39,11 @@ import { BasemapService, type BasemapTile } from './basemap.ts';
 export const API_VERSION = APP_VERSION;
 const MAX_IMPORT_BODY_BYTES = 600 * 1024 * 1024; // base64-encoded uploads
 const MAX_PATH_BODY_BYTES = 8 * 1024;
+const PATH_IMPORT_ZIP_LIMITS = {
+  ...DEFAULT_ZIP_LIMITS,
+  maxEntryBytes: DEFAULT_MAX_GROUP_BYTES,
+  maxTotalBytes: DEFAULT_MAX_GROUP_BYTES,
+};
 
 /**
  * Loopback-only HTTP API (PRD §11.3, §12.3).
@@ -473,18 +483,36 @@ function route(
     readJsonBody(req, MAX_PATH_BODY_BYTES)
       .then((body) => {
         const p = readPathField(body);
+        const confirmationToken = readConfirmationToken(body);
         if (!p) {
           send(res, 400, { error: 'invalid_path' });
           return;
         }
+        if (!confirmationToken) {
+          send(res, 400, { error: 'preview_required' });
+          return;
+        }
         try {
-          const { files, skipped, truncated } = readFolderFiles(p);
-          if (files.length === 0) {
-            send(res, 400, { error: 'no_files' });
+          const plan = planFolderImport(p);
+          confirmFolderImportPlan(plan, confirmationToken);
+          if (plan.totalFiles === 0) {
+            send(res, 400, {
+              error: 'no_files',
+              skipped: plan.skipped,
+              truncated: plan.truncated,
+            });
             return;
           }
-          const result = runImport(db, files, { now: now(), timeZone: loadSettings(db).timeZone });
-          send(res, 200, { result, skipped, truncated });
+          const result = runImportGroups(db, readFolderFileGroups(plan), {
+            now: now(),
+            timeZone: loadSettings(db).timeZone,
+            zipLimits: PATH_IMPORT_ZIP_LIMITS,
+          });
+          send(res, 200, {
+            result,
+            skipped: plan.skipped,
+            truncated: plan.truncated,
+          });
         } catch (err) {
           send(res, folderErrorStatus(err), { error: folderErrorCode(err) });
         }
@@ -632,6 +660,11 @@ function fetchSiteAllowed(value: string | string[] | undefined): boolean {
 function readPathField(body: unknown): string | undefined {
   const p = (body as { path?: unknown } | null)?.path;
   return typeof p === 'string' && p.trim() !== '' ? p : undefined;
+}
+
+function readConfirmationToken(body: unknown): string | undefined {
+  const token = (body as { confirmationToken?: unknown } | null)?.confirmationToken;
+  return typeof token === 'string' && /^[a-f0-9]{64}$/.test(token) ? token : undefined;
 }
 
 function folderErrorCode(err: unknown): string {

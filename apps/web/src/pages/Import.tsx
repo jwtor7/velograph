@@ -1,6 +1,12 @@
 import { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, type FolderPreviewBody, type FolderSkipItem, type ImportResultBody } from '../api.ts';
+import {
+  ApiError,
+  api,
+  type FolderPreviewBody,
+  type FolderSkipItem,
+  type ImportResultBody,
+} from '../api.ts';
 
 interface Picked {
   name: string;
@@ -129,7 +135,11 @@ export function ImportPage() {
     try {
       const res = await api.importPathPreview(folderPath.trim());
       setPreview(res.preview);
-      if (res.preview.rides.length === 0 && res.preview.ungrouped.length === 0) {
+      if (res.preview.truncated) {
+        setPreviewError(
+          'This folder exceeded the safe traversal or import limits. Narrow the folder and preview again.',
+        );
+      } else if (res.preview.rides.length === 0 && res.preview.ungrouped.length === 0) {
         setPreviewError('No importable .csv/.gpx/.zip files were found in that folder.');
       }
     } catch {
@@ -147,13 +157,28 @@ export function ImportPage() {
     setPathBusy(true);
     setPreviewError(null);
     try {
-      const res = await api.importPath(folderPath.trim());
+      if (!preview || preview.truncated) {
+        setPreviewError(
+          'This folder exceeded the safe traversal or import limits. Narrow the folder and preview again.',
+        );
+        return;
+      }
+      const res = await api.importPath(folderPath.trim(), preview.confirmationToken);
       setResult(res.result);
       setResultSkipped(res.skipped);
       setPreview(null);
       setFolderPath('');
-    } catch {
-      setPreviewError('Import failed. Check that the local API is running, then try again.');
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'path_changed') {
+        setPreview(null);
+        setPreviewError('The folder changed after preview. Preview it again before importing.');
+      } else if (err instanceof ApiError && err.code === 'folder_limits_exceeded') {
+        setPreviewError(
+          'This folder exceeded the safe traversal or import limits. Narrow the folder and preview again.',
+        );
+      } else {
+        setPreviewError('Import failed. Check that the local API is running, then try again.');
+      }
     } finally {
       setPathBusy(false);
     }
@@ -290,7 +315,7 @@ export function ImportPage() {
             <p className="muted" style={{ fontSize: 12 }}>
               {preview.totalFiles} file{preview.totalFiles === 1 ? '' : 's'} ·{' '}
               {(preview.totalBytes / (1024 * 1024)).toFixed(1)} MB
-              {preview.truncated ? ' · stopped early — see skipped below' : ''}
+              {preview.truncated ? ' · limit exceeded — import is disabled' : ''}
             </p>
 
             {preview.rides.map((r) => (
@@ -346,7 +371,7 @@ export function ImportPage() {
               <button
                 className="btn primary"
                 onClick={confirmPathImport}
-                disabled={pathBusy || preview.totalFiles === 0}
+                disabled={pathBusy || preview.totalFiles === 0 || preview.truncated}
               >
                 {pathBusy ? 'Importing…' : `Confirm import (${preview.totalFiles} files)`}
               </button>
