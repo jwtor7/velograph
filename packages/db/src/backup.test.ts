@@ -302,7 +302,10 @@ describe('backupDatabase / restoreDatabase', () => {
       writeFileSync(join(dir, '.git'), '');
       const outPath = join(dir, 'nested', 'out.sqlite3');
       const db = openDatabase(':memory:');
-      await expect(backupDatabase(db, outPath)).rejects.toThrow(/checkout/);
+      const failure = await backupDatabase(db, outPath).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe('data_path_inside_checkout');
+      expect((failure as Error).message).not.toContain(dir);
       expect(existsSync(outPath)).toBe(false);
       db.close();
     }));
@@ -828,6 +831,55 @@ describe('backupDatabase / restoreDatabase', () => {
       const destinationProbe = openDatabase(backupPath);
       expect(readRestoreState(destinationProbe)).toBe('previous-backup');
       destinationProbe.close();
+      db.close();
+    }));
+
+  it('rejects an outside symlink alias whose canonical destination is a checkout', () =>
+    withTempDir(async (dir) => {
+      const checkout = join(dir, 'synthetic-checkout');
+      const outside = join(dir, 'outside');
+      mkdirSync(checkout);
+      mkdirSync(outside);
+      writeFileSync(join(checkout, '.git'), '');
+      symlinkSync(checkout, join(outside, 'checkout-alias'), 'dir');
+
+      const outPath = join(outside, 'checkout-alias', 'new', 'out.sqlite3');
+      const db = openDatabase(':memory:');
+      const failure = await backupDatabase(db, outPath).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe('data_path_inside_checkout');
+      expect((failure as Error).message).not.toContain(dir);
+      expect(existsSync(join(checkout, 'new', 'out.sqlite3'))).toBe(false);
+      db.close();
+    }));
+
+  it('rejects a nested symlink alias into a checkout', () =>
+    withTempDir(async (dir) => {
+      const checkout = join(dir, 'synthetic-checkout');
+      const checkoutSubdir = join(checkout, 'private');
+      const outside = join(dir, 'outside', 'nested');
+      mkdirSync(checkoutSubdir, { recursive: true });
+      mkdirSync(outside, { recursive: true });
+      writeFileSync(join(checkout, '.git'), '');
+      symlinkSync(checkoutSubdir, join(outside, 'data-alias'), 'dir');
+
+      const outPath = join(outside, 'data-alias', 'deeper', 'out.sqlite3');
+      const db = openDatabase(':memory:');
+      await expect(backupDatabase(db, outPath)).rejects.toThrow('data_path_inside_checkout');
+      expect(existsSync(join(checkoutSubdir, 'deeper', 'out.sqlite3'))).toBe(false);
+      db.close();
+    }));
+
+  it('creates missing directories for a safe external destination', () =>
+    withTempDir(async (dir) => {
+      const outPath = join(dir, 'safe', 'nested', 'out.sqlite3');
+      const db = openDatabase(':memory:');
+
+      const result = await backupDatabase(db, outPath);
+
+      expect(result.totalPages).toBeGreaterThan(0);
+      expect(existsSync(outPath)).toBe(true);
+      expect(isVelographBackup(outPath)).toBe(true);
       db.close();
     }));
 
