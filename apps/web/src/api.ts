@@ -127,6 +127,33 @@ export interface RepairResultBody {
   analytics: RideAnalytics;
 }
 
+export interface BackupManifestSummary {
+  formatVersion: number;
+  appVersion: string;
+  schemaVersion: string;
+  includedCategories: {
+    analytics: boolean;
+    credentials: boolean;
+    normalizedData: boolean;
+    notesAndTags: boolean;
+    rawSourceFiles: boolean;
+    settings: boolean;
+    sourceMetadata: boolean;
+  };
+}
+
+export interface BackupIntegrityReport {
+  backupFormatVersion: number | null;
+  backupAppVersion: string | null;
+  schemaVersion: string;
+  manifestVerified: boolean;
+  checksumsVerified: boolean;
+  databaseIntegrity: 'ok';
+  foreignKeys: 'ok';
+  legacyBackup: boolean;
+  migrationsApplied: string[];
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -160,13 +187,13 @@ export const api = {
   repairWorkout: (id: number) =>
     request<RepairResultBody>(`/api/workouts/${id}/repair`, { method: 'POST' }),
   backup: (path: string) =>
-    request<{ ok: boolean; totalPages: number }>('/api/backup', {
+    request<{ ok: boolean; totalPages: number; manifest: BackupManifestSummary }>('/api/backup', {
       method: 'POST',
       body: JSON.stringify({ path }),
     }),
   restore: (path: string) =>
-    request<{ ok: boolean }>('/api/restore', {
+    request<{ ok: boolean; report: BackupIntegrityReport }>('/api/restore', {
       method: 'POST',
-      body: JSON.stringify({ path }),
+      body: JSON.stringify({ path, confirmed: true }),
     }),
 };

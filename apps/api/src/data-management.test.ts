@@ -138,6 +138,16 @@ describe('POST /api/backup and /api/restore', () => {
       body: JSON.stringify({ path: backupPath }),
     });
     expect(backup.status).toBe(200);
+    expect(await backup.json()).toEqual(
+      expect.objectContaining({
+        ok: true,
+        manifest: expect.objectContaining({
+          formatVersion: 1,
+          appVersion: '0.1.0',
+          schemaVersion: '0004_backup_manifest.sql',
+        }),
+      }),
+    );
 
     const before = (await (await fetch(`${base}/api/workouts`)).json()) as {
       workouts: { id: number }[];
@@ -150,9 +160,20 @@ describe('POST /api/backup and /api/restore', () => {
     const restore = await fetch(`${base}/api/restore`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ path: backupPath }),
+      body: JSON.stringify({ path: backupPath, confirmed: true }),
     });
     expect(restore.status).toBe(200);
+    expect(await restore.json()).toEqual(
+      expect.objectContaining({
+        ok: true,
+        report: expect.objectContaining({
+          manifestVerified: true,
+          checksumsVerified: true,
+          databaseIntegrity: 'ok',
+          foreignKeys: 'ok',
+        }),
+      }),
+    );
 
     const after = (await (await fetch(`${base}/api/workouts/${victimId}`)).json()) as {
       workout: { id: number };
@@ -164,11 +185,24 @@ describe('POST /api/backup and /api/restore', () => {
     expect(list.workouts).toHaveLength(before.workouts.length);
   });
 
+  it('requires an explicit replace confirmation before inspecting a restore source', async () => {
+    const res = await fetch(`${base}/api/restore`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ path: join(workDir, 'export.sqlite3') }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'restore_confirmation_required' });
+  });
+
   it('rejects restoring from a non-database file', async () => {
     const res = await fetch(`${base}/api/restore`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ path: join(workDir, 'export.sqlite3') + '-does-not-exist' }),
+      body: JSON.stringify({
+        path: join(workDir, 'export.sqlite3') + '-does-not-exist',
+        confirmed: true,
+      }),
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'invalid_backup_file' });

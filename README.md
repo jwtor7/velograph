@@ -31,9 +31,8 @@ pnpm --filter @velograph/web build      # build the web client (required before 
 ### Try it with the synthetic fixtures
 
 **Do not import the synthetic fixtures into a data directory that holds real rides.**
-There is no way to remove a ride yet (deletion is unimplemented, tracked in issue #38) — the
-only way to undo an accidental import today is deleting the whole database. Point this
-walkthrough at an explicit throwaway directory instead, so it can't touch real data:
+Ride deletion exists, but a fixture import can still create several linked workouts. Point this
+walkthrough at an explicit throwaway directory so the demo never touches real data:
 
 ```bash
 export VELO_DATA_DIR=$(mktemp -d)                        # throwaway directory for this demo
@@ -94,6 +93,14 @@ pnpm lint         # eslint
 pnpm typecheck    # tsc --noEmit across every workspace package
 pnpm format       # prettier --check
 node scripts/privacy-scan.mjs --all   # privacy/data-leak scan
+```
+
+Backups are self-contained SQLite files with an app/schema manifest and deterministic table
+checksums. Restore is destructive and therefore requires explicit confirmation:
+
+```bash
+node apps/cli/src/index.ts backup /safe/path/velograph.sqlite3
+node apps/cli/src/index.ts restore /safe/path/velograph.sqlite3 --confirm-replace
 ```
 
 ## Project layout

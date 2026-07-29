@@ -21,11 +21,22 @@ import {
 import { basename, dirname, join, resolve } from 'node:path';
 import { guardAgainstCheckout } from './datadir.ts';
 import { checkpointDatabase, MIGRATIONS_DIR, openDatabase } from './database.ts';
-import { isOrderedMigrationPrefix, listMigrationFiles } from './migrate.ts';
+import {
+  BackupManifestError,
+  verifyBackupManifest,
+  writeBackupManifest,
+  type BackupIntegrityReport,
+  type BackupManifest,
+} from './backup-manifest.ts';
+import { isOrderedMigrationPrefix, listMigrations, type MigrationDescriptor } from './migrate.ts';
 
-export interface BackupResult {
+export interface BackupProgress {
   totalPages: number;
   remainingPages: number;
+}
+
+export interface BackupResult extends BackupProgress {
+  manifest: BackupManifest;
 }
 
 export type BackupValidationErrorCode =
@@ -46,7 +57,7 @@ export class BackupValidationError extends Error {
 
 export interface BackupOptions {
   /** @internal Deterministic fault-injection seam. */
-  stageBackup?: (source: Database, destination: string) => Promise<BackupResult>;
+  stageBackup?: (source: Database, destination: string) => Promise<BackupProgress>;
   /** @internal Deterministic fault-injection seam. */
   afterInstall?: () => void | Promise<void>;
   /** @internal Deterministic fault-injection seam. */
@@ -64,6 +75,9 @@ export type RestoreValidationErrorCode =
   | 'invalid_backup_integrity'
   | 'invalid_backup_migrations'
   | 'invalid_backup_migration'
+  | 'invalid_backup_manifest'
+  | 'invalid_backup_checksum'
+  | 'incompatible_backup_format'
   | 'invalid_backup_schema'
   | 'invalid_backup_foreign_keys'
   | 'restore_stage_failed'
@@ -712,9 +726,9 @@ async function backupDatabaseAtTarget(
     assertBackupOperationStable(db, prepared, operationDirectory);
     createPrivateArtifact(stagedPath);
     assertBackupOperationStable(db, prepared, operationDirectory);
-    let result: BackupResult;
+    let progress: BackupProgress;
     try {
-      result = options.stageBackup
+      progress = options.stageBackup
         ? await options.stageBackup(db, stagedPath)
         : await db.backup(stagedPath);
     } catch (error) {
@@ -727,12 +741,14 @@ async function backupDatabaseAtTarget(
     assertBackupOperationStable(db, prepared, operationDirectory);
 
     let probe: Database | undefined;
+    let manifest!: BackupManifest;
     try {
       probe = new DatabaseConstructor(stagedPath, {
-        readonly: true,
         fileMustExist: true,
       });
       validateCanonicalDatabase(probe);
+      manifest = writeBackupManifest(probe);
+      checkpointDatabase(probe);
     } finally {
       closeQuietly(probe);
     }
@@ -756,7 +772,7 @@ async function backupDatabaseAtTarget(
     await options.afterInstall?.();
     assertBackupParentStable(db, prepared);
 
-    return result;
+    return { ...progress, manifest };
   } catch (error) {
     if (
       installed &&
@@ -818,6 +834,12 @@ interface SchemaRow {
 interface MigrationRow {
   name: unknown;
   appliedAt: unknown;
+  checksum: unknown;
+}
+
+interface RecordedMigration {
+  name: string;
+  checksum: string | null;
 }
 
 interface DatabaseMetadata {
@@ -829,6 +851,7 @@ interface DatabaseMetadata {
 let canonicalDefinition:
   | {
       migrations: string[];
+      migrationDescriptors: MigrationDescriptor[];
       schema: string;
     }
   | undefined;
@@ -845,12 +868,18 @@ function schemaSignature(db: Database): string {
   return JSON.stringify(rows);
 }
 
-function currentCanonicalDefinition(): { migrations: string[]; schema: string } {
+function currentCanonicalDefinition(): {
+  migrations: string[];
+  migrationDescriptors: MigrationDescriptor[];
+  schema: string;
+} {
   if (canonicalDefinition) return canonicalDefinition;
   const canonical = openDatabase(':memory:');
   try {
+    const migrationDescriptors = listMigrations(MIGRATIONS_DIR);
     canonicalDefinition = {
-      migrations: listMigrationFiles(MIGRATIONS_DIR),
+      migrations: migrationDescriptors.map((migration) => migration.name),
+      migrationDescriptors,
       schema: schemaSignature(canonical),
     };
     return canonicalDefinition;
@@ -871,14 +900,22 @@ function validateIntegrity(db: Database): void {
   }
 }
 
-function recordedMigrations(db: Database): string[] {
+function recordedMigrations(db: Database): RecordedMigration[] {
   try {
     const table = db
       .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'schema_migrations'")
       .get();
     if (!table) throw new RestoreValidationError('invalid_backup_migrations');
+    const columns = db.prepare('PRAGMA table_info(schema_migrations)').all() as {
+      name: string;
+    }[];
+    const hasChecksum = columns.some((column) => column.name === 'checksum');
     const rows = db
-      .prepare('SELECT name, applied_at AS appliedAt FROM schema_migrations ORDER BY rowid')
+      .prepare(
+        hasChecksum
+          ? 'SELECT name, applied_at AS appliedAt, checksum FROM schema_migrations ORDER BY rowid'
+          : 'SELECT name, applied_at AS appliedAt, NULL AS checksum FROM schema_migrations ORDER BY rowid',
+      )
       .all() as MigrationRow[];
     if (
       rows.some(
@@ -886,36 +923,47 @@ function recordedMigrations(db: Database): string[] {
           typeof row.name !== 'string' ||
           typeof row.appliedAt !== 'number' ||
           !Number.isSafeInteger(row.appliedAt) ||
-          row.appliedAt < 0,
+          row.appliedAt < 0 ||
+          !(
+            row.checksum === null ||
+            (typeof row.checksum === 'string' && /^[a-f0-9]{64}$/.test(row.checksum))
+          ),
       )
     ) {
       throw new RestoreValidationError('invalid_backup_migrations');
     }
-    return rows.map((row) => row.name as string);
+    return rows.map((row) => ({
+      name: row.name as string,
+      checksum: row.checksum as string | null,
+    }));
   } catch (error) {
     if (error instanceof RestoreValidationError) throw error;
     throw new RestoreValidationError('invalid_backup_migrations');
   }
 }
 
-function validateMigrationPrefix(db: Database, available: string[]): string[] {
+function validateMigrationPrefix(
+  db: Database,
+  available: MigrationDescriptor[],
+): RecordedMigration[] {
   const recorded = recordedMigrations(db);
-  if (!isOrderedMigrationPrefix(recorded, available)) {
-    throw new RestoreValidationError('invalid_backup_migrations');
-  }
-  return recorded;
-}
-
-function validateCanonicalDatabase(db: Database): void {
-  const canonical = currentCanonicalDefinition();
-  validateIntegrity(db);
-  const migrations = validateMigrationPrefix(db, canonical.migrations);
   if (
-    migrations.length !== canonical.migrations.length ||
-    migrations.some((name, index) => name !== canonical.migrations[index])
+    !isOrderedMigrationPrefix(
+      recorded.map((migration) => migration.name),
+      available.map((migration) => migration.name),
+    )
   ) {
     throw new RestoreValidationError('invalid_backup_migrations');
   }
+  recorded.forEach((migration, index) => {
+    if (migration.checksum !== null && migration.checksum !== available[index]!.checksum) {
+      throw new RestoreValidationError('invalid_backup_migration');
+    }
+  });
+  return recorded;
+}
+
+function validateForeignKeys(db: Database): void {
   let foreignKeyViolations: unknown[];
   try {
     foreignKeyViolations = db.pragma('foreign_key_check') as unknown[];
@@ -925,12 +973,36 @@ function validateCanonicalDatabase(db: Database): void {
   if (foreignKeyViolations.length !== 0) {
     throw new RestoreValidationError('invalid_backup_foreign_keys');
   }
+}
+
+function validateCanonicalDatabase(db: Database): void {
+  const canonical = currentCanonicalDefinition();
+  validateIntegrity(db);
+  const migrations = validateMigrationPrefix(db, canonical.migrationDescriptors);
+  if (
+    migrations.length !== canonical.migrationDescriptors.length ||
+    migrations.some(
+      (migration, index) =>
+        migration.name !== canonical.migrationDescriptors[index]!.name ||
+        migration.checksum !== canonical.migrationDescriptors[index]!.checksum,
+    )
+  ) {
+    throw new RestoreValidationError('invalid_backup_migrations');
+  }
+  validateForeignKeys(db);
   if (schemaSignature(db) !== canonical.schema) {
     throw new RestoreValidationError('invalid_backup_schema');
   }
 }
 
-function openBackupSource(path: string): Database {
+interface OpenBackupSource {
+  database: Database;
+  manifest: BackupManifest | null;
+  legacyBackup: boolean;
+  migrations: RecordedMigration[];
+}
+
+function openBackupSource(path: string): OpenBackupSource {
   let probe: Database | undefined;
   try {
     probe = new DatabaseConstructor(path, { readonly: true, fileMustExist: true });
@@ -939,8 +1011,18 @@ function openBackupSource(path: string): Database {
   }
   try {
     validateIntegrity(probe);
-    validateMigrationPrefix(probe, currentCanonicalDefinition().migrations);
-    return probe;
+    const migrations = validateMigrationPrefix(
+      probe,
+      currentCanonicalDefinition().migrationDescriptors,
+    );
+    validateForeignKeys(probe);
+    const verification = verifyBackupManifest(probe);
+    return {
+      database: probe,
+      manifest: verification.manifest,
+      legacyBackup: verification.legacyBackup,
+      migrations,
+    };
   } catch (error) {
     try {
       probe.close();
@@ -948,24 +1030,27 @@ function openBackupSource(path: string): Database {
       // Preserve the privacy-safe validation error.
     }
     if (error instanceof RestoreValidationError) throw error;
+    if (error instanceof BackupManifestError) {
+      throw new RestoreValidationError(error.code);
+    }
     throw new RestoreValidationError('invalid_backup_file');
   }
 }
 
 /**
- * True when `path` is a complete database at the current canonical schema.
- * Restore additionally supports older known migration prefixes by migrating a
- * private staged copy before performing this same canonical comparison.
+ * True when `path` is a self-verifying export or a recognized legacy backup.
+ * A current-schema live or internal recovery database with an empty manifest
+ * table is deliberately not presented as an exported backup.
  */
 export function isVelographBackup(path: string): boolean {
   if (!existsSync(path)) return false;
   try {
-    const probe = openBackupSource(path);
+    const source = openBackupSource(path);
     try {
-      validateCanonicalDatabase(probe);
+      validateCanonicalDatabase(source.database);
       return true;
     } finally {
-      probe.close();
+      source.database.close();
     }
   } catch {
     return false;
@@ -1359,7 +1444,11 @@ async function reopenOriginal(
     assertRestoreOperationStable(prepared, operation, currentIdentity);
     createPrivateArtifact(recoveryInstallPath);
     assertRestoreOperationStable(prepared, operation, currentIdentity);
-    source = openBackupSource(rollbackPath);
+    source = new DatabaseConstructor(rollbackPath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    validateCanonicalDatabase(source);
     await source.backup(recoveryInstallPath);
     assertRestoreOperationStable(prepared, operation, currentIdentity);
     if (!regularFileHasIdentity(rollbackPath, rollbackIdentity)) {
@@ -1421,15 +1510,21 @@ async function reopenOriginal(
  * handle reference for either the successful return value or
  * `RestoreDatabaseError.recoveredDatabase`.
  */
-export async function restoreDatabase(
+export interface RestoreResult {
+  database: Database;
+  report: BackupIntegrityReport;
+}
+
+export async function restoreDatabaseWithReport(
   liveDb: Database,
   dbPath: string,
   backupPath: string,
   options: RestoreOptions = {},
-): Promise<Database> {
+): Promise<RestoreResult> {
   const prepared = prepareRestoreTarget(liveDb, dbPath);
   const resolvedBackup = resolve(backupPath);
-  const source = openBackupSource(resolvedBackup);
+  const sourceInfo = openBackupSource(resolvedBackup);
+  const source = sourceInfo.database;
 
   let operationDirectory: PrivateOperationDirectory | undefined;
   let stagedPath: string | undefined;
@@ -1486,7 +1581,7 @@ export async function restoreDatabase(
         fileMustExist: true,
       });
       validateIntegrity(preMigration);
-      validateMigrationPrefix(preMigration, currentCanonicalDefinition().migrations);
+      validateMigrationPrefix(preMigration, currentCanonicalDefinition().migrationDescriptors);
     } finally {
       closeQuietly(preMigration);
     }
@@ -1571,7 +1666,23 @@ export async function restoreDatabase(
       installedIdentity,
       options.afterReopen,
     );
-    return restored;
+    const canonical = currentCanonicalDefinition();
+    return {
+      database: restored,
+      report: {
+        backupFormatVersion: sourceInfo.manifest?.formatVersion ?? null,
+        backupAppVersion: sourceInfo.manifest?.appVersion ?? null,
+        schemaVersion: canonical.migrations.at(-1) ?? 'uninitialized',
+        manifestVerified: sourceInfo.manifest !== null,
+        checksumsVerified: sourceInfo.manifest !== null,
+        databaseIntegrity: 'ok',
+        foreignKeys: 'ok',
+        legacyBackup: sourceInfo.legacyBackup,
+        migrationsApplied: canonical.migrations
+          .slice(sourceInfo.migrations.length)
+          .map((migration) => migration),
+      },
+    };
   } catch (error) {
     if (!liveClosed) {
       throw normalizePreCutoverError(error);
@@ -1605,4 +1716,13 @@ export async function restoreDatabase(
       removePrivateOperationDirectory(operationDirectory);
     }
   }
+}
+
+export async function restoreDatabase(
+  liveDb: Database,
+  dbPath: string,
+  backupPath: string,
+  options: RestoreOptions = {},
+): Promise<Database> {
+  return (await restoreDatabaseWithReport(liveDb, dbPath, backupPath, options)).database;
 }
