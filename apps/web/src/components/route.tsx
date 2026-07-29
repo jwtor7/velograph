@@ -1,0 +1,194 @@
+import { useId } from 'react';
+import type { RoutePoint } from '../api.ts';
+import { buildLineSpec, buildRouteSpec, routeIndexAt } from '../chartspec/spec.ts';
+
+/**
+ * Tile-free route canvas (ROUTE-002/003/004): recorded geometry over a neutral
+ * grid, gradient polyline start→finish, segment gaps preserved, position
+ * cursor synchronized with the charts. Zero network requests.
+ */
+export function RoutePanel({
+  segments,
+  cursorT,
+  height = 320,
+}: {
+  segments: { points: RoutePoint[] }[];
+  cursorT: number | null;
+  height?: number;
+}) {
+  const W = 560;
+  const gradId = useId();
+  const spec = buildRouteSpec(segments, W, height, 24);
+  if (!spec) {
+    return (
+      <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+        No route recorded for this ride.
+      </p>
+    );
+  }
+
+  let cursorPos: [number, number] | null = null;
+  if (cursorT != null) {
+    const idx = routeIndexAt(segments, cursorT);
+    if (idx != null) {
+      const flat = segments.flatMap((s) => s.points);
+      const p = flat[idx];
+      if (p) cursorPos = spec.project(p.lat, p.lon);
+    }
+  }
+
+  const gridLines = [];
+  for (let x = 40; x < W; x += 40)
+    gridLines.push(<line key={`v${x}`} x1={x} y1={0} x2={x} y2={height} />);
+  for (let y = 40; y < height; y += 40)
+    gridLines.push(<line key={`h${y}`} x1={0} y1={y} x2={W} y2={y} />);
+
+  return (
+    <svg viewBox={`0 0 ${W} ${height}`} width="100%" role="img" aria-label="route map">
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stopColor="var(--vg-route-start)" />
+          <stop offset="1" stopColor="var(--vg-route-end)" />
+        </linearGradient>
+      </defs>
+      <g stroke="var(--vg-border)" strokeWidth="0.5" opacity="0.6">
+        {gridLines}
+      </g>
+      {spec.segmentPaths.map((d, i) => (
+        <path
+          key={i}
+          d={d}
+          fill="none"
+          stroke={`url(#${gradId})`}
+          strokeWidth="2.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      ))}
+      {spec.start && (
+        <circle
+          cx={spec.start[0]}
+          cy={spec.start[1]}
+          r="5"
+          fill="var(--vg-route-start)"
+          stroke="var(--vg-bg)"
+          strokeWidth="2"
+        />
+      )}
+      {spec.finish && (
+        <circle
+          cx={spec.finish[0]}
+          cy={spec.finish[1]}
+          r="5"
+          fill="var(--vg-bg)"
+          stroke="#fff"
+          strokeWidth="2"
+        />
+      )}
+      {cursorPos && (
+        <circle
+          cx={cursorPos[0]}
+          cy={cursorPos[1]}
+          r="6"
+          fill="none"
+          stroke="var(--vg-brand-teal)"
+          strokeWidth="2"
+        />
+      )}
+    </svg>
+  );
+}
+
+export function ElevationProfile({
+  segments,
+  cursorT,
+  height = 110,
+}: {
+  segments: { points: RoutePoint[] }[];
+  cursorT: number | null;
+  height?: number;
+}) {
+  const W = 560;
+  const gradId = useId();
+  const pts = segments
+    .flatMap((s) => s.points)
+    .filter((p) => p.ele != null && p.t != null)
+    .map((p) => ({ t: p.t, v: p.ele! }));
+  const spec = buildLineSpec(pts, W, height);
+  if (!spec) {
+    return (
+      <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+        No elevation data recorded.
+      </p>
+    );
+  }
+  const cursorX = cursorT != null ? ((cursorT - spec.tMin) / (spec.tMax - spec.tMin)) * W : null;
+  return (
+    <svg viewBox={`0 0 ${W} ${height}`} width="100%" role="img" aria-label="elevation profile">
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="var(--vg-ch-elevation-fill)" stopOpacity="0.8" />
+          <stop offset="1" stopColor="var(--vg-ch-elevation-fill)" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={spec.area} fill={`url(#${gradId})`} />
+      <path d={spec.path} fill="none" stroke="var(--vg-ch-elevation)" strokeWidth="1.6" />
+      {cursorX != null && cursorX >= 0 && cursorX <= W && (
+        <line
+          x1={cursorX}
+          y1="0"
+          x2={cursorX}
+          y2={height}
+          stroke="var(--vg-text-muted)"
+          strokeWidth="1"
+          strokeDasharray="3 3"
+        />
+      )}
+    </svg>
+  );
+}
+
+const ZONE_COLORS = [
+  'var(--vg-z1)',
+  'var(--vg-z2)',
+  'var(--vg-z3)',
+  'var(--vg-z4)',
+  'var(--vg-z5)',
+  'var(--vg-z6)',
+];
+
+export function ZoneStrip({
+  zones,
+}: {
+  zones: { zone: number; label: string; seconds: number; share: number }[];
+}) {
+  const fmt = (s: number) => {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const ss = String(Math.floor(s % 60)).padStart(2, '0');
+    return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+  };
+  return (
+    <div className="zone-strip">
+      {zones.map((z, i) => (
+        <div className="zone-cell" key={z.zone}>
+          <div className="zone-label">{z.label}</div>
+          <div className="zone-time">
+            {fmt(z.seconds)}{' '}
+            <span className="muted" style={{ fontWeight: 500, fontSize: 11 }}>
+              {Math.round(z.share * 100)}%
+            </span>
+          </div>
+          <div className="zone-bar">
+            <div
+              style={{
+                width: `${Math.max(2, z.share * 100)}%`,
+                background: ZONE_COLORS[i] ?? 'var(--vg-z6)',
+              }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}

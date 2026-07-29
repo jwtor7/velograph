@@ -145,11 +145,26 @@ function intervalWeights(samples: MetricSample[]): number[] {
   return [...gaps, median];
 }
 
+/**
+ * Recorded point speeds; when none are recorded, speeds derived from
+ * successive positions (haversine / dt, intervals ≤ the gap cap only).
+ */
 function collectRouteSpeeds(route: RouteSegment[]): number[] {
   const speeds: number[] = [];
   for (const seg of route) {
     for (const p of seg.points) {
       if (p.speed != null && Number.isFinite(p.speed)) speeds.push(p.speed);
+    }
+  }
+  if (speeds.length > 0) return speeds;
+  for (const seg of route) {
+    for (let i = 0; i < seg.points.length - 1; i++) {
+      const a = seg.points[i]!;
+      const b = seg.points[i + 1]!;
+      if (a.t == null || b.t == null || b.t <= a.t) continue;
+      const dtS = (b.t - a.t) / 1000;
+      if (dtS * 1000 > COVERAGE_GAP_CAP_MS) continue;
+      speeds.push(haversineM(a.lat, a.lon, b.lat, b.lon) / dtS);
     }
   }
   return speeds;

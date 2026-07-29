@@ -1,0 +1,25 @@
+{
+  "name": "@velograph/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Velograph web client — offline, bundled assets only",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.2.6",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.7.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.0.0"
+  }
+}
