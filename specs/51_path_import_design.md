@@ -11,12 +11,15 @@
   transaction (IMP-001, IMP-007).
 - While any traversal or group limit truncates a preview, the UI and API shall refuse
   confirmation; partial previews are never import plans.
-- While traversal encounters a regular file outside the supported CSV/GPX/ZIP allow-list, the
-  preview and confirmation result shall report it as `unsupported_file_type` rather than silently
-  omit it.
+- While traversal encounters a regular file, or a symlink alias to an in-tree regular file, outside
+  the supported CSV/GPX/ZIP allow-list, the preview and confirmation result shall report it as
+  `unsupported_file_type` rather than silently omit it. Containment and target type take precedence
+  over extension classification.
 - While an import plan is being consumed, when the root or a planned file changes identity,
   canonical location, type, or size, the system shall fail closed with a value-free error before
-  importing bytes from the changed entry.
+  importing bytes from the changed entry. A planned entry that disappears, becomes dangling, or
+  gains an invalid path component shall return `409 file_changed`; genuine access failures remain
+  `file_unreadable`.
 - While confirmation cannot recreate a previously previewed root because it was deleted or replaced
   by a non-directory, the API shall return `409 path_changed` so the UI clears the stale preview.
 - While `pnpm app:dev` is running, when the operating-system browser launcher cannot be spawned,
@@ -45,11 +48,14 @@
 - Preview hashes the complete private manifest, grouping result, skips, limits, and root identity.
   Confirmation repeats the walk, compares the digest, and refuses a mismatch or any truncation
   before source reads or database writes.
-- Unsupported regular files remain part of the private manifest and are returned as
-  `unsupported_file_type` skip records. Confirmation-time missing or non-directory roots normalize
-  to the same `path_changed` conflict used for other stale manifests.
+- Unsupported regular files and in-tree symlink aliases remain part of the private manifest and are
+  returned as `unsupported_file_type` skip records. External aliases remain
+  `symlink_outside_tree`. Confirmation-time missing or non-directory roots normalize to the same
+  `path_changed` conflict used for other stale manifests.
 - A lazy group-loader iterator revalidates the canonical root and opens each planned file by
-  descriptor. It checks descriptor identity and size before and after an exact-size bounded read.
+  descriptor. It checks descriptor identity and size before and after an exact-size bounded read,
+  and normalizes missing, dangling, or type-invalid planned entries to `file_changed` so the client
+  clears its stale preview.
 - `runImportGroups` consumes that iterator inside one existing SQLite transaction. The previous
   `runImport` API delegates to one group, preserving loose-file and CLI behavior.
 - ZIP extraction parses the central directory and matching local headers before inflation,
@@ -106,7 +112,7 @@
 
 ## Verification
 
-- `pnpm test`: 32 test files and 231 tests pass, including synthetic traversal bounds,
+- `pnpm test`: 32 test files and 235 tests pass, including synthetic traversal bounds,
   exact-manifest confirmation, mutation/addition/replacement rejection with no writes, ZIP
   preflight/decoder limits, complete metric/route coverage, transaction rollback, and
   browser-launch lifecycle cases.
