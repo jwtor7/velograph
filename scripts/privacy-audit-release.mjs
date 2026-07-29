@@ -128,11 +128,12 @@ function report(scope, violations) {
   return 1;
 }
 
-function normalizedArchivePath(path) {
-  const normalized = path
-    .replaceAll('\\', '/')
-    .replace(/^\.\/+/, '')
-    .replace(/^\/+/, '');
+export function normalizedArchivePath(path) {
+  const separatorNormalized = path.replaceAll('\\', '/');
+  if (separatorNormalized.startsWith('/') || /^[A-Za-z]:\//.test(separatorNormalized)) {
+    fail('unsafe_archive_entry_path');
+  }
+  const normalized = separatorNormalized.replace(/^\.\/+/, '');
   const segments = normalized.split('/');
   if (
     normalized.length === 0 ||
@@ -378,6 +379,10 @@ function listTarEntries(archive, code) {
   const entries = commandText('tar', ['-tf', archive], code).split('\n').filter(Boolean);
   const index = new Map();
   for (const entry of entries) {
+    // BuildKit-generated layer archives can include the conventional `./`
+    // root-directory marker. It names no payload and is safe to ignore; all
+    // descendants still pass the strict traversal checks below.
+    if (entry === '.' || entry === './') continue;
     const canonical = normalizedArchivePath(entry);
     if (index.has(canonical)) fail('duplicate_archive_entry');
     index.set(canonical, entry);

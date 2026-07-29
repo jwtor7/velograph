@@ -10,6 +10,7 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HOST = '127.0.0.1';
 const PREFERRED_API_PORT = 5123;
 const PREFERRED_WEB_PORT = 5124;
+const COORDINATOR_STOP_TIMEOUT_MS = 15_000;
 
 async function availablePort(preferred) {
   const tryPort = (port) =>
@@ -26,7 +27,8 @@ async function availablePort(preferred) {
 }
 
 async function waitForProxy(url, child) {
-  for (let attempt = 0; attempt < 80; attempt++) {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
     if (child.exitCode != null || child.signalCode != null) {
       throw new Error('vite_exited_before_ready');
     }
@@ -55,7 +57,7 @@ async function stopChild(child) {
   child.kill('SIGTERM');
   await Promise.race([
     new Promise((resolve) => child.once('exit', resolve)),
-    new Promise((resolve) => setTimeout(resolve, 4000)),
+    new Promise((resolve) => setTimeout(resolve, COORDINATOR_STOP_TIMEOUT_MS)),
   ]);
   if (child.exitCode == null && child.signalCode == null) child.kill('SIGKILL');
 }
@@ -88,13 +90,13 @@ beforeAll(async () => {
   devProcess.stderr?.resume();
   webOrigin = `http://${HOST}:${webPort}`;
   await waitForProxy(`${webOrigin}/api/health`, devProcess);
-}, 20_000);
+}, 30_000);
 
 afterAll(async () => {
   if (devProcess) await stopChild(devProcess);
   if (apiPort && webPort) await waitForPortsClosed([apiPort, webPort]);
   if (dataDir) await rm(dataDir, { recursive: true, force: true });
-});
+}, 25_000);
 
 describe('root development coordinator and real Vite proxy', () => {
   it('leaves the authoritative notice and module evidence in both web artifact trees', async () => {

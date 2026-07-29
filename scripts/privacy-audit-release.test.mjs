@@ -12,6 +12,7 @@ import {
   auditArtifact,
   auditOciArchive,
   auditProductionDeploy,
+  normalizedArchivePath,
   scanHistoryContent,
 } from './privacy-audit-release.mjs';
 
@@ -136,8 +137,10 @@ function createSyntheticOciArchive({
     );
   }
   const layerTar = join(directory, 'layer.tar');
-  const initialRoots = omitSystemNotices ? ['app'] : ['app', 'usr'];
-  execFileSync('tar', ['-cf', layerTar, '-C', layerRoot, ...initialRoots]);
+  // Match BuildKit layer archives, which include a harmless `./` root marker.
+  // The release auditor must ignore only that marker while still validating
+  // every descendant path.
+  execFileSync('tar', ['-cf', layerTar, '-C', layerRoot, '.']);
   const layer = writeBlob(
     layout,
     gzipSync(readFileSync(layerTar)),
@@ -305,6 +308,13 @@ describe('release privacy artifact audit', () => {
     expect(() =>
       assertAuditableSize(MAX_AUDIT_ENTRY_BYTES + 1, 'synthetic_entry_exceeds_64_mib'),
     ).toThrow('synthetic_entry_exceeds_64_mib');
+  });
+
+  it('rejects unsafe archive paths without ignoring root-marker lookalikes', () => {
+    expect(normalizedArchivePath('./app/api/release.txt')).toBe('app/api/release.txt');
+    for (const path of ['../escape', '/absolute', '\\\\server\\share', 'C:\\absolute', '.\\']) {
+      expect(() => normalizedArchivePath(path)).toThrow('unsafe_archive_entry_path');
+    }
   });
 
   it('audits an exact two-platform OCI archive with SBOM and provenance', async () => {
