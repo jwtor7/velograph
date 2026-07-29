@@ -26,6 +26,7 @@ export function App() {
             key={n.to}
             to={n.to}
             end={n.to === '/'}
+            aria-label={n.label}
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
           >
             {n.icon}

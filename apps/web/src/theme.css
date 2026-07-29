@@ -685,11 +685,24 @@ select {
 }
 
 @media (max-width: 520px) {
+  .main {
+    padding: 16px 12px 32px;
+  }
+  .page-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .page-head > .row {
+    width: 100%;
+  }
   .route-map-button {
     min-height: 44px;
   }
   .route-map {
     min-height: 320px;
+  }
+  .route-map .leaflet-tooltip.route-map-label-direction {
+    display: none;
   }
 }
 
