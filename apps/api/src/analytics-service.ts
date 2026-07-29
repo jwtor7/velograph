@@ -126,16 +126,15 @@ export function getOrComputeAnalytics(
  * Repair a workout (issue #38): re-derive its span from the normalized data
  * it already owns (metric_series/route_points — re-running full association
  * from raw source bytes isn't possible once a file is hash-only, PRD IMP
- * retention default), drop analytics snapshots left over from a previous
- * `FORMULA_VERSION`, and force a fresh snapshot under the current formula
- * version. Returns null when the workout does not exist.
+ * retention default), and force a fresh snapshot under the current formula
+ * version. Prior formula snapshots remain immutable provenance records.
+ * Returns null when the workout does not exist.
  */
 export function repairWorkout(db: Database, workoutId: number, now: number): RideAnalytics | null {
   const repo = new Repository(db);
   return repo.transaction(() => {
     if (!repo.getWorkout(workoutId)) return null;
     repo.recomputeWorkoutSpan(workoutId);
-    repo.deleteStaleAnalyticsSnapshots(workoutId, FORMULA_VERSION);
 
     const input = loadWorkoutData(db, workoutId);
     if (!input) return null;

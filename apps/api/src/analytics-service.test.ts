@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_ANALYTICS_SETTINGS } from '@velograph/analytics';
-import { openDatabase, Repository } from '@velograph/db';
+import { DEFAULT_ANALYTICS_SETTINGS, FORMULA_VERSION } from '@velograph/analytics';
+import { loadWorkoutData, openDatabase, Repository, saveAnalyticsSnapshot } from '@velograph/db';
+import { sha256Hex, stableStringify } from '@velograph/shared';
 import {
+  getOrComputeAnalytics,
   InvalidAppSettingsError,
   loadSettings,
   mergeAppSettings,
   parseAppSettings,
+  repairWorkout,
   saveSettings,
   SETTINGS_KEY,
 } from './analytics-service.ts';
@@ -70,6 +73,57 @@ describe('analytics settings storage boundary', () => {
       elevationHysteresisM: Number.POSITIVE_INFINITY,
     });
     expect(() => loadSettings(db)).toThrow(InvalidAppSettingsError);
+    db.close();
+  });
+
+  it('computes analytics-v2 separately without overwriting an analytics-v1 snapshot', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const workoutId = repo.createWorkout(
+      'outdoor_cycling',
+      Date.UTC(2032, 1, 2, 10),
+      Date.UTC(2032, 1, 2, 11),
+      'synthetic-test',
+    );
+    const input = loadWorkoutData(db, workoutId)!;
+    const settings = loadSettings(db);
+    const settingsHash = sha256Hex(stableStringify(settings));
+    const inputHash = sha256Hex(stableStringify(input));
+    saveAnalyticsSnapshot(db, {
+      workoutId,
+      formulaVersion: 'analytics-v1',
+      settingsHash,
+      inputHash,
+      resultJson: '{"formulaVersion":"analytics-v1","synthetic":"preserved"}',
+      createdAt: 1,
+    });
+
+    const result = getOrComputeAnalytics(db, workoutId, 2)!;
+    expect(FORMULA_VERSION).toBe('analytics-v2');
+    expect(result.formulaVersion).toBe('analytics-v2');
+    const snapshots = db
+      .prepare(
+        `SELECT formula_version, result_json, created_at
+         FROM analytics_snapshots WHERE workout_id = ? ORDER BY formula_version`,
+      )
+      .all(workoutId) as {
+      formula_version: string;
+      result_json: string;
+      created_at: number;
+    }[];
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[0]).toEqual({
+      formula_version: 'analytics-v1',
+      result_json: '{"formulaVersion":"analytics-v1","synthetic":"preserved"}',
+      created_at: 1,
+    });
+    expect(snapshots[1]!.formula_version).toBe('analytics-v2');
+    expect(repairWorkout(db, workoutId, 3)?.formulaVersion).toBe('analytics-v2');
+    expect(
+      db
+        .prepare('SELECT COUNT(*) AS count FROM analytics_snapshots WHERE workout_id = ?')
+        .get(workoutId),
+    ).toEqual({ count: 2 });
     db.close();
   });
 });

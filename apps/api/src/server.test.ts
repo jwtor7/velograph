@@ -80,7 +80,7 @@ describe('loopback API', () => {
       'heart_rate',
     ]);
     expect(body.route.length).toBeGreaterThan(0);
-    expect(body.analytics.formulaVersion).toBe('analytics-v1');
+    expect(body.analytics.formulaVersion).toBe('analytics-v2');
   });
 
   it('serves trends aggregates', async () => {
