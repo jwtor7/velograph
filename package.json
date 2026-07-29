@@ -1,0 +1,30 @@
+{
+  "name": "velograph-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Velograph — local-first cycling analytics for Apple Health exports",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.17.0",
+  "scripts": {
+    "prepare": "git config core.hooksPath .githooks",
+    "format": "prettier --check .",
+    "format:fix": "prettier --write .",
+    "lint": "eslint .",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "vitest run",
+    "privacy:scan": "node scripts/privacy-scan.mjs --all",
+    "privacy:scan:staged": "node scripts/privacy-scan.mjs --staged",
+    "fixtures:generate": "node scripts/generate-fixtures.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.32.0",
+    "eslint": "^9.32.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.38.0",
+    "vitest": "^3.2.4"
+  }
+}
