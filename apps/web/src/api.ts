@@ -118,6 +118,35 @@ export type BasemapResponse =
       bounds?: readonly [number, number, number, number];
     };
 
+export interface FolderRideGroup {
+  rideKey: string;
+  workoutType: string;
+  stampHint: string;
+  files: { relativePath: string; name: string; sizeBytes: number; label: string; format: string }[];
+}
+
+export interface FolderUngroupedItem {
+  relativePath: string;
+  name: string;
+  sizeBytes: number;
+  classification: 'zip_archive' | 'unrecognized_filename';
+}
+
+export interface FolderSkipItem {
+  relativePath: string;
+  reason: string;
+}
+
+export interface FolderPreviewBody {
+  root: string;
+  rides: FolderRideGroup[];
+  ungrouped: FolderUngroupedItem[];
+  skipped: FolderSkipItem[];
+  totalFiles: number;
+  totalBytes: number;
+  truncated: boolean;
+}
+
 export interface ImportResultBody {
   batchId: number;
   imported: number;
@@ -195,6 +224,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ files }),
     }),
+  importPathPreview: (path: string) =>
+    request<{ preview: FolderPreviewBody }>('/api/import/path/inventory', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+  importPath: (path: string) =>
+    request<{ result: ImportResultBody; skipped: FolderSkipItem[]; truncated: boolean }>(
+      '/api/import/path',
+      { method: 'POST', body: JSON.stringify({ path }) },
+    ),
   deleteWorkout: (id: number) =>
     request<DeleteResultBody>(`/api/workouts/${id}`, { method: 'DELETE' }),
   repairWorkout: (id: number) =>

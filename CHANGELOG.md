@@ -30,6 +30,29 @@ is pre-1.0, and for the release procedure.
   together, owns both foreground processes, and stops both on exit. The Vite proxy rewrites
   only its configured loopback Origin and Host for API requests, preserving the API's strict
   DNS-rebinding and cross-origin checks. CI now also proves the production web build (#25).
+- **Path-based folder import.** The web client can import a Health Auto Export folder by
+  path instead of routing every file through the browser as base64: paste the folder path,
+  preview the files it finds (grouped by ride — workout type + the filename's trailing
+  timestamp — so companion metric files are obviously one ride before anything imports),
+  then confirm. The API reads the folder directly from disk, recursing into subfolders,
+  bounded by a file-count and total-byte cap; a symlinked directory is never followed, and a
+  symlinked file is only followed when its target stays inside the walked tree. Anything the
+  cap or a symlink rule excludes is reported, not silently dropped. The destination path is
+  rejected when it resolves inside the repository checkout, reusing `guardAgainstCheckout`
+  (the same guard `VELO_DATA_DIR` and database backups use). New endpoints:
+  `POST /api/import/path/inventory` (preview) and `POST /api/import/path` (import), both
+  loopback-only with the same CSRF header and hardened headers as every other mutating route.
+  Folder drag-and-drop (`webkitGetAsEntry`) reads a dropped folder's files into the existing
+  multi-file list, since browsers do not expose a dropped folder's real filesystem path to a
+  page — only pasting the path does. The existing multi-file picker and loose-file
+  drag-and-drop are unchanged (#51).
+- **`pnpm app:dev`**: the foreground counterpart to `app:start` — builds the web client,
+  runs the API in the foreground of the current terminal, opens the browser once it answers,
+  and shuts down cleanly on Ctrl-C (SIGINT) or SIGTERM: the API child is signaled, waited on,
+  and force-killed after a grace period if it doesn't exit, so nothing is left holding the
+  port. One command starts everything; killing it tears everything down. The background
+  commands (`app:start`/`app:stop`/`app:status`/`app:restart`) are unchanged and remain the
+  right choice for a server that should outlive the current shell (#51).
 - **Local server lifecycle commands**: `pnpm app:start`, `app:stop`, `app:status`, and
   `app:restart`. `app:start` builds the web client, refuses to start when a server already
   holds the port, and waits for the API to actually answer before reporting success.
@@ -122,6 +145,13 @@ is pre-1.0, and for the release procedure.
   Explicit zone-share percentage representations remain supported without allowing unrelated
   metrics with colliding values to validate a claim (#34, #35).
 
+- **The `webkitdirectory` folder picker could not be confirmed on macOS.** Removing its
+  `accept` attribute (#49) was necessary but not sufficient — the OS picker still could not
+  be confirmed from inside the target folder on macOS, reported as still unusable against a
+  real export. The button is removed: `webkitdirectory` is non-standard, behaves differently
+  per browser, and gave no way to preview what would be imported before committing to it.
+  Folder import is now path-based (see above), which works the same way everywhere and
+  previews first (#51).
 - **"Choose export folder" could not select a folder.** The directory input carried
   `accept=".csv,.gpx,.zip"`; since a directory matches none of those extensions, the OS
   picker greyed folders out. Because Health Auto Export writes one CSV per metric, this

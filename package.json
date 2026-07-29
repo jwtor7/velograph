@@ -20,6 +20,7 @@
     "app:stop": "node scripts/app.mjs stop",
     "app:status": "node scripts/app.mjs status",
     "app:restart": "node scripts/app.mjs restart",
+    "app:dev": "node scripts/app.mjs dev",
     "privacy:scan": "node scripts/privacy-scan.mjs --all",
     "privacy:scan:staged": "node scripts/privacy-scan.mjs --staged",
     "fixtures:generate": "node scripts/generate-fixtures.mjs"

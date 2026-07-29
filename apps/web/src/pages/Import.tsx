@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, type ImportResultBody } from '../api.ts';
+import { api, type FolderPreviewBody, type FolderSkipItem, type ImportResultBody } from '../api.ts';
 
 interface Picked {
   name: string;
@@ -10,15 +10,66 @@ interface Picked {
 
 const ACCEPT = '.csv,.gpx,.zip';
 
+/**
+ * Recursively read every file entry under a dropped `FileSystemEntry`
+ * (issue #51: folder drag-and-drop via `webkitGetAsEntry`). Browsers do not
+ * expose the OS-absolute path of a dropped folder — that's a platform
+ * limitation, not something this app can work around — so a dropped folder
+ * is read into the existing multi-file list rather than the path field.
+ * Large exports are better served by pasting the path below, which reads
+ * from disk instead of buffering every file into the page.
+ */
+function readEntryFiles(entry: FileSystemEntry): Promise<File[]> {
+  return new Promise((resolve) => {
+    if (entry.isFile) {
+      (entry as FileSystemFileEntry).file(
+        (file) => resolve([file]),
+        () => resolve([]),
+      );
+      return;
+    }
+    if (!entry.isDirectory) {
+      resolve([]);
+      return;
+    }
+    const reader = (entry as FileSystemDirectoryEntry).createReader();
+    const collected: File[] = [];
+    const readBatch = () => {
+      reader.readEntries(
+        (entries) => {
+          if (entries.length === 0) {
+            resolve(collected);
+            return;
+          }
+          Promise.all(entries.map(readEntryFiles))
+            .then((groups) => {
+              for (const g of groups) collected.push(...g);
+              readBatch(); // a directory reader may require several calls to exhaust all entries
+            })
+            .catch(() => resolve(collected));
+        },
+        () => resolve(collected),
+      );
+    };
+    readBatch();
+  });
+}
+
 /** Import screen (IMP-001, journey 7.2): inventory, confirm, value-free result. */
 export function ImportPage() {
   const [picked, setPicked] = useState<Picked[]>([]);
   const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResultBody | null>(null);
+  const [resultSkipped, setResultSkipped] = useState<FolderSkipItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const folderInputRef = useRef<HTMLInputElement>(null);
+
+  const [folderPath, setFolderPath] = useState('');
+  const [preview, setPreview] = useState<FolderPreviewBody | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [pathBusy, setPathBusy] = useState(false);
 
   const addFiles = (files: FileList | File[]) => {
     const list = [...files].filter((f) => /\.(csv|gpx|zip)$/i.test(f.name));
@@ -34,6 +85,22 @@ export function ImportPage() {
     setError(null);
   };
 
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDrag(false);
+    const items = e.dataTransfer.items;
+    const entries =
+      items && items.length > 0
+        ? [...items].map((it) => it.webkitGetAsEntry?.()).filter((x): x is FileSystemEntry => !!x)
+        : [];
+    if (entries.length > 0 && entries.some((en) => en.isDirectory)) {
+      const groups = await Promise.all(entries.map(readEntryFiles));
+      addFiles(groups.flat());
+      return;
+    }
+    addFiles(e.dataTransfer.files);
+  };
+
   const runImport = async () => {
     setBusy(true);
     setError(null);
@@ -46,11 +113,49 @@ export function ImportPage() {
       );
       const res = await api.importFiles(files);
       setResult(res.result);
+      setResultSkipped([]);
       setPicked([]);
     } catch {
       setError('Import failed. Check that the local API is running, then try again.');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const loadPreview = async () => {
+    setPreviewBusy(true);
+    setPreviewError(null);
+    setResult(null);
+    try {
+      const res = await api.importPathPreview(folderPath.trim());
+      setPreview(res.preview);
+      if (res.preview.rides.length === 0 && res.preview.ungrouped.length === 0) {
+        setPreviewError('No importable .csv/.gpx/.zip files were found in that folder.');
+      }
+    } catch {
+      setPreview(null);
+      setPreviewError(
+        'Could not read that folder. Check the path, that it exists, and that it is outside ' +
+          'the Velograph source checkout.',
+      );
+    } finally {
+      setPreviewBusy(false);
+    }
+  };
+
+  const confirmPathImport = async () => {
+    setPathBusy(true);
+    setPreviewError(null);
+    try {
+      const res = await api.importPath(folderPath.trim());
+      setResult(res.result);
+      setResultSkipped(res.skipped);
+      setPreview(null);
+      setFolderPath('');
+    } catch {
+      setPreviewError('Import failed. Check that the local API is running, then try again.');
+    } finally {
+      setPathBusy(false);
     }
   };
 
@@ -78,21 +183,17 @@ export function ImportPage() {
           setDrag(true);
         }}
         onDragLeave={() => setDrag(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDrag(false);
-          addFiles(e.dataTransfer.files);
-        }}
+        onDrop={(e) => void handleDrop(e)}
       >
         <p style={{ margin: 0, fontSize: 15 }}>
-          Drop your export files here, or{' '}
+          Drop your export files or folder here, or{' '}
           <span className="grad-text" style={{ fontWeight: 600 }}>
             browse
           </span>
         </p>
         <p className="muted" style={{ margin: '6px 0 12px', fontSize: 12 }}>
-          One CSV contains one metric. Choose the export folder or all companion files for a
-          complete ride.
+          One CSV contains one metric. Drop the whole export folder or every companion file for a
+          complete ride — or paste the folder path below for a large export.
         </p>
         <div className="row" style={{ justifyContent: 'center' }}>
           <button
@@ -105,39 +206,12 @@ export function ImportPage() {
           >
             Choose files
           </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              folderInputRef.current?.click();
-            }}
-          >
-            Choose export folder
-          </button>
         </div>
         <p style={{ margin: '10px 0 0', fontSize: 11 }}>.csv · .gpx · .zip</p>
         <input
           ref={inputRef}
           type="file"
           accept={ACCEPT}
-          multiple
-          hidden
-          onChange={(e) => e.target.files && addFiles(e.target.files)}
-        />
-        {/*
-          No `accept` here, deliberately. A directory matches none of the
-          allowed extensions, so combining `accept` with `webkitdirectory`
-          makes the OS picker grey folders out and the control unusable.
-          `addFiles` already filters the selection by extension, so the
-          folder can contain anything.
-        */}
-        <input
-          ref={(node) => {
-            folderInputRef.current = node;
-            node?.setAttribute('webkitdirectory', '');
-          }}
-          type="file"
           multiple
           hidden
           onChange={(e) => e.target.files && addFiles(e.target.files)}
@@ -176,6 +250,114 @@ export function ImportPage() {
         </div>
       )}
 
+      <div className="card">
+        <h2 className="card-title">Import from a folder path</h2>
+        <p className="muted" style={{ marginTop: 0, fontSize: 12 }}>
+          Paste the full path to your Health Auto Export folder. The API reads it directly from disk
+          — nothing is uploaded as base64 — so this is the reliable way to bring in a large export
+          with dozens of files across many rides. Preview groups files by ride before anything is
+          imported.
+        </p>
+        <span className="field-label">Folder path</span>
+        <div className="row">
+          <input
+            type="text"
+            placeholder="/path/to/Health Auto Export"
+            value={folderPath}
+            onChange={(e) => {
+              setFolderPath(e.target.value);
+              setPreview(null);
+              setPreviewError(null);
+            }}
+            style={{ flex: 1, minWidth: 260 }}
+          />
+          <button
+            className="btn"
+            onClick={loadPreview}
+            disabled={previewBusy || pathBusy || !folderPath.trim()}
+          >
+            {previewBusy ? 'Scanning…' : 'Preview folder'}
+          </button>
+        </div>
+        {previewError && (
+          <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--vg-ch-hr)' }}>
+            {previewError}
+          </p>
+        )}
+
+        {preview && (
+          <div style={{ marginTop: 14 }}>
+            <p className="muted" style={{ fontSize: 12 }}>
+              {preview.totalFiles} file{preview.totalFiles === 1 ? '' : 's'} ·{' '}
+              {(preview.totalBytes / (1024 * 1024)).toFixed(1)} MB
+              {preview.truncated ? ' · stopped early — see skipped below' : ''}
+            </p>
+
+            {preview.rides.map((r) => (
+              <div key={r.rideKey} style={{ margin: '8px 0' }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>
+                  {r.workoutType === 'indoor_cycling' ? 'Indoor' : 'Outdoor'} ride · {r.stampHint}
+                  <span className="muted" style={{ fontWeight: 400 }}>
+                    {' '}
+                    · {r.files.length} file{r.files.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <ul className="muted" style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12 }}>
+                  {r.files.map((f) => (
+                    <li key={f.relativePath}>
+                      {f.label} ({f.format})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+
+            {preview.ungrouped.length > 0 && (
+              <div style={{ margin: '8px 0' }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>
+                  Not part of a recognized ride ({preview.ungrouped.length})
+                </div>
+                <ul className="muted" style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12 }}>
+                  {preview.ungrouped.map((u) => (
+                    <li key={u.relativePath}>
+                      {u.name} — {u.classification.replaceAll('_', ' ')}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {preview.skipped.length > 0 && (
+              <div style={{ margin: '8px 0' }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>
+                  Skipped ({preview.skipped.length})
+                </div>
+                <ul className="muted" style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12 }}>
+                  {preview.skipped.map((s, i) => (
+                    <li key={s.relativePath + i}>
+                      {s.relativePath} — {s.reason.replaceAll('_', ' ')}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="row" style={{ marginTop: 12 }}>
+              <button
+                className="btn primary"
+                onClick={confirmPathImport}
+                disabled={pathBusy || preview.totalFiles === 0}
+              >
+                {pathBusy ? 'Importing…' : `Confirm import (${preview.totalFiles} files)`}
+              </button>
+              <button className="btn" onClick={() => setPreview(null)} disabled={pathBusy}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {result && (
         <div className="card">
           <h2 className="card-title">Import complete</h2>
@@ -206,6 +388,17 @@ export function ImportPage() {
                 <p key={q.name} style={{ margin: '4px 0', fontSize: 12 }}>
                   <span className="badge warn">{q.code.replaceAll('_', ' ')}</span>{' '}
                   <span className="muted">{q.name}</span>
+                </p>
+              ))}
+            </div>
+          )}
+          {resultSkipped.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <h3 className="card-title">Skipped by the folder walk</h3>
+              {resultSkipped.map((s, i) => (
+                <p key={s.relativePath + i} style={{ margin: '4px 0', fontSize: 12 }}>
+                  <span className="badge warn">{s.reason.replaceAll('_', ' ')}</span>{' '}
+                  <span className="muted">{s.relativePath}</span>
                 </p>
               ))}
             </div>
