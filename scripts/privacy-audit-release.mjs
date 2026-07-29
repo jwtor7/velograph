@@ -38,6 +38,7 @@ import { scanFile } from './privacy-scan.mjs';
 import { verifyWebArtifactContents } from './third-party-license-gate.mjs';
 
 export const MAX_AUDIT_ENTRY_BYTES = 64 * 1024 * 1024;
+export const MAX_OCI_ATTESTATION_BYTES = 16 * 1024 * 1024;
 const OPAQUE_REPORT_SALT = randomBytes(32);
 const REPOSITORY_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CANONICAL_NOTICES_PATH = join(REPOSITORY_ROOT, 'THIRD_PARTY_NOTICES.md');
@@ -690,6 +691,17 @@ function evidenceKind(content) {
   return 'other';
 }
 
+function scanOciAttestation(content, reportPath) {
+  if (content.length > MAX_OCI_ATTESTATION_BYTES) {
+    fail('oci_attestation_exceeds_16_mib');
+  }
+  const kind = evidenceKind(content);
+  const violations = scanContent('oci/attestation.json', content, reportPath).filter(
+    ({ rule }) => rule !== 'oversized-text-file',
+  );
+  return { kind, violations };
+}
+
 function platformKey(descriptor) {
   const os = descriptor?.platform?.os;
   const architecture = descriptor?.platform?.architecture;
@@ -828,17 +840,15 @@ export async function auditOciArchive(archive) {
             layerDescriptor,
             'oci_attestation_unreadable',
           );
-          violations.push(
-            ...scanContent(
-              'oci/attestation.json',
-              content,
-              opaquePath(
-                'oci-attestation',
-                descriptorDigest(layerDescriptor, 'oci_attestation_invalid'),
-              ),
+          const attestation = scanOciAttestation(
+            content,
+            opaquePath(
+              'oci-attestation',
+              descriptorDigest(layerDescriptor, 'oci_attestation_invalid'),
             ),
           );
-          evidence.add(evidenceKind(content));
+          violations.push(...attestation.violations);
+          evidence.add(attestation.kind);
         }
         evidenceBySubject.set(subject, evidence);
         continue;

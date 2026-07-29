@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LEAK_MARKER } from './privacy-scan.mjs';
 import {
   MAX_AUDIT_ENTRY_BYTES,
+  MAX_OCI_ATTESTATION_BYTES,
   assertAuditableSize,
   auditArtifact,
   auditOciArchive,
@@ -113,6 +114,8 @@ function createSyntheticOciArchive({
   replaceWebDirectory = false,
   replaceNodeNoticeWithDirectory = false,
   imageIndexDepth = 1,
+  attestationPaddingBytes = 0,
+  attestationLeakMarker = false,
 } = {}) {
   const directory = makeArtifactDirectory();
   const layout = join(directory, 'layout');
@@ -226,7 +229,10 @@ function createSyntheticOciArchive({
       {
         _type: 'https://in-toto.io/Statement/v0.1',
         predicateType: 'https://spdx.dev/Document',
-        predicate: {},
+        predicate: {
+          ...(attestationPaddingBytes > 0 ? { padding: 'x'.repeat(attestationPaddingBytes) } : {}),
+          ...(attestationLeakMarker ? { marker: LEAK_MARKER } : {}),
+        },
       },
       'application/vnd.in-toto+json',
     );
@@ -333,7 +339,40 @@ describe('release privacy artifact audit', () => {
   });
 
   it('audits an exact two-platform OCI archive with SBOM and provenance', async () => {
-    await expect(auditOciArchive(createSyntheticOciArchive())).resolves.toBe(0);
+    await expect(
+      auditOciArchive(createSyntheticOciArchive({ attestationPaddingBytes: 2 * 1024 * 1024 + 1 })),
+    ).resolves.toBe(0);
+  });
+
+  it('still scans oversized attestations for forbidden content', async () => {
+    const messages = [];
+    const error = vi
+      .spyOn(console, 'error')
+      .mockImplementation((message) => messages.push(message));
+    try {
+      await expect(
+        auditOciArchive(
+          createSyntheticOciArchive({
+            attestationPaddingBytes: 2 * 1024 * 1024 + 1,
+            attestationLeakMarker: true,
+          }),
+        ),
+      ).resolves.toBe(1);
+    } finally {
+      error.mockRestore();
+    }
+    expect(messages.join('\n')).toContain('leak-marker-canary');
+    expect(messages.join('\n')).not.toContain(LEAK_MARKER);
+  });
+
+  it('rejects attestations above their dedicated audit cap', async () => {
+    await expect(
+      auditOciArchive(
+        createSyntheticOciArchive({
+          attestationPaddingBytes: MAX_OCI_ATTESTATION_BYTES + 1,
+        }),
+      ),
+    ).rejects.toThrow('oci_attestation_exceeds_16_mib');
   });
 
   it('rejects OCI indexes nested beyond the supported BuildKit wrapper', async () => {

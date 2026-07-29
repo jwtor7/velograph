@@ -165,8 +165,10 @@ is pre-1.0, and for the release procedure.
 - **Release verification is stable under real CI timing and native BuildKit layers.** The
   development-proxy regression waits for the production build it launches instead of assuming a
   four-second startup, while the release privacy audit accepts only the exact safe tar root marker
-  and single digest-verified OCI image-index wrapper emitted by BuildKit, and continues to reject
-  deeper index graphs, traversal, and absolute archive paths (#11).
+  and single digest-verified OCI image-index wrapper emitted by BuildKit. Generated in-toto
+  attestations remain fully privacy-scanned under a dedicated 16 MiB cap instead of the source-tree
+  text-file size policy; deeper index graphs, traversal, and absolute archive paths still fail
+  closed (#11).
 - **Ride deletion now uses the configured timezone everywhere.** The visible ride date, delete
   button accessible name, and irreversible-action confirmation no longer disagree when the
   browser timezone differs from the Velograph display timezone.
