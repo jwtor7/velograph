@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { generateCorpus, generateRide, rideDefs, SYNTHETIC_SOURCE } from './generate-fixtures.mjs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  generateCorpus,
+  generateRide,
+  resolveFixtureOutputDir,
+  rideDefs,
+  SYNTHETIC_SOURCE,
+} from './generate-fixtures.mjs';
 import { scanFile, SYNTHETIC_GEO_BOX } from './privacy-scan.mjs';
 
 describe('synthetic fixture generator', () => {
@@ -61,3 +70,82 @@ describe('synthetic fixture generator', () => {
     expect(segCount).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe('generate-fixtures --out path validation (issue #5)', () => {
+  it('accepts the normal fixture target', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'velograph-fixtures-repo-'));
+    try {
+      const root = makeFakeRepoAt(repo);
+      const resolved = resolveFixtureOutputDir('fixtures/synthetic/rides', root);
+      expect(resolved).toBe(join(root, 'fixtures', 'synthetic', 'rides'));
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects the repository root', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'velograph-fixtures-repo-'));
+    try {
+      const root = makeFakeRepoAt(repo);
+      expect(() => resolveFixtureOutputDir(root, root)).toThrow(/repository root/);
+      expect(() => resolveFixtureOutputDir('.', root)).toThrow(/repository root/);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a parent-directory target (including `..` traversal)', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'velograph-fixtures-repo-'));
+    try {
+      const root = makeFakeRepoAt(repo);
+      expect(() => resolveFixtureOutputDir('..', root)).toThrow(/fixtures\/synthetic/);
+      expect(() => resolveFixtureOutputDir('fixtures/synthetic/rides/../../../etc', root)).toThrow(
+        /fixtures\/synthetic/,
+      );
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an absolute path outside the fixture tree', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'velograph-fixtures-repo-'));
+    const outside = mkdtempSync(join(tmpdir(), 'velograph-outside-'));
+    try {
+      const root = makeFakeRepoAt(repo);
+      expect(() => resolveFixtureOutputDir(outside, root)).toThrow(/fixtures\/synthetic/);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects fixtures/synthetic/ itself (must target a subdirectory, not the whole tree)', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'velograph-fixtures-repo-'));
+    try {
+      const root = makeFakeRepoAt(repo);
+      expect(() => resolveFixtureOutputDir('fixtures/synthetic', root)).toThrow(
+        /fixtures\/synthetic/,
+      );
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a symlink escape (an ancestor directory replaced by a symlink)', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'velograph-fixtures-repo-'));
+    const outside = mkdtempSync(join(tmpdir(), 'velograph-outside-'));
+    try {
+      const root = makeFakeRepoAt(repo);
+      symlinkSync(outside, join(root, 'fixtures', 'synthetic', 'evil'), 'dir');
+      expect(() => resolveFixtureOutputDir('fixtures/synthetic/evil', root)).toThrow(/symlink/);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+function makeFakeRepoAt(root) {
+  mkdirSync(join(root, 'fixtures', 'synthetic', 'rides'), { recursive: true });
+  return realpathSync(root);
+}

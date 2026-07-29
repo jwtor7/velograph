@@ -10,8 +10,13 @@
  *
  * Usage: node scripts/generate-fixtures.mjs [--out <dir>] [--seed <n>] [--rides <n>]
  */
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Repository root, derived from this file's own location (scripts/<file> ->
+// one level up) so path validation does not depend on the caller's cwd.
+export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 export const SYNTHETIC_SOURCE = 'Synth Watch X1';
 const BASE = { lat: -48.5, lon: -123.5 }; // inside the synthetic geo box
@@ -218,19 +223,83 @@ export function generateCorpus({ rides = 3, seed = 1000 } = {}) {
   return all;
 }
 
+/** Walk upward from `p` to the nearest ancestor that actually exists. */
+function nearestExistingAncestor(p) {
+  let cur = p;
+  for (;;) {
+    if (existsSync(cur)) return cur;
+    const parent = dirname(cur);
+    if (parent === cur) return cur; // reached filesystem root; give up gracefully
+    cur = parent;
+  }
+}
+
+const isWithin = (root, candidate) => candidate === root || candidate.startsWith(root + sep);
+
+/**
+ * Resolve and validate a `--out` argument before ANY deletion happens.
+ * Rejects the repository root, anything outside `fixtures/synthetic/`
+ * (including `..` traversal, which `resolve()` normalizes away lexically),
+ * and symlink escapes (an ancestor directory that is actually a symlink
+ * pointing outside the fixture tree) by re-checking the real path of the
+ * nearest existing ancestor. Throws with a descriptive message on any
+ * rejection; returns the validated absolute path otherwise.
+ */
+export function resolveFixtureOutputDir(outArg, repoRoot = REPO_ROOT) {
+  const resolvedRepoRoot = realpathSync(resolve(repoRoot));
+  const fixturesRoot = join(resolvedRepoRoot, 'fixtures', 'synthetic');
+  const lexicalTarget = resolve(resolvedRepoRoot, outArg);
+
+  if (lexicalTarget === resolvedRepoRoot) {
+    throw new Error(
+      `generate-fixtures: refusing to operate on the repository root: ${lexicalTarget}`,
+    );
+  }
+  if (!isWithin(fixturesRoot, lexicalTarget) || lexicalTarget === fixturesRoot) {
+    throw new Error(
+      `generate-fixtures: --out must resolve inside fixtures/synthetic/, got: ${lexicalTarget}`,
+    );
+  }
+
+  // Re-resolve through any existing symlinks so an ancestor directory
+  // swapped for a symlink (e.g. fixtures/synthetic/rides -> /etc) cannot
+  // smuggle deletion/generation outside the fixture tree.
+  const existingAncestor = nearestExistingAncestor(lexicalTarget);
+  const realAncestor = realpathSync(existingAncestor);
+  const remainder = relative(existingAncestor, lexicalTarget);
+  const realTarget = remainder ? join(realAncestor, remainder) : realAncestor;
+  if (!isWithin(fixturesRoot, realTarget) || realTarget === fixturesRoot) {
+    throw new Error(
+      `generate-fixtures: --out resolves outside fixtures/synthetic/ via symlink: ${realTarget}`,
+    );
+  }
+
+  return lexicalTarget;
+}
+
 function main(argv) {
   const args = { out: 'fixtures/synthetic/rides', seed: 1000, rides: 3 };
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i]?.replace(/^--/, '');
     if (key && key in args) args[key] = key === 'out' ? argv[i + 1] : Number(argv[i + 1]);
   }
-  rmSync(args.out, { recursive: true, force: true });
-  mkdirSync(args.out, { recursive: true });
+
+  const target = resolveFixtureOutputDir(args.out);
   const corpus = generateCorpus({ rides: args.rides, seed: args.seed });
+
+  // Generate into a temporary sibling first, then swap it in — the
+  // validated fixture directory is only ever removed after generation has
+  // fully succeeded, and only that validated path is ever deleted.
+  const tmpDir = `${target}.tmp-${process.pid}-${Date.now()}`;
+  rmSync(tmpDir, { recursive: true, force: true });
+  mkdirSync(tmpDir, { recursive: true });
   for (const [name, content] of corpus) {
-    writeFileSync(join(args.out, name), content);
+    writeFileSync(join(tmpDir, name), content);
   }
-  console.log(`fixtures:generate wrote ${corpus.size} files to ${args.out}`);
+  rmSync(target, { recursive: true, force: true });
+  renameSync(tmpDir, target);
+
+  console.log(`fixtures:generate wrote ${corpus.size} files to ${target}`);
 }
 
 if (process.argv[1] && process.argv[1].endsWith('generate-fixtures.mjs')) {
