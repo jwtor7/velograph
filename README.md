@@ -97,6 +97,7 @@ fixtures/synthetic/   invented data used by tests and this quickstart
 - [Release procedure](docs/releasing.md) — versioning scheme and how a release is cut
 - [Design system](docs/design-system.md) — palette, typography, and visual language
 - [Analytics formulas](docs/formulas.md) — every metric definition, versioned
+- [Data management](docs/data-management.md) — delete, backup, restore, and repair: cascade behaviour and the delete/re-import idempotency decision
 - [AI insight privacy](docs/ai-privacy.md) — what would leave the machine per provider, and why AI is a stub today
 - [CI supply-chain policy](docs/ci-supply-chain.md) — pinned-SHA GitHub Actions and how to update them
 

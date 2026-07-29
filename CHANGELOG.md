@@ -9,20 +9,6 @@ is pre-1.0, and for the release procedure.
 
 ## [Unreleased]
 
-### Added
-
-- Release hygiene: `CHANGELOG.md`, `docs/releasing.md`, a CI job that requires PRs touching
-  `packages/**`, `apps/**`, or `scripts/**` to also update this file (with a documented
-  escape hatch), and a corrected README quickstart (#39).
-
-### Fixed
-
-- README quickstart no longer walks a reader into importing synthetic fixtures into their
-  real `VELO_DATA_DIR`. The fixture-import step now sends data to an explicit throwaway
-  directory (`VELO_DATA_DIR=$(mktemp -d)`) and starts the API against that same directory,
-  with a warning that this matters because ride deletion isn't implemented yet (#38) — the
-  only way to undo an accidental import today is deleting the whole database (#39).
-
 ## [0.1.0] - 2026-07-28
 
 Initial MVP: import a Health Auto Export CSV/GPX/ZIP, compute deterministic ride and
@@ -56,6 +42,28 @@ narratives once a real provider is implemented (today, AI is a stub — see belo
   unpinned CI actions moved to pinned commit SHAs (#32).
 - **Agent-worktree tooling fix**: git, Prettier, ESLint, and Vitest now ignore nested agent
   worktrees created under the checkout during multi-agent development (#36).
+- **Ride delete and local data management**: delete a ride and its transactional cascade
+  (metric samples, route, analytics snapshots, and any source file no longer referenced by
+  another workout); backup and restore the whole database through SQLite's own online backup
+  API (never a raw file copy of a live WAL database), with the destination/source path
+  refused if it resolves inside a git checkout; and per-workout repair that re-derives the
+  workout's span from its stored samples/route points and rebuilds any analytics snapshot
+  left over from an older `FORMULA_VERSION`. Deleting a ride deliberately forgets its source
+  file's content hash rather than tombstoning it, so re-importing the identical file
+  afterwards imports cleanly instead of being silently skipped as a duplicate — see
+  `docs/data-management.md` for the full reasoning and the rejected tombstone alternative
+  (#38).
+- **Release hygiene**: `CHANGELOG.md`, `docs/releasing.md`, and a CI job that requires PRs
+  touching `packages/**`, `apps/**`, or `scripts/**` to also update this file (with a
+  documented `Changelog-Exempt` escape hatch for non-behavioural changes) (#39).
+
+### Fixed
+
+- README quickstart no longer walks a reader into importing synthetic fixtures into their
+  real `VELO_DATA_DIR`. The fixture-import step now sends data to an explicit throwaway
+  directory (`VELO_DATA_DIR=$(mktemp -d)`) and starts the API against that same directory,
+  with a warning that this matters because ride deletion was unimplemented until #38 — before
+  that, the only way to undo an accidental import was deleting the whole database (#39).
 
 [Unreleased]: https://github.com/jwtor7/velograph/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/jwtor7/velograph/releases/tag/v0.1.0
