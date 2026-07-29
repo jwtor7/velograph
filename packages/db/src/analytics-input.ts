@@ -73,7 +73,8 @@ export function loadWorkoutData(db: Database, workoutId: number): WorkoutData | 
         route.push({ points: [] });
         currentSeg = p.segment;
       }
-      const point: RouteSegment['points'][number] = { t: p.t_utc ?? 0, lat: p.lat, lon: p.lon };
+      const point: RouteSegment['points'][number] = { lat: p.lat, lon: p.lon };
+      if (p.t_utc != null) point.t = p.t_utc;
       if (p.ele_m != null) point.ele = p.ele_m;
       if (p.speed_ms != null) point.speed = p.speed_ms;
       if (p.course_deg != null) point.course = p.course_deg;

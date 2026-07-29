@@ -1,6 +1,11 @@
 import { useId } from 'react';
 import type { RoutePoint } from '../api.ts';
-import { buildLineSpec, buildRouteSpec, routeIndexAt } from '../chartspec/spec.ts';
+import {
+  buildRouteSpec,
+  buildSegmentedLineSpec,
+  routeIndexAt,
+  type Pt,
+} from '../chartspec/spec.ts';
 
 /**
  * Tile-free route canvas (ROUTE-002/003/004): recorded geometry over a neutral
@@ -169,19 +174,37 @@ export function RoutePanel({
 export function ElevationProfile({
   segments,
   cursorT,
+  tMin,
+  tMax,
   height = 110,
 }: {
   segments: { points: RoutePoint[] }[];
   cursorT: number | null;
+  tMin: number;
+  tMax: number;
   height?: number;
 }) {
   const W = 560;
   const gradId = useId();
-  const pts = segments
-    .flatMap((s) => s.points)
-    .filter((p) => p.ele != null && p.t != null)
-    .map((p) => ({ t: p.t, v: p.ele! }));
-  const spec = buildLineSpec(pts, W, height);
+  const elevationSegments: Pt[][] = [];
+  for (const segment of segments) {
+    let run: Pt[] = [];
+    for (const point of segment.points) {
+      if (
+        typeof point.t === 'number' &&
+        Number.isFinite(point.t) &&
+        typeof point.ele === 'number' &&
+        Number.isFinite(point.ele)
+      ) {
+        run.push({ t: point.t, v: point.ele });
+      } else if (run.length > 0) {
+        elevationSegments.push(run);
+        run = [];
+      }
+    }
+    if (run.length > 0) elevationSegments.push(run);
+  }
+  const spec = buildSegmentedLineSpec(elevationSegments, W, height, { tMin, tMax });
   if (!spec) {
     return (
       <p className="muted" style={{ margin: 0, fontSize: 12 }}>

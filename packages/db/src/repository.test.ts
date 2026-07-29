@@ -46,6 +46,42 @@ function seedWorkoutWithFile(
   return { workoutId, sourceFileId };
 }
 
+describe('Repository.insertRoute', () => {
+  it('stores reducer-computed bounds and point count', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const { workoutId, sourceFileId } = seedWorkoutWithFile(repo, { start: 1, end: 2 });
+
+    const routeId = repo.insertRoute({
+      workoutId,
+      sourceFileId,
+      format: 'gpx',
+      distanceM: null,
+      segments: [
+        {
+          points: [
+            { lat: 43.1, lon: -79.9 },
+            { lat: 42.8, lon: -79.2 },
+          ],
+        },
+        { points: [{ lat: 43.4, lon: -80.1 }] },
+      ],
+    });
+    const row = db
+      .prepare('SELECT point_count, bounds_json FROM routes WHERE id = ?')
+      .get(routeId) as { point_count: number; bounds_json: string };
+
+    expect(row.point_count).toBe(3);
+    expect(JSON.parse(row.bounds_json)).toEqual({
+      latMin: 42.8,
+      latMax: 43.4,
+      lonMin: -80.1,
+      lonMax: -79.2,
+    });
+    db.close();
+  });
+});
+
 describe('Repository.deleteWorkout', () => {
   it('removes the workout and every dependent row, and forgets an exclusive source file hash', () => {
     const db = openDatabase(':memory:');

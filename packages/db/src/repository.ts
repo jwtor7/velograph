@@ -166,14 +166,25 @@ export class Repository {
     segments: RouteSegment[];
     distanceM: number | null;
   }): number {
-    const points = row.segments.flatMap((s) => s.points);
-    const lats = points.map((p) => p.lat);
-    const lons = points.map((p) => p.lon);
+    let pointCount = 0;
+    let latMin = Infinity;
+    let latMax = -Infinity;
+    let lonMin = Infinity;
+    let lonMax = -Infinity;
+    for (const segment of row.segments) {
+      for (const point of segment.points) {
+        pointCount++;
+        if (point.lat < latMin) latMin = point.lat;
+        if (point.lat > latMax) latMax = point.lat;
+        if (point.lon < lonMin) lonMin = point.lon;
+        if (point.lon > lonMax) lonMax = point.lon;
+      }
+    }
     const bounds = {
-      latMin: Math.min(...lats),
-      latMax: Math.max(...lats),
-      lonMin: Math.min(...lons),
-      lonMax: Math.max(...lons),
+      latMin,
+      latMax,
+      lonMin,
+      lonMax,
     };
     const r = this.db
       .prepare(
@@ -184,7 +195,7 @@ export class Repository {
         row.workoutId,
         row.sourceFileId,
         row.format,
-        points.length,
+        pointCount,
         row.distanceM,
         JSON.stringify(bounds),
       );

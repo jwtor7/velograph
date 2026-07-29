@@ -22,7 +22,7 @@ export interface MetricSample {
 }
 
 export interface RoutePoint {
-  t: number;
+  t?: number | null;
   lat: number;
   lon: number;
   ele?: number;
