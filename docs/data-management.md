@@ -14,11 +14,13 @@ every row that belongs to it in a single `better-sqlite3` transaction:
   `insight_runs`, and `notes_tags` all declare `ON DELETE CASCADE` on `workout_id` in the schema
   (`packages/db/migrations/0001_init.sql`), so deleting the `workouts` row cascades them
   automatically — no manual fan-out, no orphan rows.
-- `source_files` rows are **not** covered by that cascade (a file can, in principle, be shared —
-  see below), so `deleteWorkout` handles them explicitly: before deleting the workout it collects
-  the distinct `source_file_id`s its `metric_series`/`routes` rows reference, deletes the
-  workout, then removes each collected `source_files` row only if no remaining `metric_series` or
-  `routes` row (belonging to any other workout) still references it.
+- `workout_source_files` records every successfully associated source independently from the
+  normalized rows currently selected for display. A route CSV therefore remains owned after GPX
+  replaces its geometry, and a route CSV imported after GPX remains attributable even though it
+  is fallback-only. Before deleting a workout, `deleteWorkout` collects all of these source IDs
+  (plus direct metric/route references as a defensive legacy fallback), deletes the workout, then
+  removes each `source_files` row only when no remaining workout ownership, metric series, or route
+  references it.
 - A source file still referenced by another workout survives untouched. The current importer
   (`packages/importers/src/importer.ts`) always gives each imported file its own `source_files`
   row — one file is never split across two workouts — so this case doesn't arise from normal
@@ -69,6 +71,13 @@ Forgetting the hash was chosen because:
 skipped as a duplicate'`) and `apps/cli/src/index.test.ts` (`'imports, deletes, and repairs a
 workout end to end'`) both exercise the full round trip: import → delete → re-import the
 identical bytes → the ride comes back.
+
+Migration `0003_workout_source_files.sql` backfills every ownership relationship that can be
+recovered from existing metric and route rows. Older successful source rows with no remaining
+normalized reference cannot be attributed safely after the fact, so the migration forgets only
+those hashes; re-importing them rebuilds explicit ownership. Quarantined inventory rows remain
+untouched. Importer coverage also exercises route CSV → GPX replacement → workout delete → route
+CSV re-import so the superseded-hash path cannot regress.
 
 ## Parser-version reprocessing
 

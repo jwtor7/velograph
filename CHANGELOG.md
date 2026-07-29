@@ -189,6 +189,12 @@ is pre-1.0, and for the release procedure.
   per browser, and gave no way to preview what would be imported before committing to it.
   Folder import is now path-based (see above), which works the same way everywhere and
   previews first (#51).
+- **Deleting a ride now forgets every exclusively owned route hash.** Source
+  ownership is preserved independently from active geometry, so a route CSV
+  remains attached after GPX supersedes it and fallback-only route files remain
+  attributable. Deleting the workout removes those exclusive hashes while
+  retaining sources shared with another workout; a migration forgets legacy
+  successful hashes whose ownership could no longer be recovered safely (#45).
 - **Workout association now fails closed on contradictory evidence.** Filename
   timestamps corroborate workout type and internal sample ranges rather than
   being ignored; conflicting inputs use `association_conflict`, and multiple

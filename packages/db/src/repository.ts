@@ -138,17 +138,29 @@ export class Repository {
     return Number(result.lastInsertRowid);
   }
 
-  /** Distinct workouts whose normalized rows are owned by one source file. */
+  /** Distinct workouts that own one source, including provenance-only relationships. */
   workoutIdsForSourceFile(sourceFileId: number): number[] {
     const rows = this.db
       .prepare(
-        `SELECT workout_id AS id FROM metric_series WHERE source_file_id = ?
+        `SELECT workout_id AS id FROM workout_source_files WHERE source_file_id = ?
+         UNION
+         SELECT workout_id AS id FROM metric_series WHERE source_file_id = ?
          UNION
          SELECT workout_id AS id FROM routes WHERE source_file_id = ?
          ORDER BY id`,
       )
-      .all(sourceFileId, sourceFileId) as { id: number }[];
+      .all(sourceFileId, sourceFileId, sourceFileId) as { id: number }[];
     return rows.map((row) => row.id);
+  }
+
+  /** Record source provenance even when its normalized geometry is superseded or ignored. */
+  linkSourceFileToWorkout(workoutId: number, sourceFileId: number): void {
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO workout_source_files (workout_id, source_file_id)
+         VALUES (?, ?)`,
+      )
+      .run(workoutId, sourceFileId);
   }
 
   /**
@@ -364,15 +376,21 @@ export class Repository {
       WorkoutRow | undefined;
   }
 
-  /** Distinct source_files ids a workout's metric series and route(s) reference. */
+  /**
+   * Distinct source inventory owned by a workout, including superseded and
+   * fallback-only route files whose normalized geometry is not active.
+   */
   sourceFileIdsForWorkout(workoutId: number): number[] {
     const rows = this.db
       .prepare(
-        `SELECT source_file_id AS id FROM metric_series WHERE workout_id = ?
+        `SELECT source_file_id AS id FROM workout_source_files WHERE workout_id = ?
          UNION
-         SELECT source_file_id AS id FROM routes WHERE workout_id = ?`,
+         SELECT source_file_id AS id FROM metric_series WHERE workout_id = ?
+         UNION
+         SELECT source_file_id AS id FROM routes WHERE workout_id = ?
+         ORDER BY id`,
       )
-      .all(workoutId, workoutId) as { id: number }[];
+      .all(workoutId, workoutId, workoutId) as { id: number }[];
     return rows.map((r) => r.id);
   }
 
@@ -380,9 +398,11 @@ export class Repository {
    * Delete a workout and every row that belongs to it, in one transaction.
    * Schema-level ON DELETE CASCADE handles metric_series/samples,
    * routes/route_points, analytics_snapshots, insight_runs, and notes_tags.
-   * source_files rows that become unreferenced by any remaining workout are
-   * removed too (their content hash is forgotten so a later re-import of the
-   * same file is not skipped as a duplicate) — see docs/data-management.md.
+   * workout_source_files preserves ownership independently of active
+   * normalized rows. source_files rows that become unowned by every remaining
+   * workout are removed too (their content hash is forgotten so a later
+   * re-import of the same file is not skipped as a duplicate) — see
+   * docs/data-management.md.
    * A source file still referenced by another workout is left untouched.
    * Returns null if the workout does not exist.
    */
@@ -393,7 +413,9 @@ export class Repository {
       this.db.prepare('DELETE FROM workouts WHERE id = ?').run(workoutId);
 
       const stillReferenced = this.db.prepare(
-        `SELECT 1 AS x FROM metric_series WHERE source_file_id = ?
+        `SELECT 1 AS x FROM workout_source_files WHERE source_file_id = ?
+         UNION ALL
+         SELECT 1 AS x FROM metric_series WHERE source_file_id = ?
          UNION ALL
          SELECT 1 AS x FROM routes WHERE source_file_id = ?
          LIMIT 1`,
@@ -401,7 +423,7 @@ export class Repository {
       const deleteSourceFile = this.db.prepare('DELETE FROM source_files WHERE id = ?');
       const removedSourceFileIds: number[] = [];
       for (const id of candidateIds) {
-        if (stillReferenced.get(id, id) === undefined) {
+        if (stillReferenced.get(id, id, id) === undefined) {
           deleteSourceFile.run(id);
           removedSourceFileIds.push(id);
         }

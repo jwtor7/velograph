@@ -30,6 +30,10 @@ function hardeningFixture(name: string): ImportFile {
   return { name, data: readFileSync(join(HARDENING_FIXTURES, name)) };
 }
 
+function rideFixture(name: string): ImportFile {
+  return { name, data: readFileSync(join(FIXTURES, name)) };
+}
+
 const FIXED_NOW = Date.UTC(2031, 4, 1);
 
 describe('import engine (IMP-003/005/006/007/008)', () => {
@@ -45,6 +49,7 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     expect(repo.countRows('metric_series')).toBe(12);
     // GPX preferred; route CSV skipped as fallback-only (one route per workout)
     expect(repo.countRows('routes')).toBe(3);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM workout_source_files').get()).toEqual({ n: 18 });
     const formats = db.prepare('SELECT DISTINCT source_format FROM routes').all();
     expect(formats).toEqual([{ source_format: 'gpx' }]);
     expect(
@@ -70,6 +75,49 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     expect(repo.countRows('workouts')).toBe(workouts);
     expect(repo.countRows('metric_samples')).toBe(samples);
     expect(repo.countRows('route_points')).toBe(points);
+    db.close();
+  });
+
+  it('forgets superseded route hashes when their workout is deleted', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const routeCsv = rideFixture('Outdoor Cycling-Route-20310402_073000.csv');
+    const routeGpx = rideFixture('Outdoor Cycling-Route-20310402_073000.gpx');
+
+    const csvImport = runImport(db, [routeCsv], { now: FIXED_NOW });
+    const workoutId = repo.listWorkouts()[0]!.id;
+    expect(csvImport).toMatchObject({
+      imported: 1,
+      skippedDuplicates: 0,
+      workoutsCreated: 1,
+    });
+    expect(repo.workoutRouteFormat(workoutId)).toBe('csv');
+
+    const gpxImport = runImport(db, [routeGpx], { now: FIXED_NOW + 1_000 });
+    expect(gpxImport).toMatchObject({
+      imported: 1,
+      skippedDuplicates: 0,
+      workoutsUpdated: 1,
+    });
+    expect(repo.workoutRouteFormat(workoutId)).toBe('gpx');
+    expect(repo.sourceFileIdsForWorkout(workoutId)).toHaveLength(2);
+
+    const csvHash = sha256Hex(routeCsv.data);
+    const gpxHash = sha256Hex(routeGpx.data);
+    expect(repo.findSourceFileByHash(csvHash)).toBeDefined();
+    expect(repo.findSourceFileByHash(gpxHash)).toBeDefined();
+    expect(repo.deleteWorkout(workoutId)?.removedSourceFileIds).toHaveLength(2);
+    expect(repo.findSourceFileByHash(csvHash)).toBeUndefined();
+    expect(repo.findSourceFileByHash(gpxHash)).toBeUndefined();
+
+    const reimport = runImport(db, [routeCsv], { now: FIXED_NOW + 2_000 });
+    expect(reimport).toMatchObject({
+      imported: 1,
+      skippedDuplicates: 0,
+      workoutsCreated: 1,
+    });
+    expect(repo.countRows('workouts')).toBe(1);
+    expect(repo.countRows('routes')).toBe(1);
     db.close();
   });
 

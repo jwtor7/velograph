@@ -309,6 +309,7 @@ SQLite is the v1 database. Foreign keys are enabled and schema changes use order
 |---|---|
 | `import_batches` | One import transaction, status, counts, timestamps, and importer version |
 | `source_files` | Hash, sanitized original name, detected type, parser version, retention state, and error code |
+| `workout_source_files` | Durable workout ownership for every successfully associated source, including superseded or fallback-only route files |
 | `workouts` | Stable workout ID, type, start/end, timezone, duration, provenance, and quality state |
 | `metric_series` | Metric type, canonical unit, source, start/end, sample count, and coverage |
 | `metric_samples` | Series ID, timestamp, normalized numeric fields, context, and validity flags |

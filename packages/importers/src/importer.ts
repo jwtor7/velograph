@@ -54,8 +54,9 @@ interface PreparedImportFile extends ImportFile {
  * without mutating last-known-good source, workout, or user-authored data.
  *
  * GPX is preferred for route geometry; a route CSV is only used when the
- * workout has no GPX route, and a GPX arriving later replaces a CSV route
- * (IMP-006, provenance preserved via routes.source_format + source_file_id).
+ * workout has no GPX route, and a GPX arriving later replaces a CSV route.
+ * workout_source_files preserves every successfully associated source even
+ * when its geometry is superseded or fallback-only (IMP-006).
  */
 export function runImport(
   db: Database,
@@ -250,6 +251,7 @@ export function runImport(
         workoutId = repo.createWorkout(parsed.workoutType, range.start, range.end, 'import');
         counts.workoutsCreated++;
       }
+      repo.linkSourceFileToWorkout(workoutId, sourceFileId);
 
       if (parsed.kind === 'metric') {
         repo.insertMetricSeries({
@@ -281,7 +283,8 @@ export function runImport(
           });
         }
         // gpx already present, or csv arriving when a route exists: keep the
-        // preferred geometry; the source file row preserves provenance.
+        // preferred geometry; the independent workout ownership preserves
+        // provenance for the source whose geometry is not active.
       }
       if (existing) repo.finalizeSourceFileReprocessing(detachedWorkoutIds);
       counts.imported++;

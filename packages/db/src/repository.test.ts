@@ -27,6 +27,7 @@ function seedWorkoutWithFile(
       sizeBytes: 100,
     });
   const workoutId = repo.createWorkout('outdoor_cycling', opts.start, opts.end, 'import');
+  repo.linkSourceFileToWorkout(workoutId, sourceFileId);
   repo.insertMetricSeries({
     workoutId,
     sourceFileId,
@@ -153,6 +154,33 @@ describe('Repository.deleteWorkout', () => {
         .prepare('SELECT COUNT(*) AS n FROM metric_series WHERE workout_id = ?')
         .get(second.workoutId),
     ).toEqual({ n: 1 });
+    db.close();
+  });
+
+  it('keeps a source linked to another workout even without an active normalized row', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const first = seedWorkoutWithFile(repo, {
+      start: Date.UTC(2031, 0, 1),
+      end: Date.UTC(2031, 0, 1, 1),
+    });
+    const secondWorkoutId = repo.createWorkout(
+      'outdoor_cycling',
+      Date.UTC(2031, 0, 5),
+      Date.UTC(2031, 0, 5, 1),
+      'synthetic-provenance-only',
+    );
+    repo.linkSourceFileToWorkout(secondWorkoutId, first.sourceFileId);
+
+    const result = repo.deleteWorkout(first.workoutId);
+
+    expect(result).toEqual({ removedSourceFileIds: [] });
+    expect(repo.getWorkout(first.workoutId)).toBeUndefined();
+    expect(repo.getWorkout(secondWorkoutId)).toBeDefined();
+    expect(repo.workoutIdsForSourceFile(first.sourceFileId)).toEqual([secondWorkoutId]);
+    expect(
+      db.prepare('SELECT * FROM source_files WHERE id = ?').get(first.sourceFileId),
+    ).toBeDefined();
     db.close();
   });
 

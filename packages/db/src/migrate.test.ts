@@ -34,6 +34,7 @@ describe('ordered migrations', () => {
       'user_settings',
       'notes_tags',
       'source_file_reprocessing_failures',
+      'workout_source_files',
       'schema_migrations',
     ]) {
       expect(tables).toContain(t);
@@ -43,7 +44,11 @@ describe('ordered migrations', () => {
         .prepare('SELECT name FROM schema_migrations ORDER BY name')
         .all()
         .map((row) => (row as { name: string }).name),
-    ).toEqual(['0001_init.sql', '0002_source_file_reprocessing_failures.sql']);
+    ).toEqual([
+      '0001_init.sql',
+      '0002_source_file_reprocessing_failures.sql',
+      '0003_workout_source_files.sql',
+    ]);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
     db.close();
   });
@@ -104,6 +109,118 @@ describe('ordered migrations', () => {
       { from: 'batch_id', table: 'import_batches', onDelete: 'NO ACTION' },
       { from: 'source_file_id', table: 'source_files', onDelete: 'CASCADE' },
     ]);
+    db.close();
+  });
+
+  it('backfills source ownership and forgets only unowned successful hashes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'velo-mig-'));
+    for (const migration of ['0001_init.sql', '0002_source_file_reprocessing_failures.sql']) {
+      writeFileSync(join(dir, migration), readFileSync(join(BUNDLED_MIGRATIONS, migration)));
+    }
+    const db = new DatabaseConstructor(':memory:');
+    db.pragma('foreign_keys = ON');
+    expect(applyMigrations(db, dir)).toEqual([
+      '0001_init.sql',
+      '0002_source_file_reprocessing_failures.sql',
+    ]);
+    db.prepare(
+      `INSERT INTO import_batches
+         (id, created_at, status, importer_version, counts_json)
+       VALUES (1, 1, 'committed', 'synthetic-v2', '{}')`,
+    ).run();
+    const insertSource = db.prepare(
+      `INSERT INTO source_files
+         (id, batch_id, sha256, original_name, detected_type, parser_version,
+          status, error_code, size_bytes)
+       VALUES (?, 1, ?, ?, ?, 'synthetic-parser-v1', ?, ?, 10)`,
+    );
+    insertSource.run(
+      1,
+      'synthetic-metric-hash',
+      'synthetic-metric.csv',
+      'metric:cadence',
+      'imported',
+      null,
+    );
+    insertSource.run(
+      2,
+      'synthetic-orphan-hash',
+      'synthetic-superseded-route.csv',
+      'route:csv',
+      'imported',
+      null,
+    );
+    insertSource.run(
+      3,
+      'synthetic-quarantine-hash',
+      'synthetic-invalid.gpx',
+      'unknown',
+      'quarantined',
+      'malformed_xml',
+    );
+    insertSource.run(
+      4,
+      'synthetic-route-hash',
+      'synthetic-route.gpx',
+      'route:gpx',
+      'imported',
+      null,
+    );
+    db.prepare(
+      `INSERT INTO workouts
+         (id, type, start_utc, end_utc, duration_s, provenance)
+       VALUES (1, 'outdoor_cycling', 1000, 2000, 1, 'synthetic-v2')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO metric_series
+         (id, workout_id, source_file_id, metric_type, unit, start_utc, end_utc, sample_count)
+       VALUES (1, 1, 1, 'cadence', 'rpm', 1000, 2000, 2)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO routes
+         (id, workout_id, source_file_id, source_format, point_count, bounds_json)
+       VALUES (1, 1, 4, 'gpx', 2, '{}')`,
+    ).run();
+
+    const migration = '0003_workout_source_files.sql';
+    writeFileSync(join(dir, migration), readFileSync(join(BUNDLED_MIGRATIONS, migration)));
+    expect(applyMigrations(db, dir)).toEqual([migration]);
+
+    expect(
+      db
+        .prepare(
+          'SELECT workout_id, source_file_id FROM workout_source_files ORDER BY source_file_id',
+        )
+        .all(),
+    ).toEqual([
+      { workout_id: 1, source_file_id: 1 },
+      { workout_id: 1, source_file_id: 4 },
+    ]);
+    expect(
+      db
+        .prepare('SELECT id, status FROM source_files ORDER BY id')
+        .all()
+        .map((row) => row as { id: number; status: string }),
+    ).toEqual([
+      { id: 1, status: 'imported' },
+      { id: 3, status: 'quarantined' },
+      { id: 4, status: 'imported' },
+    ]);
+    expect(
+      (
+        db.prepare('PRAGMA foreign_key_list(workout_source_files)').all() as {
+          from: string;
+          table: string;
+          on_delete: string;
+        }[]
+      )
+        .map((row) => ({ from: row.from, table: row.table, onDelete: row.on_delete }))
+        .sort((a, b) => a.from.localeCompare(b.from)),
+    ).toEqual([
+      { from: 'source_file_id', table: 'source_files', onDelete: 'CASCADE' },
+      { from: 'workout_id', table: 'workouts', onDelete: 'CASCADE' },
+    ]);
+    expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
 
