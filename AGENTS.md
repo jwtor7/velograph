@@ -13,10 +13,26 @@ multi-agent section.
 ## Build, Test, and Development Commands
 
 See the root [`README.md`](README.md) Quick start for the verified install → import → run
-sequence. In summary: `pnpm install`, then `pnpm --filter @velograph/web build` before the
-API can serve the web client (there is no `pnpm dev` script), then `node apps/cli/src/index.ts import <path>` to import rides and `node apps/api/src/main.ts` to start the API on
+sequence. In summary: `pnpm install`, then `node apps/cli/src/index.ts import <path>` to
+import rides, and `pnpm app:start` to build the web client and serve it on
 `127.0.0.1:5123`. CI-equivalent checks: `pnpm test`, `pnpm lint`, `pnpm typecheck`,
 `pnpm format`, and `node scripts/privacy-scan.mjs --all`. Run only declared scripts.
+
+### Server lifecycle is the agent's responsibility
+
+If you start a server during a session, you own it. The maintainer must never have to
+remember what is running or clean up after you.
+
+- Only `pnpm app:start` / `app:stop` / `app:status` / `app:restart`. Never `nohup … &`,
+  never `pkill -f`, never a bare backgrounded `node apps/api/src/main.ts`.
+- Run `pnpm app:status` **before** starting anything — a server may already be running, and
+  the port may be held by the maintainer or another agent.
+- Stop what you started before ending the turn, unless the maintainer is actively using the
+  app — in which case say so and tell them `pnpm app:stop`.
+- After changing `apps/api` or `apps/web`, use `pnpm app:restart`. A stale API serving a
+  freshly built web client produces a UI calling endpoints that do not exist.
+- Never import synthetic fixtures into the default data directory; it may hold real rides.
+  Point fixture imports at an explicit throwaway `VELO_DATA_DIR`.
 
 ## Coding Style & Naming Conventions
 
