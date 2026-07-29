@@ -48,11 +48,21 @@ is pre-1.0, and for the release procedure.
   drag-and-drop are unchanged (#51).
 - **`pnpm app:dev`**: the foreground counterpart to `app:start` — builds the web client,
   runs the API in the foreground of the current terminal, opens the browser once it answers,
-  and shuts down cleanly on Ctrl-C (SIGINT) or SIGTERM: the API child is signaled, waited on,
-  and force-killed after a grace period if it doesn't exit, so nothing is left holding the
-  port. One command starts everything; killing it tears everything down. The background
-  commands (`app:start`/`app:stop`/`app:status`/`app:restart`) are unchanged and remain the
-  right choice for a server that should outlive the current shell (#51).
+  and shuts down cleanly on Ctrl-C (SIGINT) or SIGTERM. Shutdown is redundant on purpose: the
+  API process (`apps/api/src/main.ts`) now handles SIGINT/SIGTERM itself, closing the HTTP
+  server and the database before exiting — this matters because a real terminal Ctrl-C
+  delivers SIGINT to every process in the foreground group at once, not just the wrapper
+  script, so the API must not depend solely on the wrapper forwarding it. The wrapper also
+  forwards SIGTERM to the child and force-kills it after a grace period as a second layer.
+  For the case neither of those can help — the wrapper is SIGKILLed, crashes, or a shell/shim
+  around it swallows the signal instead of forwarding it — the API independently polls its
+  spawning process's liveness and shuts itself down the moment it's gone, so a killed wrapper
+  can never leave the port held. Verified directly: a real pty-delivered Ctrl-C, a `SIGTERM`
+  to the wrapper, and a `SIGKILL` to the wrapper were each confirmed (via `lsof`) to leave the
+  port free with no process alive. One command starts everything; killing it — by any of
+  these means — tears everything down. The background commands
+  (`app:start`/`app:stop`/`app:status`/`app:restart`) are unchanged and remain the right
+  choice for a server that should outlive the current shell (#51).
 - **Local server lifecycle commands**: `pnpm app:start`, `app:stop`, `app:status`, and
   `app:restart`. `app:start` builds the web client, refuses to start when a server already
   holds the port, and waits for the API to actually answer before reporting success.
