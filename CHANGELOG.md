@@ -46,7 +46,9 @@ is pre-1.0, and for the release procedure.
 - **Keyboard and low-vision access no longer stops at core ride controls.** Confirmation dialogs
   now place and trap focus, close on Escape only when safe, and restore focus to their trigger.
   Synchronized time-series cursors expose slider semantics plus fine, page, and boundary keyboard
-  controls. Muted 11–12 px text now clears WCAG AA contrast on both card surfaces (#56).
+  controls. Muted 11–12 px text now clears WCAG AA contrast on both card surfaces, and Settings
+  save success is announced through its live status region. Backup and restore paths now have
+  accessible labels, and their outcomes are announced as status updates (#56).
 - **Strict, rollback-safe restore and graceful shutdown.** Restore now rejects corrupt input,
   forged or incomplete schemas, foreign-key violations, and unknown/future/out-of-order migration
   histories. It migrates a private staged copy and compares its complete schema against a freshly

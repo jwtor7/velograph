@@ -205,15 +205,19 @@ export function SettingsPage() {
         <button className="btn primary" onClick={save}>
           Save settings
         </button>
-        {saved && <span style={{ color: 'var(--vg-brand-green)', fontSize: 12 }}>Saved</span>}
       </div>
       <p
         className="muted"
         role="status"
         aria-live="polite"
-        style={{ margin: 0, minHeight: '1.2em' }}
+        style={{
+          color: saved ? 'var(--vg-brand-green)' : undefined,
+          fontSize: 12,
+          margin: 0,
+          minHeight: '1.2em',
+        }}
       >
-        {saveError ?? ''}
+        {saveError ?? (saved ? 'Saved' : '')}
       </p>
 
       <div className="card">
@@ -227,9 +231,12 @@ export function SettingsPage() {
 
         <div className="stack">
           <div>
-            <span className="field-label">Back up to path</span>
+            <label className="field-label" htmlFor="backup-path">
+              Back up to path
+            </label>
             <div className="row">
               <input
+                id="backup-path"
                 type="text"
                 placeholder="/path/to/velograph-backup.sqlite3"
                 value={backupPath}
@@ -245,16 +252,24 @@ export function SettingsPage() {
               </button>
             </div>
             {backupStatus && (
-              <p className="muted" style={{ fontSize: 12, margin: '6px 0 0' }}>
+              <p
+                className="muted"
+                role="status"
+                aria-live="polite"
+                style={{ fontSize: 12, margin: '6px 0 0' }}
+              >
                 {backupStatus}
               </p>
             )}
           </div>
 
           <div>
-            <span className="field-label">Restore from path</span>
+            <label className="field-label" htmlFor="restore-path">
+              Restore from path
+            </label>
             <div className="row">
               <input
+                id="restore-path"
                 type="text"
                 placeholder="/path/to/velograph-backup.sqlite3"
                 value={restorePath}
@@ -270,7 +285,12 @@ export function SettingsPage() {
               </button>
             </div>
             {restoreStatus && (
-              <p className="muted" style={{ fontSize: 12, margin: '6px 0 0' }}>
+              <p
+                className="muted"
+                role="status"
+                aria-live="polite"
+                style={{ fontSize: 12, margin: '6px 0 0' }}
+              >
                 {restoreStatus}
               </p>
             )}
