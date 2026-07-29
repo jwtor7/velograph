@@ -147,8 +147,8 @@ export function RideDetail() {
           body={
             <>
               <p style={{ margin: 0 }}>
-                This permanently removes this ride from {fmtDate(w.startUtc)} — its metric samples,
-                route, and analytics — from your local database.
+                This permanently removes this ride from {fmtDate(w.startUtc, timeZone)} — its
+                metric samples, route, and analytics — from your local database.
               </p>
               <p style={{ margin: '8px 0 0', fontWeight: 600 }}>
                 This is irreversible unless you have a backup.

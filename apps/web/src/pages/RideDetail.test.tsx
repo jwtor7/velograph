@@ -123,6 +123,7 @@ describe('RideDetail repair state', () => {
     const initialEnd = initialStart + 20 * 60_000;
     const repairedStart = Date.UTC(2033, 4, 3, 14);
     const repairedEnd = repairedStart + 30 * 60_000;
+    const timeZone = 'Pacific/Honolulu';
     const initialDetail = detail(8, initialStart, initialEnd, 6_000, 0);
     const repairedDetail = detail(8, repairedStart, repairedEnd, 12_000, 1);
     const initialPrevious = summary(7, Date.UTC(2033, 3, 29, 9), Date.UTC(2033, 3, 29, 9, 30));
@@ -144,7 +145,7 @@ describe('RideDetail repair state', () => {
       });
     vi.spyOn(api, 'settings').mockResolvedValue({
       settings: {
-        timeZone: 'Etc/UTC',
+        timeZone,
         hrZoneBounds: null,
         movingSpeedThresholdMs: 1,
         minCoverageForEfficiency: 0.7,
@@ -166,9 +167,16 @@ describe('RideDetail repair state', () => {
 
     await screen.findByRole('heading', {
       level: 1,
-      name: `Ride · ${fmtDate(initialStart, 'Etc/UTC')}`,
+      name: `Ride · ${fmtDate(initialStart, timeZone)}`,
     });
-    await screen.findByText(`Compared with ${fmtDate(initialPrevious.startUtc, 'Etc/UTC')}`);
+    await screen.findByText(`Compared with ${fmtDate(initialPrevious.startUtc, timeZone)}`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete ride' }));
+    const deleteDialog = screen.getByRole('alertdialog', { name: 'Delete this ride?' });
+    expect(deleteDialog.textContent).toContain(fmtDate(initialStart, timeZone));
+    expect(deleteDialog.textContent).not.toContain(fmtDate(initialStart, 'UTC'));
+    fireEvent.keyDown(deleteDialog, { key: 'Escape' });
+    expect(screen.queryByRole('alertdialog', { name: 'Delete this ride?' })).toBeNull();
 
     const initialChart = screen.getByRole('slider', { name: 'Heart Rate time cursor' });
     Object.defineProperty(initialChart, 'getBoundingClientRect', {
@@ -200,17 +208,17 @@ describe('RideDetail repair state', () => {
     expect(
       screen.getByRole('heading', {
         level: 1,
-        name: `Ride · ${fmtDate(repairedStart, 'Etc/UTC')}`,
+        name: `Ride · ${fmtDate(repairedStart, timeZone)}`,
       }),
     ).toBeTruthy();
     expect(
       screen.queryByRole('heading', {
         level: 1,
-        name: `Ride · ${fmtDate(initialStart, 'Etc/UTC')}`,
+        name: `Ride · ${fmtDate(initialStart, timeZone)}`,
       }),
     ).toBeNull();
     expect(
-      screen.getByText(`Compared with ${fmtDate(repairedPrevious.startUtc, 'Etc/UTC')}`),
+      screen.getByText(`Compared with ${fmtDate(repairedPrevious.startUtc, timeZone)}`),
     ).toBeTruthy();
     expect(
       screen.getByText('Distance', { selector: '.kpi-label span' }).closest('.kpi')?.textContent,
