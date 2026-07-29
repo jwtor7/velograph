@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
-import { openDatabase, type Database } from '@velograph/db';
+import { openDatabase, Repository, type Database } from '@velograph/db';
 import type { ImportUploadLimits } from '@velograph/shared';
 import { zipSync } from 'fflate';
 import { createApiServer } from './server.ts';
@@ -42,6 +42,10 @@ afterAll(async () => {
 function upload(id: string, name: string, data: Uint8Array | string) {
   const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
   return { id, name, dataBase64: Buffer.from(bytes).toString('base64') };
+}
+
+function heartRateCsv(instant: string, value: number): string {
+  return `Date/Time,Avg (bpm),Source\n${instant},${value},Synthetic Watch\n`;
 }
 
 function persistentRows(): { batches: number; sources: number; workouts: number } {
@@ -122,8 +126,16 @@ describe('bounded strict upload API (#23/#26)', () => {
   it('returns selection-bound inventory without exposing content hashes', async () => {
     const response = await post('/api/import/inventory', {
       files: [
-        upload('same-1', 'Outdoor Cycling-Heart Rate-20340501_070000.csv', 'A'),
-        upload('same-2', 'Outdoor Cycling-Heart Rate-20340501_070000.csv', 'B'),
+        upload(
+          'same-1',
+          'Outdoor Cycling-Heart Rate-20340501_070000.csv',
+          heartRateCsv('2034-05-01T07:00:00Z', 120),
+        ),
+        upload(
+          'same-2',
+          'Outdoor Cycling-Heart Rate-20340501_070000.csv',
+          heartRateCsv('2034-05-01T07:00:00Z', 121),
+        ),
       ],
     });
     expect(response.status).toBe(200);
@@ -134,23 +146,39 @@ describe('bounded strict upload API (#23/#26)', () => {
       {
         id: 'same-1',
         name: 'Outdoor Cycling-Heart Rate-20340501_070000.csv',
-        sizeBytes: 1,
+        sizeBytes: 68,
         classification: 'recognized',
-        detectedType: 'outdoor_cycling:heartrate:csv',
+        detectedType: 'metric:heart_rate',
+        outcomes: [
+          {
+            classification: 'recognized',
+            code: null,
+            detectedType: 'metric:heart_rate',
+            count: 1,
+          },
+        ],
       },
       {
         id: 'same-2',
         name: 'Outdoor Cycling-Heart Rate-20340501_070000.csv',
-        sizeBytes: 1,
+        sizeBytes: 68,
         classification: 'recognized',
-        detectedType: 'outdoor_cycling:heartrate:csv',
+        detectedType: 'metric:heart_rate',
+        outcomes: [
+          {
+            classification: 'recognized',
+            code: null,
+            detectedType: 'metric:heart_rate',
+            count: 1,
+          },
+        ],
       },
     ]);
     expect(body.inventory.every((item) => !('sha256' in item))).toBe(true);
   });
 
   it('reports duplicate, unsupported, unmodelled, and non-cycling classifications', async () => {
-    const same = new Uint8Array([9]);
+    const same = heartRateCsv('2034-05-01T07:00:00Z', 122);
     const response = await post('/api/import/inventory', {
       files: [
         upload('one', 'Outdoor Cycling-Heart Rate-20340501_070000.csv', same),
@@ -163,7 +191,7 @@ describe('bounded strict upload API (#23/#26)', () => {
     };
     expect(duplicateBody.inventory.map((item) => item.classification)).toEqual([
       'recognized',
-      'duplicate_in_selection',
+      'duplicate',
     ]);
 
     const classifications = await post('/api/import/inventory', {
@@ -192,6 +220,52 @@ describe('bounded strict upload API (#23/#26)', () => {
         }
       ).inventory.map((item) => item.classification),
     ).toEqual(['unsupported']);
+  });
+
+  it('reports parser-invalid and DB-ambiguous outcomes without retaining preview writes', async () => {
+    const repo = new Repository(db);
+    const start = Date.UTC(2034, 5, 1, 7);
+    repo.createWorkout('outdoor_cycling', start - 60_000, start + 60_000, 'synthetic-test');
+    repo.createWorkout('outdoor_cycling', start - 120_000, start + 120_000, 'synthetic-test');
+    const before = persistentRows();
+
+    const response = await post('/api/import/inventory', {
+      files: [
+        upload(
+          'ambiguous',
+          'Outdoor Cycling-Heart Rate-20340601_070000.csv',
+          heartRateCsv('2034-06-01T07:00:00Z', 123),
+        ),
+        upload(
+          'invalid',
+          'Outdoor Cycling-Heart Rate-20340602_070000.csv',
+          'not,a,recognized,header\n1,2,3,4\n',
+        ),
+      ],
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      inventory: {
+        classification: string;
+        outcomes: { classification: string; code: string | null }[];
+      }[];
+    };
+    expect(body.inventory.map((item) => item.classification)).toEqual(['ambiguous', 'invalid']);
+    expect(body.inventory[0]!.outcomes).toEqual([
+      expect.objectContaining({
+        classification: 'ambiguous',
+        code: 'association_ambiguous',
+      }),
+    ]);
+    expect(body.inventory[1]!.outcomes).toEqual([
+      expect.objectContaining({
+        classification: 'invalid',
+        code: 'unrecognized_headers',
+      }),
+    ]);
+    expect(persistentRows()).toEqual(before);
+    expect(db.inTransaction).toBe(false);
   });
 
   it('rejects oversized encoded bodies with 413 before parsing', async () => {

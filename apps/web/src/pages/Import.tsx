@@ -303,9 +303,9 @@ export function ImportPage() {
     setPathBusy(true);
     setPreviewError(null);
     try {
-      if (!preview || preview.truncated) {
+      if (!preview || preview.truncated || !preview.preflightComplete) {
         setPreviewError(
-          'This folder exceeded the safe traversal or import limits. Narrow the folder and preview again.',
+          'A complete file review is required before importing. Preview the folder again.',
         );
         return;
       }
@@ -373,13 +373,9 @@ export function ImportPage() {
 
       <div
         className={`dropzone ${drag ? 'drag' : ''}`}
-        role="button"
-        tabIndex={0}
+        role="group"
+        aria-label="File import drop area"
         aria-disabled={fileOperationBusy || pathOperationBusy}
-        onClick={() => !fileOperationBusy && !pathOperationBusy && inputRef.current?.click()}
-        onKeyDown={(e) =>
-          e.key === 'Enter' && !fileOperationBusy && !pathOperationBusy && inputRef.current?.click()
-        }
         onDragOver={(e) => {
           e.preventDefault();
           setDrag(true);
@@ -388,10 +384,7 @@ export function ImportPage() {
         onDrop={(e) => void handleDrop(e)}
       >
         <p style={{ margin: 0, fontSize: 15 }}>
-          Drop your export files or folder here, or{' '}
-          <span className="grad-text" style={{ fontWeight: 600 }}>
-            browse
-          </span>
+          Drop your export files or folder here, or use the file chooser.
         </p>
         <p className="muted" style={{ margin: '6px 0 12px', fontSize: 12 }}>
           One CSV contains one metric. Drop the whole export folder or every companion file for a
@@ -402,10 +395,7 @@ export function ImportPage() {
             type="button"
             className="btn"
             disabled={fileOperationBusy || pathOperationBusy}
-            onClick={(e) => {
-              e.stopPropagation();
-              inputRef.current?.click();
-            }}
+            onClick={() => inputRef.current?.click()}
           >
             Choose files
           </button>
@@ -457,6 +447,26 @@ export function ImportPage() {
                         >
                           {inventoryById.get(p.id)!.classification.replaceAll('_', ' ')}
                         </span>
+                        {inventoryById
+                          .get(p.id)!
+                          .outcomes.filter(
+                            (outcome) =>
+                              inventoryById.get(p.id)!.classification === 'mixed' ||
+                              outcome.classification === 'invalid' ||
+                              outcome.classification === 'ambiguous' ||
+                              outcome.count > 1,
+                          )
+                          .map((outcome, index) => (
+                            <span
+                              key={`${outcome.classification}-${outcome.code ?? 'none'}-${index}`}
+                              className="muted"
+                              style={{ marginLeft: 6, fontSize: 11 }}
+                            >
+                              {outcome.count > 1 ? `${outcome.count}× ` : ''}
+                              {outcome.classification.replaceAll('_', ' ')}
+                              {outcome.code ? ` · ${outcome.code.replaceAll('_', ' ')}` : ''}
+                            </span>
+                          ))}
                         {inventoryById.get(p.id)!.detectedType && (
                           <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
                             {inventoryById
@@ -578,6 +588,40 @@ export function ImportPage() {
               {preview.truncated ? ' · limit exceeded — import is disabled' : ''}
             </p>
 
+            {preview.preflightComplete ? (
+              <div style={{ margin: '8px 0' }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>
+                  Exact file review ({preview.preflight.length})
+                </div>
+                <ul className="muted" style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12 }}>
+                  {preview.preflight.map((item, index) => (
+                    <li key={`${item.name}-${index}`}>
+                      {item.name} — {item.classification.replaceAll('_', ' ')}
+                      {item.outcomes
+                        .filter(
+                          (outcome) =>
+                            item.classification === 'mixed' ||
+                            outcome.classification === 'invalid' ||
+                            outcome.classification === 'ambiguous' ||
+                            outcome.count > 1,
+                        )
+                        .map(
+                          (outcome) =>
+                            ` · ${outcome.count > 1 ? `${outcome.count}× ` : ''}${
+                              outcome.code?.replaceAll('_', ' ') ??
+                              outcome.classification.replaceAll('_', ' ')
+                            }`,
+                        )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p style={{ fontSize: 12, color: 'var(--vg-ch-hr)' }}>
+                Exact parser and duplicate review is incomplete. Import is disabled.
+              </p>
+            )}
+
             {preview.rides.map((r) => (
               <div key={r.rideKey} style={{ margin: '8px 0' }}>
                 <div style={{ fontWeight: 600, fontSize: 13 }}>
@@ -632,7 +676,11 @@ export function ImportPage() {
                 className="btn primary"
                 onClick={confirmPathImport}
                 disabled={
-                  fileOperationBusy || pathBusy || preview.totalFiles === 0 || preview.truncated
+                  fileOperationBusy ||
+                  pathBusy ||
+                  preview.totalFiles === 0 ||
+                  preview.truncated ||
+                  !preview.preflightComplete
                 }
               >
                 {pathBusy ? 'Importing…' : `Confirm import (${preview.totalFiles} files)`}

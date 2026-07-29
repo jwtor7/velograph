@@ -32,9 +32,11 @@ is pre-1.0, and for the release procedure.
   DNS-rebinding and cross-origin checks. CI now also proves the production web build (#25).
 - **Loose-file imports now require an exact server review before confirmation.** Browser
   selections keep a unique identity for every `File`, including distinct files with the same
-  name and size, then call `POST /api/import/inventory` and display recognized, duplicate,
-  unsupported, unmodelled-metric, and non-cycling classifications. Confirmation is bound to
-  that ordered selection. Browser encoding is sequential and the browser/API share practical
+  name and size, then call `POST /api/import/inventory`. The review runs the confirmed import's
+  real parser, content-hash duplicate check, and database-backed workout association rules inside
+  a rollback-only transaction, and displays recognized, duplicate, ambiguous, invalid,
+  unsupported, unmodelled-metric, and non-cycling outcomes without retaining preview writes.
+  Confirmation is bound to that ordered selection. Browser encoding is sequential and the browser/API share practical
   file-count, per-file, decoded-total, and encoded-body limits; large exports are directed to
   path import. The API validates the complete exact-key schema and canonical base64 before
   decoding or writing, rejects mixed invalid requests atomically, returns stable value-free
@@ -50,7 +52,8 @@ is pre-1.0, and for the release procedure.
 - **Path-based folder import.** The web client can import a Health Auto Export folder by
   path instead of routing every file through the browser as base64: paste the folder path,
   preview the files it finds (grouped by ride — workout type + the filename's trailing
-  timestamp — so companion metric files are obviously one ride before anything imports),
+  timestamp — so companion metric files are obvious), and review every file through the same
+  exact rollback-only parser, duplicate, and database-association preflight as loose uploads,
   then confirm. The API reads the folder directly from disk, recursing into subfolders,
   through incremental directory handles with explicit visited-entry, directory, depth,
   importable-file, and total-byte bounds; unsupported entries count toward traversal limits
@@ -129,7 +132,9 @@ is pre-1.0, and for the release procedure.
   accessible labels, and their outcomes are announced as status updates. At phone widths, page
   actions move below the title, content padding stays usable, and lower-priority direction labels
   no longer obscure the route. Compact sidebar links also retain their accessible names when the
-  visible labels collapse to icons (#56).
+  visible labels collapse to icons. The Import drop surface is now a labelled, non-interactive
+  group; the native file chooser button alone owns activation and therefore retains browser-native
+  Space and Enter semantics (#56).
 - **Strict, rollback-safe restore and graceful shutdown.** Restore now rejects corrupt input,
   forged or incomplete schemas, foreign-key violations, and unknown/future/out-of-order migration
   histories. It migrates a private staged copy and compares its complete schema against a freshly

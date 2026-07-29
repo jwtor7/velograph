@@ -124,6 +124,14 @@ describe('browser import selection', () => {
         sizeBytes: 4,
         classification: 'unsupported' as const,
         detectedType: null,
+        outcomes: [
+          {
+            classification: 'unsupported' as const,
+            code: 'unsupported_file_type',
+            detectedType: null,
+            count: 1,
+          },
+        ],
       },
     ];
     expect(inventoryMatchesSelection(selected, inventory)).toBe(true);

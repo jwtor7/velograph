@@ -81,11 +81,15 @@ and a folder holds dozens of files across many rides). Confirmation revalidates 
 tree and reads one bounded ride group at a time while keeping the whole confirmed import
 atomic; it never holds the entire folder in memory. The preview groups files by ride (workout
 type + the filename's trailing timestamp) so it's obvious which companion files belong
-together before anything is imported. The preview response contains relative entry metadata and
+together before anything is imported. Before confirmation, every planned file is evaluated by
+the real parser, content-hash duplicate check, and database-backed workout association rules
+inside a rollback-only transaction. The preview therefore reports exact recognized, duplicate,
+ambiguous, invalid, unsupported, unmodelled-metric, and non-cycling outcomes without creating an
+import batch, workout, source row, or sample. The preview response contains relative entry metadata and
 an opaque confirmation token, never the requested or canonical absolute folder path. The
 multi-file picker and loose-file drag-and-drop
 remain useful for small selections: each exact file is reviewed by the local API before the
-Confirm button appears, duplicate/unsupported/out-of-scope status is shown, and files with the
+Confirm button appears using those same parser and database rules, and files with the
 same name and size remain distinct. Browser uploads enforce count, per-file, aggregate decoded,
 and encoded-request limits and encode one file at a time; use folder path import when a selection
 exceeds them. Compressed ZIP contents inherit those same per-file and aggregate decoded-byte

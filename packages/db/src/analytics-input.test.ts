@@ -30,7 +30,7 @@ describe('loadWorkoutData route timestamps', () => {
       segments: [
         {
           points: [
-            { lat: 43.1, lon: -79.1, ele: 100 },
+            { t: null, lat: 43.1, lon: -79.1, ele: 100 },
             { t: 150, lat: 43.2, lon: -79.2, ele: 101 },
           ],
         },

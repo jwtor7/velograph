@@ -147,6 +147,8 @@ export interface FolderPreviewBody {
   totalBytes: number;
   truncated: boolean;
   confirmationToken: string;
+  preflightComplete: boolean;
+  preflight: Omit<ImportInventoryItem, 'id'>[];
 }
 
 export interface ImportResultBody {
@@ -170,17 +172,30 @@ export interface UploadFileBody {
   dataBase64: string;
 }
 
+export type ImportInventoryClassification =
+  | 'recognized'
+  | 'duplicate'
+  | 'ambiguous'
+  | 'invalid'
+  | 'unsupported'
+  | 'unmodelled_metric'
+  | 'non_cycling_workout'
+  | 'mixed';
+
+export interface ImportInventoryOutcome {
+  classification: Exclude<ImportInventoryClassification, 'mixed'>;
+  code: string | null;
+  detectedType: string | null;
+  count: number;
+}
+
 export interface ImportInventoryItem {
   id: string;
   name: string;
   sizeBytes: number;
-  classification:
-    | 'recognized'
-    | 'unsupported'
-    | 'duplicate_in_selection'
-    | 'unmodelled_metric'
-    | 'non_cycling_workout';
+  classification: ImportInventoryClassification;
   detectedType: string | null;
+  outcomes: ImportInventoryOutcome[];
 }
 
 export interface DeleteResultBody {

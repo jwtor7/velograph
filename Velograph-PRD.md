@@ -116,8 +116,10 @@ A privacy-conscious cyclist who records rides with Apple Health, exports them th
 ### 7.2 Import rides
 
 1. The user drags in a folder/ZIP, selects multiple files, or uses the local CLI importer.
-2. Velograph inventories files without changing the source.
-3. It shows recognized, unsupported, duplicate, unmodelled-metric, and non-cycling files.
+2. Velograph evaluates each file without changing the source or database, using the same parser,
+   content-hash duplicate check, and database-backed association rules as confirmed import.
+3. It shows exact recognized, duplicate, ambiguous, invalid, unsupported, unmodelled-metric, and
+   non-cycling outcomes.
 4. The user confirms the import.
 5. Velograph hashes and parses the files, associates them with workouts, validates data, writes one transaction, and calculates analytics.
 6. The result summarizes imported, updated, skipped, and quarantined records without exposing sensitive values in logs.
@@ -152,7 +154,7 @@ Priority labels: **P0** is required for the first usable release; **P1** is requ
 
 | ID | Priority | Requirement |
 |---|---:|---|
-| IMP-001 | P0 | Import selected CSV/GPX files, a folder selection, or a ZIP through the web UI. |
+| IMP-001 | P0 | Import selected CSV/GPX files, a folder selection, or a ZIP through the web UI. Before confirmation, both selected-file and folder-path flows must run the confirmed import's parser, duplicate check, and database association rules in a bounded, cancellable, rollback-only preflight and show exact per-file outcomes. |
 | IMP-002 | P0 | Provide a CLI import command for direct local paths and automation. |
 | IMP-003 | P0 | Compute SHA-256 per source file and make repeat imports idempotent. |
 | IMP-004 | P0 | Parse supported headers through versioned adapters with normalized canonical field names and units. |

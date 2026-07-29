@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Database } from '@velograph/db';
 import { classifyImportFileName, parseHaeGpx } from './adapters.ts';
 import { runImport } from './importer.ts';
-import { inventoryFiles } from './inventory.ts';
 
 const syntheticSouth = -48.5;
 const syntheticWest = -123.5;
@@ -103,7 +102,7 @@ describe('import scope classification (#53)', () => {
     ).toThrowError(expect.objectContaining({ code: 'unsupported_file_type' }));
   });
 
-  it('quarantines noncanonical cycling GPX names that inventory marks unsupported', () => {
+  it('quarantines noncanonical cycling GPX names classified as unsupported', () => {
     db = openDatabase(':memory:');
     const names = [
       'Outdoor Cycling-Route-synthetic.gpx',
@@ -117,37 +116,9 @@ describe('import scope classification (#53)', () => {
     }));
     const result = runImport(db, files, { now: Date.UTC(2033, 3, 6), timeZone: 'UTC' });
 
-    expect(inventoryFiles(files).map((item) => item.classification)).toEqual([
-      'unsupported',
-      'unsupported',
-    ]);
     expect(result).toMatchObject({ imported: 0, skipped: 0, quarantined: 2 });
     expect(result.quarantinedFiles).toEqual(
       [...names].sort().map((name) => ({ name, code: 'unsupported_file_type' })),
     );
-  });
-
-  it('exposes aggregate skip classifications and exact duplicate status in inventory', () => {
-    const same = new TextEncoder().encode('same synthetic bytes');
-    const inventory = inventoryFiles([
-      {
-        name: 'Outdoor Cycling-Respiratory Rate-20330405_070000.csv',
-        data: new Uint8Array([1]),
-      },
-      { name: 'Running-Route-20330405_070000.gpx', data: new Uint8Array([2]) },
-      { name: 'Outdoor Cycling-Heart Rate-20330405_070000.csv', data: same },
-      { name: 'Outdoor Cycling-Heart Rate-20330405_070000.csv', data: same },
-      { name: 'synthetic.zip', data: new Uint8Array([3]) },
-      { name: 'unrecognized.gpx', data: new Uint8Array([4]) },
-    ]);
-
-    expect(inventory.map((item) => item.classification)).toEqual([
-      'unmodelled_metric',
-      'non_cycling_workout',
-      'recognized',
-      'duplicate_in_selection',
-      'recognized',
-      'unsupported',
-    ]);
   });
 });

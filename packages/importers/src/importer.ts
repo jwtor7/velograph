@@ -64,6 +64,37 @@ export interface RunImportOptions {
 
 interface PreparedImportFile extends ImportFile {
   expansionError?: QuarantineCode;
+  /** Top-level loose file or archive selected by the user. */
+  origin: ImportFile;
+}
+
+export type ImportPreflightClassification =
+  'recognized' | 'duplicate' | 'ambiguous' | 'invalid' | 'unsupported' | ImportSkipCode;
+
+export interface ImportPreflightOutcome {
+  classification: ImportPreflightClassification;
+  code: QuarantineCode | ImportSkipCode | null;
+  detectedType: string | null;
+  count: number;
+}
+
+export interface ImportPreflightItem {
+  name: string;
+  sizeBytes: number;
+  classification: ImportPreflightClassification | 'mixed';
+  detectedType: string | null;
+  outcomes: ImportPreflightOutcome[];
+}
+
+interface ObservedImportOutcome {
+  origin: ImportFile;
+  classification: ImportPreflightClassification;
+  code: QuarantineCode | ImportSkipCode | null;
+  detectedType: string | null;
+}
+
+interface RunImportInternalOptions extends RunImportOptions {
+  onFileOutcome?: (outcome: ObservedImportOutcome) => void;
 }
 
 export class ImportAbortedError extends Error {
@@ -158,6 +189,83 @@ export async function runImportGroupsCancellable(
   }
 }
 
+/**
+ * Run the exact import engine as a rollback-only preflight. The live database
+ * supplies duplicate and workout-association evidence, while the unconditional
+ * rollback guarantees that review creates no batches, source rows, workouts,
+ * or normalized samples. Cooperative checkpoints and ZIP limits are identical
+ * to confirmed import.
+ */
+export async function preflightImportCancellable(
+  db: Database,
+  inputFiles: readonly ImportFile[],
+  opts: RunImportOptions = {},
+): Promise<ImportPreflightItem[]> {
+  return preflightImportGroupsCancellable(db, [() => inputFiles], opts);
+}
+
+/**
+ * Lazy-group variant used by folder-path review. Only the current bounded
+ * association group is retained while the rollback-only simulation runs.
+ */
+export async function preflightImportGroupsCancellable(
+  db: Database,
+  inputGroups: ImportFileGroups,
+  opts: RunImportOptions = {},
+): Promise<ImportPreflightItem[]> {
+  throwIfImportAborted(opts.signal);
+  const records: {
+    name: string;
+    sizeBytes: number;
+    outcomes: ObservedImportOutcome[];
+  }[] = [];
+  const recordByOrigin = new WeakMap<
+    ImportFile,
+    { name: string; sizeBytes: number; outcomes: ObservedImportOutcome[] }
+  >();
+  function* observedGroups(): ImportFileGroups {
+    for (const loadGroup of inputGroups) {
+      yield () =>
+        loadGroup().map((file) => {
+          // Unique wrappers keep repeated references independently attributable.
+          const wrapped = { name: file.name, data: file.data };
+          const record = {
+            name: wrapped.name,
+            sizeBytes: wrapped.data.byteLength,
+            outcomes: [],
+          };
+          records.push(record);
+          recordByOrigin.set(wrapped, record);
+          return wrapped;
+        });
+    }
+  }
+  const internalOptions: RunImportInternalOptions = {
+    ...opts,
+    onFileOutcome: (outcome) => {
+      recordByOrigin.get(outcome.origin)?.outcomes.push(outcome);
+    },
+  };
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const steps = runImportSteps(db, observedGroups(), internalOptions);
+    for (;;) {
+      const step = steps.next();
+      if (step.done) break;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    db.exec('ROLLBACK');
+  } catch (error) {
+    if (db.inTransaction) db.exec('ROLLBACK');
+    throw error;
+  }
+
+  return records.map((record) =>
+    summarizePreflightItem(record.name, record.sizeBytes, record.outcomes),
+  );
+}
+
 function consumeImportSteps(steps: Generator<void, ImportResult>): ImportResult {
   for (;;) {
     const step = steps.next();
@@ -174,7 +282,7 @@ function* importCheckpoint(signal: AbortSignal | undefined): Generator<void, voi
 function* runImportSteps(
   db: Database,
   inputGroups: ImportFileGroups,
-  opts: RunImportOptions,
+  opts: RunImportInternalOptions,
 ): Generator<void, ImportResult> {
   throwIfImportAborted(opts.signal);
   const repo = new Repository(db);
@@ -214,17 +322,27 @@ function* runImportSteps(
       yield* importCheckpoint(opts.signal);
       if (f.name.toLowerCase().endsWith('.zip')) {
         try {
-          files.push(...extractZip(f.data, zipLimits, zipDecodedBudget));
+          const expanded = extractZip(f.data, zipLimits, zipDecodedBudget);
+          files.push(...expanded.map((entry) => ({ ...entry, origin: f })));
+          if (expanded.length === 0) {
+            opts.onFileOutcome?.({
+              origin: f,
+              classification: 'unsupported',
+              code: 'unsupported_file_type',
+              detectedType: 'archive:zip',
+            });
+          }
           yield* importCheckpoint(opts.signal);
         } catch (err) {
           if (err instanceof ImportAbortedError) throw err;
           files.push({
             ...f,
+            origin: f,
             expansionError: err instanceof ZipError ? err.code : 'io_error',
           });
         }
       } else {
-        files.push(f);
+        files.push({ ...f, origin: f });
       }
     }
     files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -236,6 +354,12 @@ function* runImportSteps(
         const code: ImportSkipCode = candidate.kind;
         counts.skipped++;
         counts.skippedByCode[code]++;
+        opts.onFileOutcome?.({
+          origin: file.origin,
+          classification: code,
+          code,
+          detectedType: candidate.detectedType,
+        });
         continue;
       }
       const hash = sha256Hex(file.data);
@@ -244,6 +368,12 @@ function* runImportSteps(
       const currentParserVersion = parserVersionForFile(file.name);
       if (existing?.parserVersion === currentParserVersion) {
         counts.skippedDuplicates++;
+        opts.onFileOutcome?.({
+          origin: file.origin,
+          classification: 'duplicate',
+          code: null,
+          detectedType: existing.detectedType,
+        });
         continue;
       }
       const ownedWorkoutIds = existing ? repo.workoutIdsForSourceFile(existing.id) : [];
@@ -292,6 +422,12 @@ function* runImportSteps(
         }
         counts.quarantined++;
         quarantinedFiles.push({ name: safeName, code });
+        opts.onFileOutcome?.({
+          origin: file.origin,
+          classification: preflightClassificationForQuarantine(code),
+          code,
+          detectedType,
+        });
       };
 
       if (file.expansionError) {
@@ -431,6 +567,12 @@ function* runImportSteps(
       }
       if (existing) repo.finalizeSourceFileReprocessing(detachedWorkoutIds);
       counts.imported++;
+      opts.onFileOutcome?.({
+        origin: file.origin,
+        classification: 'recognized',
+        code: null,
+        detectedType,
+      });
       yield* importCheckpoint(opts.signal);
     }
   }
@@ -446,6 +588,56 @@ function* runImportSteps(
   repo.finishBatch(id, 'committed', counts);
   yield* importCheckpoint(opts.signal);
   return { batchId: id, ...counts, quarantinedFiles };
+}
+
+function preflightClassificationForQuarantine(code: QuarantineCode): ImportPreflightClassification {
+  if (code === 'association_ambiguous') return 'ambiguous';
+  if (code === 'unsupported_file_type') return 'unsupported';
+  return 'invalid';
+}
+
+function summarizePreflightItem(
+  name: string,
+  sizeBytes: number,
+  observed: readonly ObservedImportOutcome[],
+): ImportPreflightItem {
+  const outcomes = new Map<string, ImportPreflightOutcome>();
+  for (const item of observed) {
+    const key = `${item.classification}\u0000${item.code ?? ''}\u0000${item.detectedType ?? ''}`;
+    const existing = outcomes.get(key);
+    if (existing) {
+      existing.count++;
+    } else {
+      outcomes.set(key, {
+        classification: item.classification,
+        code: item.code,
+        detectedType: item.detectedType,
+        count: 1,
+      });
+    }
+  }
+  if (outcomes.size === 0) {
+    outcomes.set('unsupported\u0000unsupported_file_type\u0000', {
+      classification: 'unsupported',
+      code: 'unsupported_file_type',
+      detectedType: null,
+      count: 1,
+    });
+  }
+  const summarized = [...outcomes.values()];
+  const classifications = new Set(summarized.map((outcome) => outcome.classification));
+  const detectedTypes = new Set(
+    summarized
+      .map((outcome) => outcome.detectedType)
+      .filter((value): value is string => value !== null),
+  );
+  return {
+    name,
+    sizeBytes,
+    classification: classifications.size === 1 ? summarized[0]!.classification : 'mixed',
+    detectedType: detectedTypes.size === 1 ? [...detectedTypes][0]! : null,
+    outcomes: summarized,
+  };
 }
 
 function* parseFileSteps(

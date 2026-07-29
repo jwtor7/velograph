@@ -13,6 +13,8 @@ function syntheticPreview(): FolderPreviewBody {
     totalBytes: 0,
     truncated: false,
     confirmationToken: 'a'.repeat(64),
+    preflightComplete: true,
+    preflight: [],
   };
 }
 

@@ -19,14 +19,16 @@ import {
   confirmFolderImportPlan,
   FolderImportError,
   ImportAbortedError,
-  inventoryFiles,
   planFolderImport,
-  previewImportFolder,
+  preflightImportCancellable,
+  preflightImportGroupsCancellable,
+  previewFolderImportPlan,
   readFolderFileGroups,
   runImportCancellable,
   runImportGroupsCancellable,
   throwIfImportAborted,
   type ImportFile,
+  type ImportPreflightItem,
 } from '@velograph/importers';
 import { APP_VERSION } from '@velograph/shared';
 import {
@@ -175,8 +177,8 @@ export function createApiServer(opts: ApiOptions): VelographApiServer {
       send(res, 500, {
         error:
           error instanceof AnalyticsSnapshotConflictError
-                  ? 'analytics_snapshot_conflict'
-                  : 'internal_error',
+            ? 'analytics_snapshot_conflict'
+            : 'internal_error',
       });
     }
   });
@@ -449,20 +451,37 @@ function route(
     const limits = opts.importUploadLimits ?? DEFAULT_IMPORT_UPLOAD_LIMITS;
     const cancellation = createRequestCancellation(req, res);
     return readJsonBody(req, limits.maxBodyBytes, cancellation.signal)
-      .then((body) => {
+      .then(async (body) => {
+        await yieldToRequestEvents();
         throwIfImportAborted(cancellation.signal);
         const uploads = decodeUploadFiles(body, limits);
+        await yieldToRequestEvents();
         throwIfImportAborted(cancellation.signal);
-        const inventory = inventoryFiles(uploads.map((upload) => upload.file)).map(
-          ({ name, sizeBytes, classification, detectedType }, index) => ({
-            id: uploads[index]!.id,
-            name,
-            sizeBytes,
-            classification,
-            detectedType,
-          }),
-        );
-        send(res, 200, { inventory });
+        if (!beginImport(state, res)) return;
+        try {
+          const inventory = await preflightImportCancellable(
+            db,
+            uploads.map((upload) => upload.file),
+            {
+              now: now(),
+              timeZone: loadSettings(db).timeZone,
+              signal: cancellation.signal,
+              zipLimits: {
+                maxEntries: limits.maxFiles,
+                maxEntryBytes: limits.maxFileBytes,
+                maxTotalBytes: limits.maxTotalDecodedBytes,
+              },
+            },
+          );
+          send(res, 200, {
+            inventory: inventory.map((item, index) => ({
+              id: uploads[index]!.id,
+              ...item,
+            })),
+          });
+        } finally {
+          state.importInProgress = false;
+        }
       })
       .catch((err) => sendImportRequestError(res, err))
       .finally(cancellation.dispose);
@@ -516,9 +535,26 @@ function route(
           return;
         }
         try {
-          const preview = previewImportFolder(p);
+          const plan = planFolderImport(p);
           await yieldToRequestEvents();
           throwIfImportAborted(cancellation.signal);
+          let preflight: ImportPreflightItem[] = [];
+          let preflightComplete = false;
+          if (!plan.truncated) {
+            if (!beginImport(state, res)) return;
+            try {
+              preflight = await preflightImportGroupsCancellable(db, readFolderFileGroups(plan), {
+                now: now(),
+                timeZone: loadSettings(db).timeZone,
+                zipLimits: PATH_IMPORT_ZIP_LIMITS,
+                signal: cancellation.signal,
+              });
+              preflightComplete = true;
+            } finally {
+              state.importInProgress = false;
+            }
+          }
+          const preview = previewFolderImportPlan(plan, preflight, preflightComplete);
           send(res, 200, { preview });
         } catch (err) {
           sendFolderImportError(res, err);
@@ -755,7 +791,8 @@ function folderErrorCode(err: unknown): string {
 }
 
 function folderErrorStatus(err: unknown): number {
-  return err instanceof FolderImportError ? 400 : 500;
+  if (!(err instanceof FolderImportError)) return 500;
+  return err.code === 'path_changed' ? 409 : 400;
 }
 
 function sendFolderImportError(res: ServerResponse, err: unknown): void {

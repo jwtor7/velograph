@@ -58,7 +58,7 @@ describe('interactive route map model', () => {
       {
         points: [
           { lat: -48, lon: -123, t: 0 },
-          { lat: -48, lon: -122.9 },
+          { lat: -48, lon: -122.9, t: null },
           { lat: -48, lon: -122.8, t: 20 },
           { lat: -48, lon: -122.7, t: 10 },
           { lat: -48, lon: -122.6, t: Number.NaN },
@@ -76,11 +76,11 @@ describe('interactive route map model', () => {
     const model = buildRouteMapModel([
       {
         points: [
-          { lat: -48, lon: -123 },
-          { lat: -48, lon: -122.9 },
-          { lat: Number.NaN, lon: -122.8 },
-          { lat: -48, lon: -121 },
-          { lat: -48, lon: -120.9 },
+          { lat: -48, lon: -123, t: null },
+          { lat: -48, lon: -122.9, t: null },
+          { lat: Number.NaN, lon: -122.8, t: null },
+          { lat: -48, lon: -121, t: null },
+          { lat: -48, lon: -120.9, t: null },
         ],
       },
     ])!;
@@ -93,8 +93,8 @@ describe('interactive route map model', () => {
     const model = buildRouteMapModel([
       {
         points: [
-          { lat: -48, lon: 179 },
-          { lat: -48, lon: -179 },
+          { lat: -48, lon: 179, t: null },
+          { lat: -48, lon: -179, t: null },
         ],
       },
     ])!;
@@ -107,8 +107,8 @@ describe('interactive route map model', () => {
     const model = buildRouteMapModel([
       {
         points: [
-          { lat: -48, lon: -123 },
-          { lat: -48, lon: -122.72 },
+          { lat: -48, lon: -123, t: null },
+          { lat: -48, lon: -122.72, t: null },
         ],
       },
     ])!;
@@ -121,8 +121,8 @@ describe('interactive route map model', () => {
     const segmentWidth = 1 / 1_000;
     const segments = Array.from({ length: 500 }, (_, index) => ({
       points: [
-        { lat: -48 + index / 100_000, lon: -123 },
-        { lat: -48 + index / 100_000, lon: -123 + segmentWidth },
+        { lat: -48 + index / 100_000, lon: -123, t: null },
+        { lat: -48 + index / 100_000, lon: -123 + segmentWidth, t: null },
       ],
     }));
 

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
-import { openDatabase, type Database } from '@velograph/db';
+import { openDatabase, Repository, type Database } from '@velograph/db';
 import { createApiServer } from './server.ts';
 import { generateCorpus } from '../../../scripts/generate-fixtures.mjs';
 
@@ -36,6 +36,8 @@ interface PathPreviewResponse {
     skipped: { relativePath: string; reason: string }[];
     totalFiles: number;
     truncated: boolean;
+    preflightComplete: boolean;
+    preflight: { name: string; classification: string; outcomes: { code: string | null }[] }[];
   };
 }
 
@@ -112,6 +114,8 @@ describe('POST /api/import/path/inventory', () => {
         rides: { files: unknown[] }[];
         ungrouped: unknown[];
         totalFiles: number;
+        preflightComplete: boolean;
+        preflight: { classification: string }[];
       };
     };
     expect(body.preview.confirmationToken).toMatch(/^[a-f0-9]{64}$/);
@@ -121,10 +125,54 @@ describe('POST /api/import/path/inventory', () => {
       expect(ride.files).toHaveLength(6);
     }
     expect(body.preview.totalFiles).toBe(24);
+    expect(body.preview.preflightComplete).toBe(true);
+    expect(body.preview.preflight).toHaveLength(24);
+    expect(body.preview.preflight.every((item) => item.classification === 'recognized')).toBe(true);
 
     // Confirm the workouts list is untouched — preview never imports.
     const workouts = await fetch(`${base}/api/workouts`);
     expect(((await workouts.json()) as { workouts: unknown[] }).workouts).toHaveLength(0);
+  });
+
+  it('reports exact invalid and DB-ambiguous outcomes without preview writes', async () => {
+    const dir = mutationDir();
+    const stamp = '20400601_070000';
+    writeFileSync(
+      join(dir, `Outdoor Cycling-Cycling Cadence-${stamp}.csv`),
+      'Date/Time,Cycling Cadence (count/min),Source\n' +
+        '2040-06-01T07:00:00Z,88,Synthetic Watch\n',
+    );
+    writeFileSync(
+      join(dir, `Outdoor Cycling-Heart Rate-${stamp}.csv`),
+      'not,a,recognized,header\n1,2,3,4\n',
+    );
+    const repo = new Repository(db);
+    const start = Date.UTC(2040, 5, 1, 7);
+    const first = repo.createWorkout(
+      'outdoor_cycling',
+      start - 60_000,
+      start + 60_000,
+      'synthetic-test',
+    );
+    const second = repo.createWorkout(
+      'outdoor_cycling',
+      start - 120_000,
+      start + 120_000,
+      'synthetic-test',
+    );
+    const before = persistentImportCounts();
+
+    const { preview } = await previewPath(dir);
+
+    expect(preview.preflightComplete).toBe(true);
+    expect(preview.preflight.map((item) => item.classification)).toEqual(['ambiguous', 'invalid']);
+    expect(preview.preflight[0]!.outcomes[0]!.code).toBe('association_ambiguous');
+    expect(preview.preflight[1]!.outcomes[0]!.code).toBe('unrecognized_headers');
+    expect(persistentImportCounts()).toEqual(before);
+    expect(db.inTransaction).toBe(false);
+
+    repo.deleteWorkout(first);
+    repo.deleteWorkout(second);
   });
 
   it('rejects a path resolving inside the repository checkout', async () => {
@@ -268,6 +316,16 @@ describe('POST /api/import/path', () => {
     );
     expect(coveredRides).toBe(4);
     expect(coveredMetricSlots).toBe(totalMetricSlots);
+  });
+
+  it('previews an already imported folder as exact duplicates without writes', async () => {
+    const before = persistentImportCounts();
+    const { preview } = await previewPath(exportDir);
+
+    expect(preview.preflightComplete).toBe(true);
+    expect(preview.preflight).toHaveLength(24);
+    expect(preview.preflight.every((item) => item.classification === 'duplicate')).toBe(true);
+    expect(persistentImportCounts()).toEqual(before);
   });
 
   it('returns unsupported regular files in both preview and confirmation results', async () => {

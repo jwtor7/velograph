@@ -35,6 +35,7 @@ describe('ordered migrations', () => {
       'notes_tags',
       'source_file_reprocessing_failures',
       'workout_source_files',
+      'backup_manifests',
       'schema_migrations',
     ]) {
       expect(tables).toContain(t);
@@ -48,6 +49,7 @@ describe('ordered migrations', () => {
       '0001_init.sql',
       '0002_source_file_reprocessing_failures.sql',
       '0003_workout_source_files.sql',
+      '0004_backup_manifest.sql',
     ]);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
     db.close();

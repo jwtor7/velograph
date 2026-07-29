@@ -24,6 +24,7 @@ export interface SourceFileRow {
   id: number;
   status: string;
   parserVersion: string;
+  detectedType: string;
 }
 
 interface SourceFileWrite {
@@ -66,7 +67,7 @@ export class Repository {
   findSourceFileByHash(sha256: string): SourceFileRow | undefined {
     return this.db
       .prepare(
-        `SELECT id, status, parser_version AS parserVersion
+        `SELECT id, status, parser_version AS parserVersion, detected_type AS detectedType
          FROM source_files WHERE sha256 = ?`,
       )
       .get(sha256) as SourceFileRow | undefined;

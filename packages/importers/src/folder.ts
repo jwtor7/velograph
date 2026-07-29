@@ -13,7 +13,7 @@ import { join, relative, resolve, sep } from 'node:path';
 import { guardAgainstCheckout } from '@velograph/db';
 import { sha256Hex, stableStringify } from '@velograph/shared';
 import { parseHaeFilename } from './adapters.ts';
-import type { ImportFile, ImportFileGroupLoader } from './importer.ts';
+import type { ImportFile, ImportFileGroupLoader, ImportPreflightItem } from './importer.ts';
 
 /**
  * Path-based folder import (issue #51).
@@ -669,6 +669,8 @@ export interface FolderPreview {
   totalBytes: number;
   truncated: boolean;
   confirmationToken: string;
+  preflightComplete: boolean;
+  preflight: ImportPreflightItem[];
 }
 
 function planConfirmationToken(plan: FolderImportPlan): string {
@@ -715,8 +717,11 @@ export function confirmFolderImportPlan(plan: FolderImportPlan, token: string): 
  * Render the metadata plan as the existing value-free preview contract.
  * Canonical paths and filesystem identities never enter the API response.
  */
-export function previewImportFolder(rootPath: string, opts: FolderWalkOptions = {}): FolderPreview {
-  const plan = planFolderImport(rootPath, opts);
+export function previewFolderImportPlan(
+  plan: FolderImportPlan,
+  preflight: readonly ImportPreflightItem[] = [],
+  preflightComplete = false,
+): FolderPreview {
   const rides: FolderRideGroup[] = [];
   const ungrouped: FolderUngroupedItem[] = [];
 
@@ -760,7 +765,17 @@ export function previewImportFolder(rootPath: string, opts: FolderWalkOptions = 
     totalBytes: plan.totalBytes,
     truncated: plan.truncated,
     confirmationToken: planConfirmationToken(plan),
+    preflightComplete,
+    preflight: [...preflight],
   };
+}
+
+/**
+ * Metadata-only convenience used by filesystem planning tests. API review
+ * augments the same plan with rollback-only parser/association preflight.
+ */
+export function previewImportFolder(rootPath: string, opts: FolderWalkOptions = {}): FolderPreview {
+  return previewFolderImportPlan(planFolderImport(rootPath, opts));
 }
 
 function revalidateRoot(plan: FolderImportPlan): void {

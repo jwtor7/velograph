@@ -155,6 +155,17 @@ instead of retaining a second `string[][]` representation. Limit failures use
 32 MiB per-entry and 64 MiB aggregate defaults as decoded browser uploads, so compressed input
 cannot expand beyond the route's ordinary file budgets.
 
+## Exact import preflight
+
+Both loose browser selections and folder-path plans are reviewed by the confirmed import engine
+before confirmation. The review uses the same parsers, content hashes, ZIP budgets, and live
+database association rules, so `recognized`, `duplicate`, `ambiguous`, `invalid`, `unsupported`,
+`unmodelled_metric`, and `non_cycling_workout` are evidence-backed outcomes rather than filename
+guesses. It runs inside `BEGIN IMMEDIATE` and always rolls back, leaving no import batch, source,
+workout, metric, or route writes. Folder review loads one bounded association group at a time;
+both flows accept the same cooperative cancellation signal as confirmed import. A truncated folder
+plan has no complete preflight and cannot be confirmed.
+
 ## Import cancellation and rollback
 
 Browser file encoding is sequential and receives the same `AbortSignal` as its subsequent

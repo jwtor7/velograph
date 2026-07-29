@@ -1116,12 +1116,17 @@ describe('backupDatabase / restoreDatabase', () => {
       forged.exec(`
         CREATE TABLE schema_migrations (
           name TEXT PRIMARY KEY,
-          applied_at INTEGER NOT NULL
+          applied_at INTEGER NOT NULL,
+          checksum TEXT NOT NULL
         );
-        INSERT INTO schema_migrations (name, applied_at)
-          VALUES ('0001_init.sql', 1000);
         CREATE TABLE workouts (id INTEGER PRIMARY KEY);
       `);
+      const insertMigration = forged.prepare(
+        'INSERT INTO schema_migrations (name, applied_at, checksum) VALUES (?, ?, ?)',
+      );
+      for (const migration of listMigrations(MIGRATIONS_DIR)) {
+        insertMigration.run(migration.name, 1000, migration.checksum);
+      }
       forged.close();
 
       const db = openDatabase(dbPath);
