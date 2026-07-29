@@ -7,6 +7,27 @@ import { api, type RideAnalytics, type WorkoutDetail, type WorkoutSummary } from
 import { buildLineSpec, fmtDate } from '../chartspec/spec.ts';
 import { RideDetail } from './RideDetail.tsx';
 
+vi.mock('../components/interactive-route-map.tsx', () => ({
+  InteractiveRouteMap: ({
+    segments,
+    cursorT,
+  }: {
+    segments: WorkoutDetail['route'];
+    cursorT: number | null;
+  }) => (
+    <svg
+      role="img"
+      aria-label="interactive offline route map"
+      data-route={JSON.stringify(
+        segments.map((segment) =>
+          segment.points.map((point) => [point.t, point.lat, point.lon, point.ele]),
+        ),
+      )}
+      data-cursor={cursorT ?? ''}
+    />
+  ),
+}));
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -149,7 +170,7 @@ describe('RideDetail repair state', () => {
     });
     await screen.findByText(`Compared with ${fmtDate(initialPrevious.startUtc, 'Etc/UTC')}`);
 
-    const initialChart = screen.getByRole('img', { name: 'Heart Rate chart' });
+    const initialChart = screen.getByRole('slider', { name: 'Heart Rate time cursor' });
     Object.defineProperty(initialChart, 'getBoundingClientRect', {
       configurable: true,
       value: () =>
@@ -168,12 +189,10 @@ describe('RideDetail repair state', () => {
     fireEvent.mouseMove(initialChart, { clientX: 280 });
 
     expect(initialChart.querySelector('line[stroke-dasharray="3 3"]')).not.toBeNull();
-    const initialRoute = screen.getByRole('img', {
-      name: 'offline route map with direction, distance, and scale markers',
-    });
-    expect(initialRoute.querySelector('circle[fill="none"]')).not.toBeNull();
-    const initialRoutePath = initialRoute.querySelector('path[stroke^="url"]')?.getAttribute('d');
-    expect(initialRoutePath).toBeTruthy();
+    const initialRoute = screen.getByRole('img', { name: 'interactive offline route map' });
+    const initialRouteSignature = initialRoute.getAttribute('data-route');
+    expect(initialRouteSignature).toBeTruthy();
+    expect(initialRoute.getAttribute('data-cursor')).not.toBe('');
 
     fireEvent.click(screen.getByRole('button', { name: 'Repair ride' }));
 
@@ -197,7 +216,7 @@ describe('RideDetail repair state', () => {
       screen.getByText('Distance', { selector: '.kpi-label span' }).closest('.kpi')?.textContent,
     ).toContain('12.0km');
 
-    const repairedChart = screen.getByRole('img', { name: 'Heart Rate chart' });
+    const repairedChart = screen.getByRole('slider', { name: 'Heart Rate time cursor' });
     const expectedChart = buildLineSpec(
       repairedDetail.metrics.heart_rate!.map((sample) => ({
         t: sample.t,
@@ -210,12 +229,8 @@ describe('RideDetail repair state', () => {
     expect(repairedChart.querySelectorAll('path')[1]?.getAttribute('d')).toBe(expectedChart!.path);
     expect(repairedChart.querySelector('line[stroke-dasharray="3 3"]')).toBeNull();
 
-    const repairedRoute = screen.getByRole('img', {
-      name: 'offline route map with direction, distance, and scale markers',
-    });
-    expect(repairedRoute.querySelector('path[stroke^="url"]')?.getAttribute('d')).not.toBe(
-      initialRoutePath,
-    );
-    expect(repairedRoute.querySelector('circle[fill="none"]')).toBeNull();
+    const repairedRoute = screen.getByRole('img', { name: 'interactive offline route map' });
+    expect(repairedRoute.getAttribute('data-route')).not.toBe(initialRouteSignature);
+    expect(repairedRoute.getAttribute('data-cursor')).toBe('');
   });
 });

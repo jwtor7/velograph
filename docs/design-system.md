@@ -68,11 +68,11 @@ Route polylines are drawn as a progress gradient start→finish: `#2CE466` → `
 
 ### Text
 
-| Token                 | Hex       | Source                                                                                               |
-| --------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
-| `--vg-text`           | `#FFFFFF` | sampled headline                                                                                     |
-| `--vg-text-secondary` | `#B8C0CC` | _derived_                                                                                            |
-| `--vg-text-muted`     | `#6B7688` | _derived_ (labels sampled composited at `#3C434D` are below AA; lifted for WCAG 2.2 AA on `#09101B`) |
+| Token                 | Hex       | Source                                                                                        |
+| --------------------- | --------- | --------------------------------------------------------------------------------------------- |
+| `--vg-text`           | `#FFFFFF` | sampled headline                                                                              |
+| `--vg-text-secondary` | `#B8C0CC` | _derived_                                                                                     |
+| `--vg-text-muted`     | `#758197` | _derived_ (4.85:1 on `#09101B`, 4.67:1 on raised `#0D1520`; sampled label grays are below AA) |
 
 Accessibility note: sampled label grays from the art fail AA contrast at small sizes; the derived text tokens are the shippable values. Channel colors are supplemented by icons/labels (color-independent status cues, PRD §14).
 
@@ -111,3 +111,4 @@ Accessibility note: sampled label grays from the art fail AA contrast at small s
 3. Channel colors are semantic and immutable; never use them decoratively.
 4. All fonts, icons, and styles are bundled — zero remote requests at render (PRD §9.3).
 5. Meet WCAG 2.2 AA: use derived text tokens, visible focus rings (`--vg-brand-teal` 2 px), and non-color status cues.
+6. Confirmation dialogs move focus to Cancel, trap focus, close on Escape when idle, and restore focus to their trigger. Interactive time-series charts expose a keyboard slider cursor with fine, page, and boundary controls.
