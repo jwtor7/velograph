@@ -51,8 +51,10 @@ export function SettingsPage() {
     setBackingUp(true);
     setBackupStatus(null);
     try {
-      await api.backup(backupPath.trim());
-      setBackupStatus('Backup written.');
+      const result = await api.backup(backupPath.trim());
+      setBackupStatus(
+        `Backup written · format ${result.manifest.formatVersion} · ${result.manifest.schemaVersion}`,
+      );
     } catch {
       setBackupStatus(
         'Backup failed — check the path is writable and outside the Velograph checkout.',
@@ -68,8 +70,12 @@ export function SettingsPage() {
     setRestoreStatus(null);
     setConfirmingRestore(false);
     try {
-      await api.restore(restorePath.trim());
-      setRestoreStatus('Restored. Reload to see the restored data.');
+      const result = await api.restore(restorePath.trim());
+      setRestoreStatus(
+        result.report.legacyBackup
+          ? `Restored and upgraded a legacy backup · integrity verified · ${result.report.schemaVersion}`
+          : `Restored · manifest, checksums, database, and foreign keys verified · ${result.report.schemaVersion}`,
+      );
     } catch {
       setRestoreStatus('Restore failed — check the path points to a Velograph backup file.');
     } finally {
@@ -171,7 +177,8 @@ export function SettingsPage() {
         <p className="muted" style={{ marginTop: 0, fontSize: 12 }}>
           Export the full local database with SQLite's own backup mechanism, or restore it from a
           previous export. Both run on this machine — the path is a location on this computer, never
-          uploaded anywhere. Backups must be written outside the Velograph source checkout.
+          uploaded anywhere. Backups contain an app/schema manifest and deterministic checksums, and
+          must be written outside the Velograph source checkout.
         </p>
 
         <div className="stack">
@@ -239,7 +246,8 @@ export function SettingsPage() {
             <>
               <p style={{ margin: 0 }}>
                 This replaces everything currently in your Velograph database with the contents of
-                the backup file.
+                the backup file. Velograph verifies its manifest, checksums, SQLite integrity,
+                foreign keys, and compatible migration history before replacement.
               </p>
               <p style={{ margin: '8px 0 0', fontWeight: 600 }}>
                 Anything imported or changed since that backup was taken will be lost.

@@ -9,9 +9,10 @@ import {
   RestoreValidationError,
   backupDatabase,
   loadWorkoutData,
-  restoreDatabase,
+  restoreDatabaseWithReport,
 } from '@velograph/db';
 import { inventoryFiles, runImport, type ImportFile } from '@velograph/importers';
+import { APP_VERSION } from '@velograph/shared';
 import {
   getOrComputeAnalytics,
   loadSettings,
@@ -19,7 +20,7 @@ import {
   saveSettings,
 } from './analytics-service.ts';
 
-export const API_VERSION = '0.1.0';
+export const API_VERSION = APP_VERSION;
 const MAX_IMPORT_BODY_BYTES = 600 * 1024 * 1024; // base64-encoded uploads
 const MAX_PATH_BODY_BYTES = 8 * 1024;
 
@@ -49,7 +50,7 @@ export interface ApiOptions {
   staticDir?: string;
   now?: () => number;
   /** @internal Deterministic seam for restore/shutdown integration tests. */
-  restoreDatabaseFn?: typeof restoreDatabase;
+  restoreDatabaseFn?: typeof restoreDatabaseWithReport;
 }
 
 interface ApiRuntimeState {
@@ -386,7 +387,16 @@ function route(
         }
         try {
           const result = await backupDatabase(db, dest);
-          send(res, 200, { ok: true, totalPages: result.totalPages });
+          send(res, 200, {
+            ok: true,
+            totalPages: result.totalPages,
+            manifest: {
+              formatVersion: result.manifest.formatVersion,
+              appVersion: result.manifest.appVersion,
+              schemaVersion: result.manifest.schemaVersion,
+              includedCategories: result.manifest.includedCategories,
+            },
+          });
         } catch (err) {
           if (err instanceof BackupValidationError) {
             send(res, 400, { error: err.code });
@@ -414,6 +424,10 @@ function route(
           send(res, 400, { error: 'invalid_path' });
           return;
         }
+        if ((body as { confirmed?: unknown }).confirmed !== true) {
+          send(res, 409, { error: 'restore_confirmation_required' });
+          return;
+        }
         if (state.restoreInProgress) {
           send(res, 409, { error: 'restore_in_progress' });
           return;
@@ -424,13 +438,13 @@ function route(
           // before this restore to finish before the live handle is
           // checkpointed and swapped.
           await waitForExclusiveRequest(state);
-          const restored = await (opts.restoreDatabaseFn ?? restoreDatabase)(
+          const restored = await (opts.restoreDatabaseFn ?? restoreDatabaseWithReport)(
             opts.db,
             opts.dbPath!,
             source,
           );
-          opts.db = restored;
-          send(res, 200, { ok: true });
+          opts.db = restored.database;
+          send(res, 200, { ok: true, report: restored.report });
         } catch (error) {
           let status = 400;
           let code = 'restore_failed';

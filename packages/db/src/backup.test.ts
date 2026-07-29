@@ -18,7 +18,8 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkpointDatabase, openDatabase } from './database.ts';
+import { checkpointDatabase, MIGRATIONS_DIR, openDatabase } from './database.ts';
+import { listMigrations, readAppliedMigrations } from './migrate.ts';
 import { Repository } from './repository.ts';
 import {
   BackupValidationError,
@@ -27,6 +28,7 @@ import {
   backupDatabase,
   isVelographBackup,
   restoreDatabase,
+  restoreDatabaseWithReport,
   type BackupValidationErrorCode,
   type RestoreOptions,
   type RestoreValidationErrorCode,
@@ -258,6 +260,18 @@ describe('backupDatabase / restoreDatabase', () => {
 
       const result = await backupDatabase(db, backupPath);
       expect(result.totalPages).toBeGreaterThan(0);
+      expect(result.manifest).toEqual(
+        expect.objectContaining({
+          formatVersion: 1,
+          appVersion: '0.1.0',
+          schemaVersion: '0004_backup_manifest.sql',
+          includedCategories: expect.objectContaining({
+            credentials: false,
+            rawSourceFiles: false,
+            normalizedData: true,
+          }),
+        }),
+      );
       expect(existsSync(backupPath)).toBe(true);
       expect(statSync(backupPath).mode & 0o777).toBe(0o600);
       expect(isVelographBackup(backupPath)).toBe(true);
@@ -268,13 +282,25 @@ describe('backupDatabase / restoreDatabase', () => {
       expect(repo.getWorkout(workoutId)).toBeUndefined();
 
       let artifactMetadata: { mode: number; uid: number; gid: number }[] = [];
-      const restored = await restoreDatabase(db, dbPath, backupPath, {
+      const restoreResult = await restoreDatabaseWithReport(db, dbPath, backupPath, {
         beforeSwap: () => {
           artifactMetadata = restoreArtifacts(dir).map((name) => {
             const stats = statSync(join(dir, name));
             return { mode: stats.mode & 0o777, uid: stats.uid, gid: stats.gid };
           });
         },
+      });
+      const restored = restoreResult.database;
+      expect(restoreResult.report).toEqual({
+        backupFormatVersion: 1,
+        backupAppVersion: '0.1.0',
+        schemaVersion: '0004_backup_manifest.sql',
+        manifestVerified: true,
+        checksumsVerified: true,
+        databaseIntegrity: 'ok',
+        foreignKeys: 'ok',
+        legacyBackup: false,
+        migrationsApplied: [],
       });
       const restoredRepo = new Repository(restored);
       const w = restoredRepo.getWorkout(workoutId);
@@ -295,6 +321,145 @@ describe('backupDatabase / restoreDatabase', () => {
       restored.close();
     }));
 
+  it('rejects a backup whose normalized data no longer matches its manifest checksum', () =>
+    withTempDir(async (dir) => {
+      const { db, dbPath, backupPath } = await createRestoreScenario(dir);
+      const tampered = new DatabaseConstructor(backupPath);
+      tampered
+        .prepare("UPDATE user_settings SET value_json = '\"tampered\"' WHERE key = 'restore-state'")
+        .run();
+      tampered.close();
+
+      await expectValidationError(
+        restoreDatabase(db, dbPath, backupPath),
+        'invalid_backup_checksum',
+      );
+      expect(db.open).toBe(true);
+      expect(readRestoreState(db)).toBe('current-live');
+      expect(isVelographBackup(backupPath)).toBe(false);
+      db.close();
+    }));
+
+  it('detects adjacent 64-bit integer tampering without numeric precision loss', () =>
+    withTempDir(async (dir) => {
+      const dbPath = join(dir, 'live.sqlite3');
+      const backupPath = join(dir, 'exported.sqlite3');
+      const db = openDatabase(dbPath);
+      db.exec(`
+        INSERT INTO import_batches (
+          id, created_at, status, importer_version, counts_json
+        ) VALUES (1, 1000, 'committed', 'synthetic-test', '{}');
+        INSERT INTO source_files (
+          id, batch_id, sha256, original_name, detected_type, parser_version,
+          retention_state, status, error_code, size_bytes
+        ) VALUES (
+          1, 1, '${'a'.repeat(64)}', 'synthetic.csv', 'csv', 'synthetic-test',
+          'hash_only', 'imported', NULL, 9007199254740992
+        );
+      `);
+      await backupDatabase(db, backupPath);
+
+      const tampered = new DatabaseConstructor(backupPath);
+      tampered.exec('UPDATE source_files SET size_bytes = 9007199254740993 WHERE id = 1');
+      tampered.close();
+
+      expect(isVelographBackup(backupPath)).toBe(false);
+      await expectValidationError(
+        restoreDatabase(db, dbPath, backupPath),
+        'invalid_backup_checksum',
+      );
+      expect(db.open).toBe(true);
+      db.close();
+    }));
+
+  it('rejects an unknown future backup format before touching the live handle', () =>
+    withTempDir(async (dir) => {
+      const { db, dbPath, backupPath } = await createRestoreScenario(dir);
+      const future = new DatabaseConstructor(backupPath);
+      future.prepare('UPDATE backup_manifests SET format_version = 99 WHERE id = 1').run();
+      future.close();
+
+      await expectValidationError(
+        restoreDatabase(db, dbPath, backupPath),
+        'incompatible_backup_format',
+      );
+      expect(db.open).toBe(true);
+      expect(readRestoreState(db)).toBe('current-live');
+      db.close();
+    }));
+
+  it('rejects tampered manifest metadata before touching the live handle', () =>
+    withTempDir(async (dir) => {
+      const { db, dbPath, backupPath } = await createRestoreScenario(dir);
+      const tampered = new DatabaseConstructor(backupPath);
+      tampered.prepare("UPDATE backup_manifests SET app_version = '9.9.9' WHERE id = 1").run();
+      tampered.close();
+
+      await expectValidationError(
+        restoreDatabase(db, dbPath, backupPath),
+        'invalid_backup_checksum',
+      );
+      expect(db.open).toBe(true);
+      expect(readRestoreState(db)).toBe('current-live');
+      db.close();
+    }));
+
+  it('restores a released legacy migration prefix and reports the compatibility upgrade', () =>
+    withTempDir(async (dir) => {
+      const backupPath = join(dir, 'legacy.sqlite3');
+      const legacy = new DatabaseConstructor(backupPath);
+      legacy.pragma('foreign_keys = ON');
+      legacy.exec(readFileSync(join(MIGRATIONS_DIR, '0001_init.sql'), 'utf8'));
+      legacy.exec(
+        'CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)',
+      );
+      legacy
+        .prepare("INSERT INTO schema_migrations (name, applied_at) VALUES ('0001_init.sql', 1000)")
+        .run();
+      writeRestoreState(legacy, 'legacy-backup');
+      legacy.close();
+
+      const dbPath = join(dir, 'live.sqlite3');
+      const live = openDatabase(dbPath);
+      writeRestoreState(live, 'current-live');
+      const result = await restoreDatabaseWithReport(live, dbPath, backupPath);
+
+      expect(readRestoreState(result.database)).toBe('legacy-backup');
+      expect(result.report).toEqual({
+        backupFormatVersion: null,
+        backupAppVersion: null,
+        schemaVersion: listMigrations(MIGRATIONS_DIR).at(-1)!.name,
+        manifestVerified: false,
+        checksumsVerified: false,
+        databaseIntegrity: 'ok',
+        foreignKeys: 'ok',
+        legacyBackup: true,
+        migrationsApplied: listMigrations(MIGRATIONS_DIR)
+          .slice(1)
+          .map((migration) => migration.name),
+      });
+      expect(
+        readAppliedMigrations(result.database).every((migration) =>
+          /^[a-f0-9]{64}$/.test(migration.checksum),
+        ),
+      ).toBe(true);
+      result.database.close();
+
+      const reopened = openDatabase(dbPath);
+      expect(readRestoreState(reopened)).toBe('legacy-backup');
+      const upgradedBackupPath = join(dir, 'upgraded.sqlite3');
+      await backupDatabase(reopened, upgradedBackupPath);
+      expect(isVelographBackup(upgradedBackupPath)).toBe(true);
+      writeRestoreState(reopened, 'changed-after-upgrade');
+
+      const roundTrip = await restoreDatabaseWithReport(reopened, dbPath, upgradedBackupPath);
+      expect(readRestoreState(roundTrip.database)).toBe('legacy-backup');
+      expect(roundTrip.report.manifestVerified).toBe(true);
+      expect(roundTrip.report.checksumsVerified).toBe(true);
+      expect(roundTrip.report.legacyBackup).toBe(false);
+      roundTrip.database.close();
+    }));
+
   it('rejects a backup destination inside a git checkout (guardAgainstCheckout)', () =>
     withTempDir(async (dir) => {
       // Simulate "inside a checkout" without touching the real repo: create a
@@ -304,7 +469,7 @@ describe('backupDatabase / restoreDatabase', () => {
       const db = openDatabase(':memory:');
       const failure = await backupDatabase(db, outPath).catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).toBe('data_path_inside_checkout');
+      expect((failure as Error).message).toBe('destination_inside_checkout');
       expect((failure as Error).message).not.toContain(dir);
       expect(existsSync(outPath)).toBe(false);
       db.close();
@@ -847,7 +1012,7 @@ describe('backupDatabase / restoreDatabase', () => {
       const db = openDatabase(':memory:');
       const failure = await backupDatabase(db, outPath).catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).toBe('data_path_inside_checkout');
+      expect((failure as Error).message).toBe('destination_inside_checkout');
       expect((failure as Error).message).not.toContain(dir);
       expect(existsSync(join(checkout, 'new', 'out.sqlite3'))).toBe(false);
       db.close();
@@ -865,7 +1030,7 @@ describe('backupDatabase / restoreDatabase', () => {
 
       const outPath = join(outside, 'data-alias', 'deeper', 'out.sqlite3');
       const db = openDatabase(':memory:');
-      await expect(backupDatabase(db, outPath)).rejects.toThrow('data_path_inside_checkout');
+      await expect(backupDatabase(db, outPath)).rejects.toThrow('destination_inside_checkout');
       expect(existsSync(join(checkoutSubdir, 'deeper', 'out.sqlite3'))).toBe(false);
       db.close();
     }));
@@ -1242,7 +1407,9 @@ describe('backupDatabase / restoreDatabase', () => {
       expect(retained).toHaveLength(1);
       const retainedPath = join(dir, retained[0]!);
       expect(statSync(retainedPath).mode & 0o777).toBe(0o600);
-      expect(isVelographBackup(retainedPath)).toBe(true);
+      // This is a private canonical recovery snapshot, not a manifest-backed
+      // user export. Restore validation uses the dedicated recovery path.
+      expect(isVelographBackup(retainedPath)).toBe(false);
       const retainedProbe = openDatabase(retainedPath);
       expect(readRestoreState(retainedProbe)).toBe('current-live');
       retainedProbe.close();

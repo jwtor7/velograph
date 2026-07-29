@@ -165,6 +165,15 @@ identical bytes → the ride comes back.
 - Velograph currently supports one database-owning process at a time. Stop the API with
   `pnpm app:stop` before running `velograph restore`; do not run API and CLI restore concurrently
   against the same data directory.
+- New backups are self-contained SQLite files with one `backup_manifests` row. The manifest records
+  the backup format, app version, latest schema migration, explicit included/excluded categories,
+  and SHA-256 checksums for every non-manifest table. Raw source files and credentials are never
+  included. Restore verifies those checksums before staging and returns an integrity report covering
+  manifest, checksums, SQLite integrity, foreign keys, and applied compatibility migrations.
+- `schema_migrations` records the SHA-256 digest of each migration as well as its ordered filename.
+  A database released before checksum tracking is adopted once during upgrade; after adoption,
+  changing the contents of an applied migration fails closed with `migration_checksum_mismatch`.
+  This trust-on-first-upgrade is the only legacy exception.
 
 Both directions are exercised end to end (round trip, checkout rejection, and live-database
 destination rejection), along with forged/incomplete/current/future migration histories, corrupt
@@ -201,7 +210,7 @@ new ones.
 
 - **API** (`apps/api/src/server.ts`): `DELETE /api/workouts/:id`,
   `POST /api/workouts/:id/repair`, `POST /api/backup` (`{ path }`), and
-  `POST /api/restore` (`{ path }`) — all mutating, so all require the existing loopback/CSRF
+  `POST /api/restore` (`{ path, confirmed: true }`) — all mutating, so all require the existing loopback/CSRF
   hardening (`x-velograph-request` header, Host/Origin checks) already applied to every
   non-`GET`/`HEAD` route.
 - **UI**: a "Delete" action on each ride list row (`apps/web/src/pages/Library.tsx`) and a
@@ -214,5 +223,5 @@ new ones.
   filesystem path on that machine, not an upload; restore is behind the same confirmation
   pattern, since it discards everything since the backup.
 - **CLI** (`apps/cli/src/index.ts`): `delete <workoutId>`, `backup <destPath>`,
-  `restore <backupPath>`, and `repair <workoutId>`, alongside the existing `import`, each
+  `restore <backupPath> --confirm-replace`, and `repair <workoutId>`, alongside the existing `import`, each
   accepting `--data-dir`.

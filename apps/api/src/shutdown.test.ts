@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
-import { backupDatabase, openDatabase, restoreDatabase } from '@velograph/db';
+import { backupDatabase, openDatabase, restoreDatabaseWithReport } from '@velograph/db';
 import { createApiServer } from './server.ts';
 import { shutdownApiServer } from './shutdown.ts';
 
@@ -63,7 +63,7 @@ describe('shutdownApiServer', () => {
         restoreDatabaseFn: async (...args) => {
           signalRestoreStarted();
           await restoreGate;
-          return restoreDatabase(...args);
+          return restoreDatabaseWithReport(...args);
         },
       });
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -73,7 +73,7 @@ describe('shutdownApiServer', () => {
       const restoreRequest = fetch(`http://127.0.0.1:${port}/api/restore`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-velograph-request': '1' },
-        body: JSON.stringify({ path: backupPath }),
+        body: JSON.stringify({ path: backupPath, confirmed: true }),
         signal: controller.signal,
       });
 
@@ -126,7 +126,7 @@ describe('shutdownApiServer', () => {
       const restore = await fetch(`${base}/api/restore`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-velograph-request': '1' },
-        body: JSON.stringify({ path: join(dir, 'backup.sqlite3') }),
+        body: JSON.stringify({ path: join(dir, 'backup.sqlite3'), confirmed: true }),
       });
       expect(restore.status).toBe(500);
       expect(await restore.json()).toEqual({ error: 'database_unavailable' });

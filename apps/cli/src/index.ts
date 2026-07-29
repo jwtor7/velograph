@@ -4,7 +4,7 @@
  *   node apps/cli/src/index.ts import <path...> [--data-dir <dir>]
  *   node apps/cli/src/index.ts delete <workoutId> [--data-dir <dir>]
  *   node apps/cli/src/index.ts backup <destPath> [--data-dir <dir>]
- *   node apps/cli/src/index.ts restore <backupPath> [--data-dir <dir>]
+ *   node apps/cli/src/index.ts restore <backupPath> --confirm-replace [--data-dir <dir>]
  *   node apps/cli/src/index.ts repair <workoutId> [--data-dir <dir>]
  *
  * Accepts CSV/GPX files, directories (scanned one level, non-recursive), and
@@ -23,7 +23,7 @@ import {
   resolveDataDir,
   RestoreDatabaseError,
   RestoreValidationError,
-  restoreDatabase,
+  restoreDatabaseWithReport,
   type Database,
 } from '@velograph/db';
 import { repairWorkout } from '@velograph/api';
@@ -35,7 +35,7 @@ const USAGE = [
   '  velograph-import import <file|dir|zip>... [--data-dir <dir>]',
   '  velograph-import delete <workoutId> [--data-dir <dir>]',
   '  velograph-import backup <destPath> [--data-dir <dir>]',
-  '  velograph-import restore <backupPath> [--data-dir <dir>]',
+  '  velograph-import restore <backupPath> --confirm-replace [--data-dir <dir>]',
   '  velograph-import repair <workoutId> [--data-dir <dir>]',
 ].join('\n');
 
@@ -169,7 +169,9 @@ async function runBackupCmd(args: string[]): Promise<number> {
       console.error('Backup failed: backup_failed');
       return 1;
     }
-    console.log(`Backup written (${result.totalPages} page(s))`);
+    console.log(
+      `Backup written (${result.totalPages} page(s), format ${result.manifest.formatVersion}, schema ${result.manifest.schemaVersion})`,
+    );
     return 0;
   } catch (err) {
     closeDatabaseWithoutThrow(db);
@@ -180,9 +182,15 @@ async function runBackupCmd(args: string[]): Promise<number> {
 }
 
 async function runRestoreCmd(args: string[]): Promise<number> {
-  const source = args[0];
-  if (!source) {
+  const confirmed = args.includes('--confirm-replace');
+  const positional = args.filter((arg) => arg !== '--confirm-replace');
+  const source = positional[0];
+  if (!source || positional.length !== 1) {
     console.log(USAGE);
+    return 2;
+  }
+  if (!confirmed) {
+    console.error('Restore requires --confirm-replace');
     return 2;
   }
   let db: Database | undefined;
@@ -190,12 +198,16 @@ async function runRestoreCmd(args: string[]): Promise<number> {
     const dataDir = resolveDataDir();
     const dbPath = databasePath(dataDir);
     db = openDatabase(dbPath);
-    const restored = await restoreDatabase(db, dbPath, source);
-    if (!closeDatabaseWithoutThrow(restored)) {
+    const result = await restoreDatabaseWithReport(db, dbPath, source);
+    if (!closeDatabaseWithoutThrow(result.database)) {
       console.error('Restore failed: restore_failed');
       return 1;
     }
-    console.log('Database restored from backup');
+    console.log(
+      result.report.legacyBackup
+        ? `Database restored from legacy backup and migrated to ${result.report.schemaVersion}`
+        : `Database restored; manifest and checksums verified (${result.report.schemaVersion})`,
+    );
     return 0;
   } catch (err) {
     if (err instanceof RestoreDatabaseError && err.recoveredDatabase?.open) {

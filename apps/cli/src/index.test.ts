@@ -105,8 +105,14 @@ describe('velograph CLI', () => {
     await main(['delete', String(id), '--data-dir', dataDir]);
     expect(workoutCount()).toBe(before - 1);
 
-    expect(await main(['restore', backupPath, '--data-dir', dataDir])).toBe(0);
+    expect(await main(['restore', backupPath, '--confirm-replace', '--data-dir', dataDir])).toBe(0);
     expect(workoutCount()).toBe(before);
+  });
+
+  it('requires an explicit replace confirmation for restore', async () => {
+    const error = vi.mocked(console.error);
+    expect(await main(['restore', join(dataDir, 'backup.sqlite3'), '--data-dir', dataDir])).toBe(2);
+    expect(error).toHaveBeenLastCalledWith('Restore requires --confirm-replace');
   });
 
   it('rejects a backup destination inside the repository checkout', async () => {
@@ -152,9 +158,15 @@ describe('velograph CLI', () => {
   it('reports a stable value-free code for an invalid restore source', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      expect(await main(['restore', join(dataDir, 'missing.sqlite3'), '--data-dir', dataDir])).toBe(
-        1,
-      );
+      expect(
+        await main([
+          'restore',
+          join(dataDir, 'missing.sqlite3'),
+          '--confirm-replace',
+          '--data-dir',
+          dataDir,
+        ]),
+      ).toBe(1);
       expect(error).toHaveBeenCalledWith('Restore failed: invalid_backup_file');
     } finally {
       error.mockRestore();

@@ -11,6 +11,14 @@ is pre-1.0, and for the release procedure.
 
 ### Added
 
+- **Portable, self-verifying backups.** Every new SQLite backup carries a versioned manifest with
+  the Velograph app version, current schema migration, included/excluded categories, and
+  deterministic SHA-256 table checksums. Restore verifies the manifest, checksums, SQLite
+  integrity, foreign keys, migration ordering, and migration content hashes before cutover, then
+  returns a value-free integrity report. Released filename-only migration histories are adopted
+  once and cryptographically pinned thereafter; altered applied migrations fail closed. The API
+  and CLI require explicit replacement confirmation, while known older backups remain restorable
+  through a reported compatibility migration (PRD §13).
 - **Local server lifecycle commands**: `pnpm app:start`, `app:stop`, `app:status`, and
   `app:restart`. `app:start` builds the web client, refuses to start when a server already
   holds the port, and waits for the API to actually answer before reporting success.
