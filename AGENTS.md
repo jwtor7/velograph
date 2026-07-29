@@ -13,8 +13,8 @@ multi-agent section.
 ## Build, Test, and Development Commands
 
 See the root [`README.md`](README.md) Quick start for the verified install → import → run
-sequence. In summary: `pnpm install`, then `node apps/cli/src/index.ts import <path>` to
-import rides, and `pnpm app:start` to build the web client and serve it on
+sequence. In summary: `pnpm install`, then `pnpm velograph-import import <path>` to import
+rides, and `pnpm app:start` to build the web client and serve it on
 `127.0.0.1:5123`. CI-equivalent checks: `pnpm test`, `pnpm lint`, `pnpm typecheck`,
 `pnpm format`, and `node scripts/privacy-scan.mjs --all`. Run only declared scripts.
 
