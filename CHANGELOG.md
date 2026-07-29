@@ -28,7 +28,8 @@ is pre-1.0, and for the release procedure.
   directory; and direct-file names work with Windows or POSIX separators. Native SQLite and
   MIT-licensed compression code remain direct dependencies, preserving their normal package
   installation and license notices rather than embedding third-party code in the tracked
-  bundles (#11).
+  bundles. The repository pins pnpm 10 so the build and package-verification workflow itself
+  remains runnable across the declared Node 20–26 range (#11).
 - **"Choose export folder" could not select a folder.** The directory input carried
   `accept=".csv,.gpx,.zip"`; since a directory matches none of those extensions, the OS
   picker greyed folders out. Because Health Auto Export writes one CSV per metric, this
