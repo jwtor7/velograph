@@ -19,14 +19,18 @@ Your health data never leaves your machine unless you explicitly send it somewhe
 
 ## Quick start
 
-The build system has landed: a pnpm/TypeScript monorepo with a working import pipeline,
-analytics engine, loopback API, and web client. There is no `pnpm dev` script — the web
-client is built once and served by the API, as below.
+The build system is a pnpm/TypeScript monorepo with a working import pipeline, analytics
+engine, loopback API, and web client.
 
 ```bash
-pnpm install                            # install workspace dependencies
-pnpm --filter @velograph/web build      # build the web client (required before the API can serve it)
+pnpm install   # install workspace dependencies
+pnpm dev       # API on 127.0.0.1:5123 + live Vite UI on 127.0.0.1:5124
 ```
+
+`pnpm dev` owns both foreground processes: press Ctrl-C once to stop both. Its proxy rewrites
+only the configured loopback development Origin and Host, so the API's DNS-rebinding and
+cross-origin protections remain strict. For the built background app on port 5123, use
+`pnpm app:start` as documented below.
 
 ### Try it with the synthetic fixtures
 
@@ -37,10 +41,10 @@ walkthrough at an explicit throwaway directory so the demo never touches real da
 ```bash
 export VELO_DATA_DIR=$(mktemp -d)                        # throwaway directory for this demo
 node apps/cli/src/index.ts import fixtures/synthetic/rides
-pnpm app:start
+pnpm dev
 ```
 
-Then open `http://127.0.0.1:5123` in your browser. `VELO_DATA_DIR` stays set for the rest of
+Then open `http://127.0.0.1:5124` in your browser. `VELO_DATA_DIR` stays set for the rest of
 this shell session, so the API command above serves the same fixture rides you just
 imported. Close the shell (or `unset VELO_DATA_DIR`) when you're done, and delete the
 temporary directory if you want to reclaim the space.

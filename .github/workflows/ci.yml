@@ -30,6 +30,8 @@ jobs:
         run: pnpm lint
       - name: Typecheck
         run: pnpm typecheck
+      - name: Production web build
+        run: pnpm --filter @velograph/web build
       - name: Unit tests
         run: pnpm test
 

@@ -25,6 +25,10 @@ is pre-1.0, and for the release procedure.
   from the local data environment and served through the loopback API; the useful route-only
   fallback makes no remote tile, font, geocoding, telemetry, or CDN request. MBTiles files remain
   ignored and are rejected by the repository privacy scanner (#56).
+- **One-command development stack**: `pnpm dev` now starts the loopback API and Vite UI
+  together, owns both foreground processes, and stops both on exit. The Vite proxy rewrites
+  only its configured loopback Origin and Host for API requests, preserving the API's strict
+  DNS-rebinding and cross-origin checks. CI now also proves the production web build (#25).
 - **Local server lifecycle commands**: `pnpm app:start`, `app:stop`, `app:status`, and
   `app:restart`. `app:start` builds the web client, refuses to start when a server already
   holds the port, and waits for the API to actually answer before reporting success.
