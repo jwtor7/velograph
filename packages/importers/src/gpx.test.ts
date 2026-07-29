@@ -65,8 +65,31 @@ describe('secure GPX parser (ROUTE-001/004/005)', () => {
     expect(res.droppedPoints).toBe(1);
   });
 
-  it('rejects malformed XML', () => {
+  it('preserves a genuinely missing time as explicit null', () => {
+    const gpx = wrap('<trkseg><trkpt lat="-48.5" lon="-123.5"/></trkseg>');
+    expect(parseGpx(gpx).segments[0]!.points[0]).toMatchObject({ t: null });
+  });
+
+  it('rejects a present but malformed track-point time', () => {
+    const gpx = wrap(
+      '<trkseg><trkpt lat="-48.5" lon="-123.5"><time>2031-02-29T07:30:00Z</time></trkpt></trkseg>',
+    );
+    expect(() => parseGpx(gpx)).toThrowError(
+      expect.objectContaining({ code: 'timestamps_invalid' }),
+    );
+  });
+
+  it('rejects mismatched, prematurely closed, and unclosed XML', () => {
+    expect(() => parseGpx('<gpx><trk><same-depth></different></trk></gpx>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
     expect(() => parseGpx('<gpx><trk><trkseg></gpx>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+    expect(() => parseGpx('<gpx></gpx></extra>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+    expect(() => parseGpx('<gpx><trk>')).toThrowError(
       expect.objectContaining({ code: 'malformed_xml' }),
     );
     expect(() => parseGpx('not xml at all')).toThrowError(

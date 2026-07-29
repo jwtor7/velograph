@@ -81,22 +81,24 @@ export class Repository {
   }
 
   /**
-   * Find a workout of this type whose time span overlaps or lies within
-   * `toleranceMs` of [start, end] (IMP-005 association).
+   * Find every workout of this type whose time span overlaps or lies within
+   * `toleranceMs` of [start, end] (IMP-005 association). Returning every
+   * candidate is essential: ambiguity must be quarantined, never hidden by an
+   * arbitrary earliest-row choice.
    */
-  findCandidateWorkout(
+  findCandidateWorkouts(
     type: WorkoutType,
     start: number,
     end: number,
     toleranceMs: number,
-  ): WorkoutRow | undefined {
+  ): WorkoutRow[] {
     return this.db
       .prepare(
         `SELECT * FROM workouts
          WHERE type = ? AND start_utc <= ? AND end_utc >= ?
-         ORDER BY start_utc LIMIT 1`,
+         ORDER BY start_utc, id`,
       )
-      .get(type, end + toleranceMs, start - toleranceMs) as WorkoutRow | undefined;
+      .all(type, end + toleranceMs, start - toleranceMs) as WorkoutRow[];
   }
 
   createWorkout(type: WorkoutType, start: number, end: number, provenance: string): number {

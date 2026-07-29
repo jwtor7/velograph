@@ -27,6 +27,7 @@ let port: number;
 
 beforeAll(async () => {
   db = openDatabase(':memory:');
+  new Repository(db).setSetting('analytics', { timeZone: 'UTC' });
   const files = readdirSync(FIXTURES)
     .filter((f) => /\.(csv|gpx)$/.test(f))
     .sort()
@@ -169,6 +170,41 @@ describe('loopback API', () => {
     ).json()) as { result: { imported: number; skippedDuplicates: number } };
     expect(second.result.imported).toBe(0);
     expect(second.result.skippedDuplicates).toBe(1);
+  });
+
+  it('returns a per-file ZIP quarantine while importing a valid sibling', async () => {
+    const name = 'Outdoor Cycling-Cycling Cadence-20310902_070000.csv';
+    const csv = [
+      'Date/Time,Cadence (rpm),Source',
+      '2031-09-02T07:00:00Z,80,Synth Watch X1',
+      '2031-09-02T07:30:00Z,82,Synth Watch X1',
+    ].join('\n');
+    const payload = JSON.stringify({
+      files: [
+        { name, dataBase64: Buffer.from(csv).toString('base64') },
+        {
+          name: 'malformed-synthetic.zip',
+          dataBase64: Buffer.from('not a zip').toString('base64'),
+        },
+      ],
+    });
+    const response = await fetch(`${base}/api/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-velograph-request': '1' },
+      body: payload,
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      result: {
+        imported: number;
+        quarantined: number;
+        quarantinedFiles: { name: string; code: string }[];
+      };
+    };
+    expect(body.result).toMatchObject({ imported: 1, quarantined: 1 });
+    expect(body.result.quarantinedFiles).toEqual([
+      { name: 'malformed-synthetic.zip', code: 'io_error' },
+    ]);
   });
 
   it('round-trips settings', async () => {

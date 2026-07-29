@@ -1,5 +1,7 @@
 import { inflateRawSync } from 'node:zlib';
 
+export const ZIP_PARSER_VERSION = 'zip-v1';
+
 /**
  * Guarded ZIP extraction (PRD §12.3). Entries are extracted to memory only —
  * never to disk — so symlink escapes cannot occur. Security is enforced in

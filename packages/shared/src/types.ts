@@ -79,6 +79,9 @@ export type QuarantineCode =
   | 'gpx_limits_exceeded'
   | 'no_valid_samples'
   | 'timestamps_invalid'
+  | 'numeric_value_invalid'
+  | 'association_conflict'
+  | 'association_ambiguous'
   | 'zip_entry_rejected'
   | 'zip_limits_exceeded'
   | 'io_error';

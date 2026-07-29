@@ -82,6 +82,22 @@ describe('Repository.insertRoute', () => {
   });
 });
 
+describe('Repository.findCandidateWorkouts', () => {
+  it('returns every overlapping candidate in deterministic order', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    const later = repo.createWorkout('outdoor_cycling', 110, 200, 'test');
+    const earlier = repo.createWorkout('outdoor_cycling', 100, 190, 'test');
+    repo.createWorkout('indoor_cycling', 100, 190, 'test');
+
+    expect(repo.findCandidateWorkouts('outdoor_cycling', 120, 180, 0).map((w) => w.id)).toEqual([
+      earlier,
+      later,
+    ]);
+    db.close();
+  });
+});
+
 describe('Repository.deleteWorkout', () => {
   it('removes the workout and every dependent row, and forgets an exclusive source file hash', () => {
     const db = openDatabase(':memory:');

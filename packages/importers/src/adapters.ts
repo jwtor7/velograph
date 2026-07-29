@@ -8,6 +8,7 @@ import type {
 import { parseInstant } from '@velograph/shared';
 import { parseCsv } from './csv.ts';
 import { parseGpx, GpxError } from './gpx.ts';
+import { parseStrictNumber, type NumericBounds } from './numeric.ts';
 
 /**
  * Versioned Health Auto Export adapters (IMP-004). ADAPTER_VERSION is stored
@@ -15,7 +16,7 @@ import { parseGpx, GpxError } from './gpx.ts';
  * (IMP-010). Header matching is tolerant of spacing/case but never guesses:
  * unrecognized headers quarantine the file rather than half-importing it.
  */
-export const ADAPTER_VERSION = 'hae-csv-v1';
+export const ADAPTER_VERSION = 'hae-csv-v2';
 
 export class AdapterError extends Error {
   readonly code: QuarantineCode;
@@ -29,7 +30,7 @@ export class AdapterError extends Error {
 
 export interface FilenameInfo {
   workoutType: WorkoutType;
-  /** Best-effort filename timestamp — a HINT only, never the association key (IMP-005). */
+  /** Filename timestamp is corroborating evidence, never the sole association key (IMP-005). */
   stampHint: string | null;
   label: string;
 }
@@ -50,6 +51,45 @@ export function parseHaeFilename(name: string): FilenameInfo | null {
   };
 }
 
+/**
+ * Resolve the timestamp carried by a supported HAE filename. It is returned as
+ * corroborating evidence only; the association engine must also have internal
+ * sample times. A syntactically matching but impossible stamp fails closed.
+ */
+export function parseHaeFilenameTimestamp(
+  name: string,
+  options: AdapterOptions = {},
+): number | null {
+  return parseHaeFilenameTimestamps(name, options)[0] ?? null;
+}
+
+/**
+ * HAE filename stamps have appeared as both local wall time and UTC across
+ * exporter configurations. Return both viable interpretations (deduplicated)
+ * so internal sample times can corroborate one; neither interpretation is
+ * independently sufficient to associate a workout.
+ */
+export function parseHaeFilenameTimestamps(name: string, options: AdapterOptions = {}): number[] {
+  const info = parseHaeFilename(name);
+  if (!info?.stampHint) return [];
+  const stamp = info.stampHint;
+  const isoLike = `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}T${stamp.slice(
+    9,
+    11,
+  )}:${stamp.slice(11, 13)}:${stamp.slice(13, 15)}`;
+  const utc = parseInstant(isoLike);
+  if (utc == null) {
+    throw new AdapterError('timestamps_invalid', 'filename timestamp invalid');
+  }
+  const candidates: number[] = [];
+  if (options.timeZone) {
+    const zoned = parseInstant(isoLike, { defaultTimeZone: options.timeZone });
+    if (zoned != null) candidates.push(zoned);
+  }
+  if (!candidates.includes(utc)) candidates.push(utc);
+  return candidates;
+}
+
 const norm = (h: string) => h.toLowerCase().replace(/\s+|\(|\)/g, '');
 
 interface CsvShape {
@@ -58,6 +98,7 @@ interface CsvShape {
   value: string[];
   min?: string[];
   max?: string[];
+  bounds: NumericBounds;
   toCanonical: (v: number) => number;
 }
 
@@ -67,21 +108,25 @@ const CSV_SHAPES: CsvShape[] = [
     value: ['avgbpm', 'avgcount/min', 'avg', 'heartratebpm', 'bpm'],
     min: ['minbpm', 'mincount/min', 'min'],
     max: ['maxbpm', 'maxcount/min', 'max'],
+    bounds: { minExclusive: 0, max: 300 },
     toCanonical: (v) => v,
   },
   {
     metric: 'cadence',
     value: ['cadencerpm', 'cyclingcadencecount/min', 'cadence', 'rpm'],
+    bounds: { min: 0, max: 300 },
     toCanonical: (v) => v,
   },
   {
     metric: 'distance',
     value: ['cyclingdistancekm', 'distancekm', 'distance'],
+    bounds: { min: 0, max: Number.MAX_SAFE_INTEGER / 1000 },
     toCanonical: (v) => v * 1000, // km → m
   },
   {
     metric: 'energy',
     value: ['activeenergykj', 'energykj', 'activeenergy', 'energy'],
+    bounds: { min: 0, max: Number.MAX_SAFE_INTEGER / 1000 },
     toCanonical: (v) => v * 1000, // kJ → J
   },
 ];
@@ -123,15 +168,20 @@ export function parseHaeCsv(name: string, text: string, options: AdapterOptions 
   let source: string | null = null;
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i]!;
-    const t = parseInstant(row[tIdx] ?? '', { defaultTimeZone: options.timeZone ?? null });
-    const v = Number(row[vIdx]);
-    if (t == null || !Number.isFinite(v)) continue;
-    const s: MetricSample = { t, value: shape.toCanonical(v) };
-    if (minIdx !== -1 && row[minIdx] !== '' && Number.isFinite(Number(row[minIdx]))) {
-      s.min = shape.toCanonical(Number(row[minIdx]));
+    const t = parseRequiredInstant(row[tIdx], options);
+    const v = parseRequiredNumber(row[vIdx], shape.bounds);
+    const value = shape.toCanonical(v);
+    if (!Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER) {
+      throw new AdapterError('numeric_value_invalid', 'canonical numeric value invalid');
     }
-    if (maxIdx !== -1 && row[maxIdx] !== '' && Number.isFinite(Number(row[maxIdx]))) {
-      s.max = shape.toCanonical(Number(row[maxIdx]));
+    const s: MetricSample = { t, value };
+    if (minIdx !== -1) {
+      const min = parseStrictNumber(row[minIdx], shape.bounds);
+      if (min != null) s.min = shape.toCanonical(min);
+    }
+    if (maxIdx !== -1) {
+      const max = parseStrictNumber(row[maxIdx], shape.bounds);
+      if (max != null) s.max = shape.toCanonical(max);
     }
     if (ctxIdx !== -1 && row[ctxIdx]) s.context = row[ctxIdx];
     if (srcIdx !== -1 && row[srcIdx]) source = row[srcIdx]!;
@@ -161,23 +211,21 @@ function parseRouteCsvRows(
   const points = [];
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i]!;
-    const t = parseInstant(row[tIdx] ?? '', { defaultTimeZone: options.timeZone ?? null });
-    const lat = Number(row[latIdx]);
-    const lon = Number(row[lonIdx]);
-    if (t == null || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-    if (Math.abs(lat) > 90 || Math.abs(lon) > 180) continue;
+    const t = parseRequiredInstant(row[tIdx], options);
+    const lat = parseRequiredNumber(row[latIdx], { min: -90, max: 90 });
+    const lon = parseRequiredNumber(row[lonIdx], { min: -180, max: 180 });
     const p: Record<string, number> = { t, lat, lon };
-    const opt = (idx: number, key: string) => {
+    const opt = (idx: number, key: string, bounds: NumericBounds) => {
       if (idx !== -1) {
-        const v = Number(row[idx]);
-        if (Number.isFinite(v)) p[key] = v;
+        const v = parseStrictNumber(row[idx], bounds);
+        if (v != null) p[key] = v;
       }
     };
-    opt(altIdx, 'ele');
-    opt(spdIdx, 'speed');
-    opt(crsIdx, 'course');
-    opt(haIdx, 'hAcc');
-    opt(vaIdx, 'vAcc');
+    opt(altIdx, 'ele', { minExclusive: -500, maxExclusive: 10_000 });
+    opt(spdIdx, 'speed', { min: 0, maxExclusive: 150 });
+    opt(crsIdx, 'course', { min: 0, maxExclusive: 360 });
+    opt(haIdx, 'hAcc', { min: 0, max: Number.MAX_SAFE_INTEGER });
+    opt(vaIdx, 'vAcc', { min: 0, max: Number.MAX_SAFE_INTEGER });
     points.push(p as unknown as import('@velograph/shared').RoutePoint);
   }
   if (points.length === 0) throw new AdapterError('no_valid_samples', 'no valid route rows');
@@ -211,4 +259,20 @@ export function parseHaeGpx(name: string, text: string): ParsedFile {
     if (err instanceof GpxError) throw new AdapterError(err.code, err.message);
     throw err;
   }
+}
+
+function parseRequiredInstant(raw: string | undefined, options: AdapterOptions): number {
+  const parsed = parseInstant(raw ?? '', { defaultTimeZone: options.timeZone ?? null });
+  if (parsed == null) {
+    throw new AdapterError('timestamps_invalid', 'required timestamp invalid');
+  }
+  return parsed;
+}
+
+function parseRequiredNumber(raw: string | undefined, bounds: NumericBounds): number {
+  const parsed = parseStrictNumber(raw, bounds);
+  if (parsed == null) {
+    throw new AdapterError('numeric_value_invalid', 'required numeric value invalid');
+  }
+  return parsed;
 }

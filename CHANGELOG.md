@@ -189,6 +189,24 @@ is pre-1.0, and for the release procedure.
   per browser, and gave no way to preview what would be imported before committing to it.
   Folder import is now path-based (see above), which works the same way everywhere and
   previews first (#51).
+- **Workout association now fails closed on contradictory evidence.** Filename
+  timestamps corroborate workout type and internal sample ranges rather than
+  being ignored; conflicting inputs use `association_conflict`, and multiple
+  viable workouts use `association_ambiguous` instead of silently choosing the
+  earliest candidate (#12).
+- **Import validation no longer fabricates zeroes or normalized dates.** Blank,
+  malformed, non-finite, and out-of-range required numeric fields quarantine
+  the source file with `numeric_value_invalid`; impossible calendar dates,
+  times, offsets, and present-but-malformed GPX timestamps use
+  `timestamps_invalid`. Optional GPX times remain explicitly null (#13).
+- **Malformed outer ZIPs no longer abort valid sibling imports.** Each failed
+  archive receives its own durable, value-free quarantine record while valid
+  selected files continue in the same committed batch, including through the
+  loopback API (#14).
+- **GPX closing tags must match their normalized opening tags.** Mismatched,
+  misnested, prematurely closed, and unclosed structures now fail with the
+  existing privacy-safe `malformed_xml` code while namespace tolerance and
+  parser resource limits remain intact (#15).
 - **"Choose export folder" could not select a folder.** The directory input carried
   `accept=".csv,.gpx,.zip"`; since a directory matches none of those extensions, the OS
   picker greyed folders out. Because Health Auto Export writes one CSV per metric, this

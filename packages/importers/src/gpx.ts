@@ -1,5 +1,6 @@
 import type { RoutePoint, RouteSegment } from '@velograph/shared';
 import { parseInstant } from '@velograph/shared';
+import { parseStrictNumber } from './numeric.ts';
 
 /**
  * Secure, namespace-tolerant GPX parser (ROUTE-001, ROUTE-005).
@@ -16,7 +17,7 @@ import { parseInstant } from '@velograph/shared';
  * ele, time, and speed/course extensions), versioned via GPX_PARSER_VERSION so
  * files can be reprocessed after upgrades (IMP-010).
  */
-export const GPX_PARSER_VERSION = 'gpx-v1';
+export const GPX_PARSER_VERSION = 'gpx-v2';
 
 export interface GpxLimits {
   maxBytes: number;
@@ -30,7 +31,8 @@ export const DEFAULT_GPX_LIMITS: GpxLimits = {
   maxDepth: 32,
 };
 
-export type GpxErrorCode = 'xml_doctype_rejected' | 'gpx_limits_exceeded' | 'malformed_xml';
+export type GpxErrorCode =
+  'xml_doctype_rejected' | 'gpx_limits_exceeded' | 'malformed_xml' | 'timestamps_invalid';
 
 export class GpxError extends Error {
   readonly code: GpxErrorCode;
@@ -46,6 +48,8 @@ export interface GpxResult {
   segments: RouteSegment[];
   droppedPoints: number;
 }
+
+type NullableTimeRoutePoint = Omit<RoutePoint, 't'> & { t: number | null };
 
 const ENTITY_MAP: Record<string, string> = {
   '&amp;': '&',
@@ -74,9 +78,10 @@ export function parseGpx(input: string, limits: GpxLimits = DEFAULT_GPX_LIMITS):
   const tagRe =
     /<\/?([A-Za-z_][\w:.-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>|<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[[\s\S]*?\]\]>/g;
 
-  const segments: RouteSegment[] = [];
-  let current: RoutePoint[] | null = null;
-  let point: Partial<RoutePoint> | null = null;
+  const segments: { points: NullableTimeRoutePoint[] }[] = [];
+  let current: NullableTimeRoutePoint[] | null = null;
+  let point:
+    (Partial<Omit<NullableTimeRoutePoint, 't'>> & Pick<NullableTimeRoutePoint, 't'>) | null = null;
   let dropped = 0;
   let totalPoints = 0;
   let depth = 0;
@@ -98,17 +103,20 @@ export function parseGpx(input: string, limits: GpxLimits = DEFAULT_GPX_LIMITS):
     if (!point || !textTarget || localName(name) !== textTarget) return;
     const text = decodeEntities(raw.slice(textStart, index)).trim();
     if (textTarget === 'ele') {
-      const v = Number(text);
-      if (Number.isFinite(v) && v > -500 && v < 10_000) point.ele = v;
+      const v = parseStrictNumber(text, { minExclusive: -500, maxExclusive: 10_000 });
+      if (v != null) point.ele = v;
     } else if (textTarget === 'time') {
-      const t = parseInstant(text.replace(/Z$/, 'Z'));
-      if (t != null) point.t = t;
+      const t = parseInstant(text);
+      if (t == null) {
+        throw new GpxError('timestamps_invalid', 'track-point timestamp invalid');
+      }
+      point.t = t;
     } else if (textTarget === 'speed') {
-      const v = Number(text);
-      if (Number.isFinite(v) && v >= 0 && v < 150) point.speed = v;
+      const v = parseStrictNumber(text, { min: 0, maxExclusive: 150 });
+      if (v != null) point.speed = v;
     } else if (textTarget === 'course') {
-      const v = Number(text);
-      if (Number.isFinite(v) && v >= 0 && v < 360) point.course = v;
+      const v = parseStrictNumber(text, { min: 0, maxExclusive: 360 });
+      if (v != null) point.course = v;
     }
     textTarget = null;
     textStart = -1;
@@ -128,12 +136,15 @@ export function parseGpx(input: string, limits: GpxLimits = DEFAULT_GPX_LIMITS):
       const expected = stack.pop();
       depth--;
       if (expected === undefined) throw new GpxError('malformed_xml', 'unbalanced closing tag');
+      if (localName(expected) !== name) {
+        throw new GpxError('malformed_xml', 'mismatched closing tag');
+      }
       if (name === 'trkpt' && point) {
         totalPoints++;
         if (totalPoints > limits.maxPoints) {
           throw new GpxError('gpx_limits_exceeded', 'too many track points');
         }
-        if (isValidPoint(point)) current?.push(point as RoutePoint);
+        if (isValidPoint(point)) current?.push(point);
         else dropped++;
         point = null;
       } else if (name === 'trkseg' && current) {
@@ -153,19 +164,19 @@ export function parseGpx(input: string, limits: GpxLimits = DEFAULT_GPX_LIMITS):
     if (name === 'gpx') sawGpxRoot = true;
     else if (name === 'trkseg') current = [];
     else if (name === 'trkpt') {
-      point = {};
+      point = { t: null };
       const lat = attrValue(attrs, 'lat');
       const lon = attrValue(attrs, 'lon');
-      const latN = lat == null ? NaN : Number(lat);
-      const lonN = lon == null ? NaN : Number(lon);
-      if (Number.isFinite(latN)) point.lat = latN;
-      if (Number.isFinite(lonN)) point.lon = lonN;
+      const latN = parseStrictNumber(lat, { min: -90, max: 90 });
+      const lonN = parseStrictNumber(lon, { min: -180, max: 180 });
+      if (latN != null) point.lat = latN;
+      if (lonN != null) point.lon = lonN;
       if (selfClosing) {
         totalPoints++;
         if (totalPoints > limits.maxPoints) {
           throw new GpxError('gpx_limits_exceeded', 'too many track points');
         }
-        if (isValidPoint(point)) current?.push(point as RoutePoint);
+        if (isValidPoint(point)) current?.push(point);
         else dropped++;
         point = null;
       }
@@ -178,7 +189,9 @@ export function parseGpx(input: string, limits: GpxLimits = DEFAULT_GPX_LIMITS):
 
   if (!sawGpxRoot) throw new GpxError('malformed_xml', 'no gpx root element');
   if (stack.length !== 0) throw new GpxError('malformed_xml', 'unclosed elements');
-  return { segments, droppedPoints: dropped };
+  // The database field is nullable and stores these explicit nulls. The shared
+  // RoutePoint type is aligned separately under issue #20.
+  return { segments: segments as unknown as RouteSegment[], droppedPoints: dropped };
 }
 
 function attrValue(attrs: string, name: string): string | null {
@@ -188,7 +201,7 @@ function attrValue(attrs: string, name: string): string | null {
   return decodeEntities(m[2] ?? m[3] ?? '');
 }
 
-function isValidPoint(p: Partial<RoutePoint>): p is RoutePoint {
+function isValidPoint(p: Partial<NullableTimeRoutePoint>): p is NullableTimeRoutePoint {
   return (
     typeof p.lat === 'number' &&
     typeof p.lon === 'number' &&
