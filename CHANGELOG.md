@@ -72,9 +72,10 @@ is pre-1.0, and for the release procedure.
   coverage and zone seconds cannot run past the workout or half boundary; distance increments are
   interval-aligned across time windows; kilometre crossings are interpolated even when one row
   crosses several thresholds; elevation never jumps across route boundaries; and decoupling now
-  requires independent HR, distance, and route coverage with stable reasons for an unstable result.
-  The immutable `analytics-v2` snapshot is computed beside any prior `analytics-v1` evidence rather
-  than overwriting it (#18, #19, #29, analytics half of #53).
+  requires independent HR, distance, and route coverage, using exact unrounded coverage for
+  threshold decisions, with stable reasons for an unstable result. The immutable `analytics-v2`
+  snapshot is computed beside any prior `analytics-v1` evidence rather than overwriting it (#18,
+  #19, #29, analytics half of #53).
 - **Trend charts preserve unavailable metrics instead of inventing zero observations.** Missing
   heart rate, speed, and efficiency values render as explicit dashed `n/a` markers with a
   privacy-safe coverage note, while a genuinely recorded zero remains a distinct solid bar (#27).

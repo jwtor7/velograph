@@ -232,25 +232,3 @@ describe('Repository.recomputeWorkoutSpan', () => {
     db.close();
   });
 });
-
-describe('Repository.deleteStaleAnalyticsSnapshots', () => {
-  it('deletes only snapshots from a different formula version', () => {
-    const db = openDatabase(':memory:');
-    const repo = new Repository(db);
-    const { workoutId } = seedWorkoutWithFile(repo, { start: 1, end: 2 });
-    db.prepare(
-      `INSERT INTO analytics_snapshots
-         (workout_id, scope, formula_version, settings_hash, input_hash, result_json, created_at)
-       VALUES (?, 'workout', 'analytics-v0-old', 'h', 'h', '{}', 1)`,
-    ).run(workoutId);
-
-    const removed = repo.deleteStaleAnalyticsSnapshots(workoutId, 'analytics-v1');
-
-    expect(removed).toBe(1);
-    const remaining = db
-      .prepare('SELECT formula_version FROM analytics_snapshots WHERE workout_id = ?')
-      .all(workoutId) as { formula_version: string }[];
-    expect(remaining.map((r) => r.formula_version)).toEqual(['analytics-v1']);
-    db.close();
-  });
-});

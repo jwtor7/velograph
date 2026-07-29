@@ -66,6 +66,38 @@ function stopHeavyInput(): AnalyticsInput {
   };
 }
 
+function coverageBoundaryInput(coveredMsPerHalf: number): AnalyticsInput {
+  const halfMs = 1_000_000;
+  const workoutEnd = T0 + halfMs * 2;
+  const finalSampleOffset = halfMs - (coveredMsPerHalf - 7 * 90_000);
+  const heartRate = [0, halfMs].flatMap((halfStart) =>
+    [0, 100_000, 200_000, 300_000, 400_000, 500_000, 600_000, finalSampleOffset].map((offset) => ({
+      t: T0 + halfStart + offset,
+      value: 120,
+    })),
+  );
+  const distance = Array.from({ length: 40 }, (_, index) => ({
+    t: T0 + (index + 1) * 50_000,
+    value: 100,
+  }));
+  const points = Array.from({ length: 41 }, (_, index) => ({
+    t: T0 + index * 50_000,
+    lat: -48.5,
+    lon: -123.5 + index * 0.0001,
+    speed: 2,
+  }));
+  return {
+    workout: {
+      id: 6,
+      type: 'outdoor_cycling',
+      startUtc: T0,
+      endUtc: workoutEnd,
+    },
+    metrics: { heart_rate: heartRate, distance },
+    route: [{ points }],
+  };
+}
+
 describe('deterministic analytics engine', () => {
   it('computes the core summary (ANA-001)', () => {
     const a = computeRideAnalytics(mkInput(), settings);
@@ -117,6 +149,21 @@ describe('deterministic analytics engine', () => {
     expect(a.unavailable['efficiency']).toBeDefined();
     const full = computeRideAnalytics(mkInput(), settings);
     expect(full.efficiency).toBeGreaterThan(0);
+  });
+
+  it('uses exact coverage for gates while rounding only the serialized value', () => {
+    const below = computeRideAnalytics(coverageBoundaryInput(699_600), settings);
+    const above = computeRideAnalytics(coverageBoundaryInput(700_400), settings);
+
+    // Both raw values display as 0.700, but only 0.7004 meets the 0.7 gate.
+    expect(below.heartRate.coverage).toBe(0.7);
+    expect(above.heartRate.coverage).toBe(0.7);
+    expect(below.efficiency).toBeNull();
+    expect(below.unavailable['efficiency']).toBe('insufficient_coverage_or_inputs');
+    expect(below.decouplingPct).toBeNull();
+    expect(below.unavailable['decoupling']).toBe('insufficient_half_hr_coverage');
+    expect(above.efficiency).not.toBeNull();
+    expect(above.decouplingPct).toBe(0);
   });
 
   it('uses moving time for stop-heavy half efficiency (ANA-004)', () => {

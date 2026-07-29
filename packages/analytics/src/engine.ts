@@ -40,8 +40,9 @@ export function computeRideAnalytics(
   const distSamples = input.metrics.distance ?? [];
   const energySamples = input.metrics.energy ?? [];
 
-  const heartRate = metricStat(hrSamples, startUtc, endUtc);
-  const cadence = metricStat(cadSamples, startUtc, endUtc);
+  const heartRateWindow = metricStat(hrSamples, startUtc, endUtc);
+  const heartRate = heartRateWindow.stat;
+  const cadence = metricStat(cadSamples, startUtc, endUtc).stat;
 
   const distanceM = distSamples.length
     ? round3(distSamples.reduce((acc, s) => acc + s.value, 0))
@@ -84,7 +85,11 @@ export function computeRideAnalytics(
     : null;
   if (!settings.hrZoneBounds) unavailable['zones'] = 'zones_not_configured';
 
-  const efficiency = efficiencyRatio(avgSpeedMs, heartRate, settings.minCoverageForEfficiency);
+  const efficiency = efficiencyRatio(
+    avgSpeedMs,
+    heartRateWindow,
+    settings.minCoverageForEfficiency,
+  );
   if (efficiency == null) unavailable['efficiency'] = 'insufficient_coverage_or_inputs';
 
   const decouplingResult = decoupling(input, settings);
@@ -118,10 +123,19 @@ export function computeRideAnalytics(
   };
 }
 
+interface MetricWindowStat {
+  stat: MetricStat;
+  /** Exact internal coverage used for threshold decisions; never presentation-rounded. */
+  rawCoverage: number | null;
+}
+
 /** Interval-weighted mean/extremes + coverage for an explicit [from, to) window. */
-function metricStat(samples: MetricSample[], from: number, to: number): MetricStat {
+function metricStat(samples: MetricSample[], from: number, to: number): MetricWindowStat {
   if (samples.length === 0) {
-    return { avg: null, max: null, min: null, coverage: null, sampleCount: 0 };
+    return {
+      stat: { avg: null, max: null, min: null, coverage: null, sampleCount: 0 },
+      rawCoverage: null,
+    };
   }
   const weights = intervalWeights(samples, from, to);
   let wSum = 0;
@@ -139,13 +153,16 @@ function metricStat(samples: MetricSample[], from: number, to: number): MetricSt
     if (lo < min) min = lo;
   });
   const windowMs = Math.max(0, to - from);
-  const coverage = windowMs > 0 ? Math.min(1, wSum / windowMs) : null;
+  const rawCoverage = windowMs > 0 ? Math.min(1, wSum / windowMs) : null;
   return {
-    avg: wSum > 0 ? round3(vSum / wSum) : null,
-    max: max === -Infinity ? null : round3(max),
-    min: min === Infinity ? null : round3(min),
-    coverage: coverage != null ? round3(coverage) : null,
-    sampleCount: samples.length,
+    stat: {
+      avg: wSum > 0 ? round3(vSum / wSum) : null,
+      max: max === -Infinity ? null : round3(max),
+      min: min === Infinity ? null : round3(min),
+      coverage: rawCoverage != null ? round3(rawCoverage) : null,
+      sampleCount: samples.length,
+    },
+    rawCoverage,
   };
 }
 
@@ -342,12 +359,12 @@ function zoneTimes(
 /** Efficiency: avg speed (km/h) / avg HR (bpm), coverage-gated (ANA-003). */
 function efficiencyRatio(
   avgSpeedMs: number | null,
-  hr: MetricStat,
+  hr: MetricWindowStat,
   minCoverage: number,
 ): number | null {
-  if (avgSpeedMs == null || hr.avg == null || hr.coverage == null) return null;
-  if (hr.coverage < minCoverage || hr.avg <= 0) return null;
-  return round3((avgSpeedMs * 3.6) / hr.avg);
+  if (avgSpeedMs == null || hr.stat.avg == null || hr.rawCoverage == null) return null;
+  if (hr.rawCoverage < minCoverage || hr.stat.avg <= 0) return null;
+  return round3((avgSpeedMs * 3.6) / hr.stat.avg);
 }
 
 interface DistanceInterval {
@@ -421,10 +438,10 @@ function decoupling(input: AnalyticsInput, settings: AnalyticsSettings): Decoupl
   const halfEff = (from: number, to: number): { value: number | null; reason?: string } => {
     const stat = metricStat(hr, from, to);
     if (
-      stat.avg == null ||
-      stat.avg <= 0 ||
-      stat.coverage == null ||
-      stat.coverage < settings.minCoverageForEfficiency
+      stat.stat.avg == null ||
+      stat.stat.avg <= 0 ||
+      stat.rawCoverage == null ||
+      stat.rawCoverage < settings.minCoverageForEfficiency
     ) {
       return { value: null, reason: 'insufficient_half_hr_coverage' };
     }
@@ -441,7 +458,7 @@ function decoupling(input: AnalyticsInput, settings: AnalyticsSettings): Decoupl
       return { value: null, reason: 'no_half_moving_time_or_distance' };
     }
     const speedKmh = (distanceHalf.meters / (routeHalf.movingMs / 1000)) * 3.6;
-    const value = speedKmh / stat.avg;
+    const value = speedKmh / stat.stat.avg;
     return Number.isFinite(value) ? { value } : { value: null, reason: 'unstable_half_efficiency' };
   };
 
@@ -543,5 +560,5 @@ function computeSplits(input: AnalyticsInput): Split[] {
 }
 
 function avgInWindow(samples: MetricSample[], from: number, to: number): number | null {
-  return metricStat(samples, from, to).avg;
+  return metricStat(samples, from, to).stat.avg;
 }

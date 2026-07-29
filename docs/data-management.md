@@ -200,11 +200,10 @@ span from the normalized data it already owns — `MIN`/`MAX` over its `metric_s
 bytes: those bytes are not generally available (`source_files.retention_state` defaults to
 `hash_only`, per PRD retention defaults), so "re-run association" at repair time means
 re-deriving bounds from what's already stored, not re-running the file-association algorithm
-from scratch. It then deletes any `analytics_snapshots` rows left over from a previous
-`FORMULA_VERSION` (`Repository.deleteStaleAnalyticsSnapshots`) and computes + persists a fresh
-snapshot under the current formula version, so upgrading the analytics engine and then repairing
-a ride actually rebuilds its stored numbers instead of leaving stale ones cached alongside the
-new ones.
+from scratch. It then computes and persists a snapshot under the current `FORMULA_VERSION`.
+Snapshots from earlier formula versions remain immutable provenance records beside the current
+result: the formula version is part of the snapshot key, so an upgrade recomputes the ride without
+overwriting or deleting its prior analytical evidence.
 
 ## Surfaces
 

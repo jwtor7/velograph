@@ -323,14 +323,6 @@ export class Repository {
     return true;
   }
 
-  /** Delete analytics snapshots left over from a prior formula version (repair). */
-  deleteStaleAnalyticsSnapshots(workoutId: number, currentFormulaVersion: string): number {
-    const r = this.db
-      .prepare('DELETE FROM analytics_snapshots WHERE workout_id = ? AND formula_version != ?')
-      .run(workoutId, currentFormulaVersion);
-    return r.changes;
-  }
-
   countRows(
     table: 'workouts' | 'metric_samples' | 'route_points' | 'metric_series' | 'routes',
   ): number {
