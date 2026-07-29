@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkpointDatabase, openDatabase } from './database.ts';
 import { Repository } from './repository.ts';
@@ -69,17 +69,38 @@ function waitForChild(child: ChildProcess): Promise<{ code: number | null; stder
   });
 }
 
+function operationFiles(dir: string, kind: 'backup' | 'restore'): string[] {
+  const files: string[] = [];
+  const walk = (current: string, relative: string): void => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const entryRelative = join(relative, entry.name);
+      if (entry.isDirectory()) {
+        walk(join(current, entry.name), entryRelative);
+      } else if (entry.isFile()) {
+        files.push(entryRelative);
+      }
+    }
+  };
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name.startsWith(`.velograph-${kind}-`)) {
+      walk(join(dir, entry.name), entry.name);
+    }
+  }
+  return files.sort();
+}
+
+function operationDirectories(dir: string, kind: 'backup' | 'restore'): string[] {
+  return readdirSync(dir)
+    .filter((name) => name.startsWith(`.velograph-${kind}-`))
+    .sort();
+}
+
 function restoreArtifacts(dir: string): string[] {
-  return readdirSync(dir).filter(
-    (name) =>
-      name.includes('.restore-') || name.includes('.rollback-') || name.includes('.recovery-'),
-  );
+  return operationFiles(dir, 'restore');
 }
 
 function backupArtifacts(dir: string): string[] {
-  return readdirSync(dir).filter(
-    (name) => name.includes('.backup-') || name.includes('.previous-'),
-  );
+  return operationFiles(dir, 'backup');
 }
 
 async function expectValidationError(
@@ -308,6 +329,7 @@ describe('backupDatabase / restoreDatabase', () => {
       const destinationPath = join(destinationDir, 'live.sqlite3');
       const db = openDatabase(dbPath);
       writeRestoreState(db, 'before-parent-swap');
+      const liveEntriesBefore = readdirSync(liveDir).sort();
 
       await expectBackupValidationError(
         backupDatabase(db, destinationPath, {
@@ -320,9 +342,14 @@ describe('backupDatabase / restoreDatabase', () => {
         'invalid_backup_destination',
       );
 
-      const retainedStages = backupArtifacts(liveDir);
+      expect(backupArtifacts(liveDir)).toEqual([]);
+      expect(readdirSync(liveDir).sort()).toEqual(liveEntriesBefore);
+      const retainedDirectories = operationDirectories(movedDestinationDir, 'backup');
+      expect(retainedDirectories).toHaveLength(1);
+      expect(statSync(join(movedDestinationDir, retainedDirectories[0]!)).mode & 0o777).toBe(0o700);
+      const retainedStages = backupArtifacts(movedDestinationDir);
       expect(retainedStages).toHaveLength(1);
-      expect(statSync(join(liveDir, retainedStages[0]!)).mode & 0o777).toBe(0o600);
+      expect(statSync(join(movedDestinationDir, retainedStages[0]!)).mode & 0o777).toBe(0o600);
       expect(db.open).toBe(true);
       expect(readRestoreState(db)).toBe('before-parent-swap');
       writeRestoreState(db, 'after-parent-swap');
@@ -400,8 +427,8 @@ describe('backupDatabase / restoreDatabase', () => {
       await expect(
         backupDatabase(db, backupPath, {
           afterInstall: () => {
-            const priorArtifacts = backupArtifacts(dir).filter((name) =>
-              name.includes('.previous-'),
+            const priorArtifacts = backupArtifacts(dir).filter(
+              (name) => basename(name) === 'previous.sqlite3',
             );
             expect(priorArtifacts).toHaveLength(1);
             expect(statSync(join(dir, priorArtifacts[0]!)).mode & 0o777).toBe(0o600);
@@ -557,6 +584,93 @@ describe('backupDatabase / restoreDatabase', () => {
     15_000,
   );
 
+  it(
+    'serializes case-alias destinations across separate processes by parent identity',
+    () =>
+      withTempDir(async (dir) => {
+        const firstBackupPath = join(dir, 'case-export.sqlite3');
+        const caseAliasPath = join(dir, 'CASE-EXPORT.SQLITE3');
+        const firstDbPath = join(dir, 'case-first.sqlite3');
+        const secondDbPath = join(dir, 'case-second.sqlite3');
+        const seedDbPath = join(dir, 'case-seed.sqlite3');
+        const firstReady = join(dir, 'case-first-ready');
+        const releaseFirst = join(dir, 'case-release-first');
+        const secondAttempting = join(dir, 'case-second-attempting');
+        const secondStarted = join(dir, 'case-second-started');
+
+        const seed = openDatabase(seedDbPath);
+        writeRestoreState(seed, 'previous-backup');
+        await backupDatabase(seed, firstBackupPath);
+        seed.close();
+        openDatabase(firstDbPath).close();
+        openDatabase(secondDbPath).close();
+
+        const children: ChildProcess[] = [];
+        const childResults: Promise<{ code: number | null; stderr: string }>[] = [];
+        try {
+          const first = spawn(
+            process.execPath,
+            [
+              BACKUP_LOCK_CHILD,
+              'hold-and-fail',
+              firstDbPath,
+              firstBackupPath,
+              firstReady,
+              releaseFirst,
+              join(dir, 'case-first-started'),
+            ],
+            { stdio: ['ignore', 'pipe', 'pipe'] },
+          );
+          children.push(first);
+          const firstResult = waitForChild(first);
+          childResults.push(firstResult);
+          await waitForPath(firstReady);
+
+          const second = spawn(
+            process.execPath,
+            [
+              BACKUP_LOCK_CHILD,
+              'succeed',
+              secondDbPath,
+              caseAliasPath,
+              secondAttempting,
+              join(dir, 'case-unused-release'),
+              secondStarted,
+            ],
+            { stdio: ['ignore', 'pipe', 'pipe'] },
+          );
+          children.push(second);
+          const secondResult = waitForChild(second);
+          childResults.push(secondResult);
+          await waitForPath(secondAttempting);
+          await new Promise<void>((resolveDelay) => {
+            setTimeout(resolveDelay, 150);
+          });
+          expect(existsSync(secondStarted)).toBe(false);
+
+          writeFileSync(releaseFirst, 'release');
+          const [firstExit, secondExit] = await Promise.all([firstResult, secondResult]);
+          expect(firstExit).toEqual({ code: 0, stderr: '' });
+          expect(secondExit).toEqual({ code: 0, stderr: '' });
+          expect(existsSync(secondStarted)).toBe(true);
+
+          const probe = openDatabase(caseAliasPath);
+          const row = probe
+            .prepare("SELECT value_json FROM user_settings WHERE key = 'backup-lock-state'")
+            .get() as { value_json: string };
+          expect(JSON.parse(row.value_json)).toBe('second-success');
+          probe.close();
+        } finally {
+          if (!existsSync(releaseFirst)) writeFileSync(releaseFirst, 'release');
+          for (const child of children) {
+            if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+          }
+          await Promise.allSettled(childResults);
+        }
+      }),
+    15_000,
+  );
+
   it('retains the independent previous snapshot until rollback directory sync is proven', () =>
     withTempDir(async (dir) => {
       const db = openDatabase(join(dir, 'live.sqlite3'));
@@ -581,7 +695,7 @@ describe('backupDatabase / restoreDatabase', () => {
       ).rejects.toThrow('simulated_post_install_failure');
 
       expect(directorySyncs).toBe(2);
-      const retained = backupArtifacts(dir).filter((name) => name.includes('.previous-'));
+      const retained = backupArtifacts(dir).filter((name) => basename(name) === 'previous.sqlite3');
       expect(retained).toHaveLength(1);
       const retainedPath = join(dir, retained[0]!);
       expect(statSync(retainedPath).mode & 0o777).toBe(0o600);
@@ -777,6 +891,66 @@ describe('backupDatabase / restoreDatabase', () => {
       db.close();
     }));
 
+  it('does not write a restore stage through a substituted live parent', () =>
+    withTempDir(async (dir) => {
+      const liveParent = join(dir, 'restore-stage-parent');
+      const movedParent = join(dir, 'restore-stage-parent-moved');
+      const substituteParent = join(dir, 'restore-stage-substitute');
+      mkdirSync(liveParent);
+      mkdirSync(substituteParent);
+      const { db, dbPath, backupPath } = await createRestoreScenario(liveParent);
+
+      await expectValidationError(
+        restoreDatabase(db, dbPath, backupPath, {
+          stageBackup: async (source, destination) => {
+            renameSync(liveParent, movedParent);
+            symlinkSync(substituteParent, liveParent, 'dir');
+            return source.backup(destination);
+          },
+        }),
+        'restore_stage_failed',
+      );
+
+      expect(readdirSync(substituteParent)).toEqual([]);
+      const retainedDirectories = operationDirectories(movedParent, 'restore');
+      expect(retainedDirectories).toHaveLength(1);
+      expect(statSync(join(movedParent, retainedDirectories[0]!)).mode & 0o777).toBe(0o700);
+      expect(db.open).toBe(true);
+      expect(readRestoreState(db)).toBe('current-live');
+      db.close();
+      rmSync(liveParent, { force: true });
+    }));
+
+  it('does not write a rollback snapshot through a substituted live parent', () =>
+    withTempDir(async (dir) => {
+      const liveParent = join(dir, 'rollback-parent');
+      const movedParent = join(dir, 'rollback-parent-moved');
+      const substituteParent = join(dir, 'rollback-substitute');
+      mkdirSync(liveParent);
+      mkdirSync(substituteParent);
+      const { db, dbPath, backupPath } = await createRestoreScenario(liveParent);
+
+      await expectValidationError(
+        restoreDatabase(db, dbPath, backupPath, {
+          rollbackBackup: async (source, destination) => {
+            renameSync(liveParent, movedParent);
+            symlinkSync(substituteParent, liveParent, 'dir');
+            return source.backup(destination);
+          },
+        }),
+        'restore_rollback_failed',
+      );
+
+      expect(readdirSync(substituteParent)).toEqual([]);
+      const retainedDirectories = operationDirectories(movedParent, 'restore');
+      expect(retainedDirectories).toHaveLength(1);
+      expect(statSync(join(movedParent, retainedDirectories[0]!)).mode & 0o777).toBe(0o700);
+      expect(db.open).toBe(true);
+      expect(readRestoreState(db)).toBe('current-live');
+      db.close();
+      rmSync(liveParent, { force: true });
+    }));
+
   it('reopens the original database when cutover fails immediately after close', () =>
     withTempDir((dir) =>
       expectRecoveredOriginal(
@@ -789,6 +963,50 @@ describe('backupDatabase / restoreDatabase', () => {
         'restore_cutover_failed',
       ),
     ));
+
+  it('fails closed after a post-close parent swap without creating or adopting a database', () =>
+    withTempDir(async (dir) => {
+      const liveParent = join(dir, 'post-close-parent');
+      const movedParent = join(dir, 'post-close-parent-moved');
+      const substituteParent = join(dir, 'post-close-substitute');
+      mkdirSync(liveParent);
+      mkdirSync(substituteParent);
+      const { db, dbPath, backupPath } = await createRestoreScenario(liveParent);
+
+      let caught: RestoreDatabaseError | undefined;
+      try {
+        await restoreDatabase(db, dbPath, backupPath, {
+          afterLiveClose: () => {
+            renameSync(liveParent, movedParent);
+            symlinkSync(substituteParent, liveParent, 'dir');
+          },
+        });
+      } catch (error) {
+        expect(error).toBeInstanceOf(RestoreDatabaseError);
+        caught = error as RestoreDatabaseError;
+      }
+
+      expect(caught?.code).toBe('restore_recovery_failed');
+      expect(caught?.recoveredDatabase).toBeUndefined();
+      expect(db.open).toBe(false);
+      expect(existsSync(join(substituteParent, 'live.sqlite3'))).toBe(false);
+      expect(readdirSync(substituteParent)).toEqual([]);
+
+      const retainedDirectories = operationDirectories(movedParent, 'restore');
+      expect(retainedDirectories).toHaveLength(1);
+      expect(statSync(join(movedParent, retainedDirectories[0]!)).mode & 0o777).toBe(0o700);
+      const retainedRollback = restoreArtifacts(movedParent).filter(
+        (name) => basename(name) === 'rollback.sqlite3',
+      );
+      expect(retainedRollback).toHaveLength(1);
+      expect(statSync(join(movedParent, retainedRollback[0]!)).mode & 0o777).toBe(0o600);
+
+      const original = openDatabase(join(movedParent, 'live.sqlite3'));
+      expect(readRestoreState(original)).toBe('current-live');
+      expect(original.pragma('integrity_check', { simple: true })).toBe('ok');
+      original.close();
+      rmSync(liveParent, { force: true });
+    }));
 
   it('reinstalls the original database when failure occurs after replacement install', () =>
     withTempDir((dir) =>
@@ -809,10 +1027,9 @@ describe('backupDatabase / restoreDatabase', () => {
       await expectRecoveredOriginal(
         dir,
         {
-          reopenDatabase: (path) => {
+          afterReopen: () => {
             reopenCalls += 1;
             if (reopenCalls === 1) throw new Error('simulated_replacement_open_failure');
-            return openDatabase(path);
           },
         },
         'restore_reopen_failed',
@@ -831,7 +1048,7 @@ describe('backupDatabase / restoreDatabase', () => {
           afterInstall: () => {
             throw new Error('simulated_post_install_failure');
           },
-          reopenDatabase: () => {
+          afterReopen: () => {
             throw new Error('simulated_recovery_open_failure');
           },
         });
@@ -846,7 +1063,9 @@ describe('backupDatabase / restoreDatabase', () => {
       expect(caught?.recoveredDatabase).toBeUndefined();
       expect(db.open).toBe(false);
 
-      const retained = restoreArtifacts(dir).filter((name) => name.includes('.rollback-'));
+      const retained = restoreArtifacts(dir).filter(
+        (name) => basename(name) === 'rollback.sqlite3',
+      );
       expect(retained).toHaveLength(1);
       const retainedPath = join(dir, retained[0]!);
       expect(statSync(retainedPath).mode & 0o777).toBe(0o600);

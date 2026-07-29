@@ -71,11 +71,13 @@ export interface RestoreOptions {
   /** @internal Deterministic fault-injection seam. */
   stageBackup?: (source: Database, destination: string) => Promise<unknown>;
   /** @internal Deterministic fault-injection seam. */
+  rollbackBackup?: (source: Database, destination: string) => Promise<unknown>;
+  /** @internal Deterministic fault-injection seam. */
   afterLiveClose?: () => void | Promise<void>;
   /** @internal Deterministic fault-injection seam. */
   afterInstall?: () => void | Promise<void>;
-  /** @internal Deterministic fault-injection seam. */
-  reopenDatabase?: (path: string) => Database;
+  /** @internal Deterministic fault-injection seam after a safe existing-file reopen. */
+  afterReopen?: (db: Database) => void;
 }
 
 /** A pre-cutover compatibility failure with a stable, value-free code. */
@@ -92,8 +94,8 @@ export class RestoreValidationError extends Error {
 /**
  * A restore failed after the old handle was closed. When recovery succeeds,
  * `recoveredDatabase` is the reopened original database. If recovery cannot
- * be proven, callers must fail closed; the private rollback snapshot is
- * retained beside the live database for manual recovery.
+ * be proven, callers must fail closed; the private rollback snapshot remains
+ * in its protected operation directory for manual recovery.
  */
 export class RestoreDatabaseError extends Error {
   readonly code: 'restore_cutover_failed' | 'restore_reopen_failed' | 'restore_recovery_failed';
@@ -111,14 +113,29 @@ export class RestoreDatabaseError extends Error {
 }
 
 interface FileIdentity {
-  dev: number;
-  ino: number;
+  dev: bigint;
+  ino: bigint;
 }
 
 interface PreparedBackupTarget {
   target: string;
   parent: string;
   parentIdentity: FileIdentity;
+  lockKey: string;
+}
+
+interface PreparedRestoreTarget {
+  target: string;
+  parent: string;
+  parentIdentity: FileIdentity;
+  originalIdentity: FileIdentity;
+}
+
+interface PrivateOperationDirectory {
+  path: string;
+  parent: string;
+  parentIdentity: FileIdentity;
+  identity: FileIdentity;
 }
 
 interface CrossProcessBackupLock {
@@ -147,7 +164,7 @@ function canonicalEntryPath(path: string): string {
 
 function fileIdentity(path: string): FileIdentity | undefined {
   try {
-    const stats = statSync(path);
+    const stats = statSync(path, { bigint: true });
     return { dev: stats.dev, ino: stats.ino };
   } catch {
     return undefined;
@@ -158,13 +175,29 @@ function identitiesMatch(a: FileIdentity | undefined, b: FileIdentity | undefine
   return a !== undefined && b !== undefined && a.dev === b.dev && a.ino === b.ino;
 }
 
+function stableCanonicalDirectory(path: string, expected: FileIdentity): boolean {
+  try {
+    const stats = lstatSync(path);
+    const identity = lstatSync(path, { bigint: true });
+    return (
+      !stats.isSymbolicLink() &&
+      stats.isDirectory() &&
+      realpathSync(path) === path &&
+      identitiesMatch(expected, { dev: identity.dev, ino: identity.ino })
+    );
+  } catch {
+    return false;
+  }
+}
+
 function requiredDirectoryIdentity(path: string): FileIdentity {
   try {
-    const stats = statSync(path);
-    if (!stats.isDirectory()) {
+    const stats = lstatSync(path);
+    if (stats.isSymbolicLink() || !stats.isDirectory() || realpathSync(path) !== path) {
       throw new BackupValidationError('invalid_backup_destination');
     }
-    return { dev: stats.dev, ino: stats.ino };
+    const identity = lstatSync(path, { bigint: true });
+    return { dev: identity.dev, ino: identity.ino };
   } catch (error) {
     if (error instanceof BackupValidationError) throw error;
     throw new BackupValidationError('invalid_backup_destination');
@@ -229,8 +262,8 @@ function pathIsInside(path: string, parent: string): boolean {
   return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
 }
 
-function backupLockPath(target: string): string {
-  const key = createHash('sha256').update(target).digest('hex');
+function backupLockPath(lockKey: string): string {
+  const key = createHash('sha256').update(lockKey).digest('hex');
   return join(backupLockDirectory(), `${key}.sqlite3`);
 }
 
@@ -266,8 +299,8 @@ function isSqliteLockContention(error: unknown): boolean {
   return code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED';
 }
 
-async function acquireCrossProcessBackupLock(target: string): Promise<CrossProcessBackupLock> {
-  const path = backupLockPath(target);
+async function acquireCrossProcessBackupLock(lockKey: string): Promise<CrossProcessBackupLock> {
+  const path = backupLockPath(lockKey);
   preparePrivateLockFile(path);
 
   let lockDb: Database | undefined;
@@ -314,7 +347,7 @@ function assertBackupParentStable(db: Database, prepared: PreparedBackupTarget):
   }
   if (
     currentTarget !== prepared.target ||
-    !identitiesMatch(prepared.parentIdentity, fileIdentity(prepared.parent))
+    !stableCanonicalDirectory(prepared.parent, prepared.parentIdentity)
   ) {
     throw new BackupValidationError('invalid_backup_destination');
   }
@@ -335,25 +368,25 @@ async function withBackupDestinationLock<T>(
   prepared: PreparedBackupTarget,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const target = prepared.target;
-  const previous = backupDestinationLocks.get(target) ?? Promise.resolve();
+  const lockKey = prepared.lockKey;
+  const previous = backupDestinationLocks.get(lockKey) ?? Promise.resolve();
   let release!: () => void;
   const ownTurn = new Promise<void>((resolveTurn) => {
     release = resolveTurn;
   });
   const tail = previous.then(() => ownTurn);
-  backupDestinationLocks.set(target, tail);
+  backupDestinationLocks.set(lockKey, tail);
   await previous;
   let crossProcessLock: CrossProcessBackupLock | undefined;
   try {
-    crossProcessLock = await acquireCrossProcessBackupLock(target);
+    crossProcessLock = await acquireCrossProcessBackupLock(lockKey);
     assertBackupParentStable(db, prepared);
     return await operation();
   } finally {
     crossProcessLock?.release();
     release();
-    if (backupDestinationLocks.get(target) === tail) {
-      backupDestinationLocks.delete(target);
+    if (backupDestinationLocks.get(lockKey) === tail) {
+      backupDestinationLocks.delete(lockKey);
     }
   }
 }
@@ -374,18 +407,24 @@ function prepareBackupTarget(db: Database, destPath: string): PreparedBackupTarg
     throw new BackupValidationError('invalid_backup_destination');
   }
   assertDestinationDoesNotConflictWithLiveDatabase(db, target);
+  const parentIdentity = requiredDirectoryIdentity(parent);
   return {
     target,
     parent,
-    parentIdentity: requiredDirectoryIdentity(parent),
+    parentIdentity,
+    // macOS commonly uses a case-insensitive filesystem. Conservatively lock
+    // the verified parent directory rather than a case-sensitive spelling of
+    // one entry so aliases cannot acquire independent process locks.
+    lockKey: `parent:${parentIdentity.dev}:${parentIdentity.ino}`,
   };
 }
 
 /**
  * Export the live database to `destPath` using SQLite's online backup API
  * (PRD: backups use the backup API, never a copy of a live WAL database's
- * files). The destination is serialized per canonical path, must stay outside
- * a git checkout, and cannot alias the live database or any SQLite sidecar.
+ * files). Operations are conservatively serialized per verified parent
+ * identity so case aliases cannot bypass the lock. The destination must stay
+ * outside a git checkout and cannot alias the live database or a sidecar.
  */
 export async function backupDatabase(
   db: Database,
@@ -406,36 +445,61 @@ async function backupDatabaseAtTarget(
   const resolved = prepared.target;
   const parent = prepared.parent;
   const syncDirectory = options.syncDirectory ?? fsyncDirectory;
-  const id = randomUUID();
-  const stagedPath = join(parent, `.${basename(resolved)}.backup-${id}.tmp`);
-  const previousPath = join(parent, `.${basename(resolved)}.previous-${id}.tmp`);
-  const recoveryPath = join(parent, `.${basename(resolved)}.previous-install-${id}.tmp`);
   assertBackupParentStable(db, prepared);
   const hadPrevious = existsSync(resolved);
+  let operationDirectory: PrivateOperationDirectory | undefined;
+  let stagedPath: string | undefined;
+  let previousPath: string | undefined;
+  let recoveryPath: string | undefined;
   let installed = false;
+  let stagedIdentity!: FileIdentity;
   let installedIdentity: FileIdentity | undefined;
   let previousRestored = false;
+  let previousSnapshotCreated = false;
+  let retainOperationDirectory = false;
   try {
+    try {
+      operationDirectory = createPrivateOperationDirectory(
+        parent,
+        prepared.parentIdentity,
+        'backup',
+      );
+      assertBackupOperationStable(db, prepared, operationDirectory);
+    } catch (error) {
+      if (error instanceof BackupValidationError) throw error;
+      throw new BackupValidationError('invalid_backup_destination');
+    }
+    stagedPath = join(operationDirectory.path, 'stage.sqlite3');
+    previousPath = join(operationDirectory.path, 'previous.sqlite3');
+    recoveryPath = join(operationDirectory.path, 'recovery.sqlite3');
+
     if (hadPrevious) {
-      assertBackupParentStable(db, prepared);
+      assertBackupOperationStable(db, prepared, operationDirectory);
       createPrivateArtifact(previousPath);
+      assertBackupOperationStable(db, prepared, operationDirectory);
       copyFileSync(resolved, previousPath);
       chmodSync(previousPath, 0o600);
       fsyncPath(previousPath);
-      assertBackupParentStable(db, prepared);
+      previousSnapshotCreated = true;
+      assertBackupOperationStable(db, prepared, operationDirectory);
     }
 
-    assertBackupParentStable(db, prepared);
+    assertBackupOperationStable(db, prepared, operationDirectory);
     createPrivateArtifact(stagedPath);
-    const result = options.stageBackup
-      ? await options.stageBackup(db, stagedPath)
-      : await db.backup(stagedPath);
-    // A non-cooperating process can replace the parent while SQLite has the
-    // destination open. Reassert private mode before any validation that may
-    // reject the changed parent, so a retained random-name stage is not left
-    // broader than the source database.
+    assertBackupOperationStable(db, prepared, operationDirectory);
+    let result: BackupResult;
+    try {
+      result = options.stageBackup
+        ? await options.stageBackup(db, stagedPath)
+        : await db.backup(stagedPath);
+    } catch (error) {
+      if (!backupOperationIsStable(db, prepared, operationDirectory)) {
+        throw new BackupValidationError('invalid_backup_destination');
+      }
+      throw error;
+    }
     chmodSync(stagedPath, 0o600);
-    assertBackupParentStable(db, prepared);
+    assertBackupOperationStable(db, prepared, operationDirectory);
 
     let probe: Database | undefined;
     try {
@@ -449,30 +513,40 @@ async function backupDatabaseAtTarget(
     }
     removeSidecars(stagedPath);
     fsyncPath(stagedPath);
+    stagedIdentity = requiredRegularFileIdentity(stagedPath);
 
     // Node does not expose renameat(2), so bind the pathname to the originally
     // verified directory identity immediately before and after the single
     // synchronous rename. This closes observable symlink/directory swaps
     // during asynchronous staging while keeping the install same-filesystem.
-    assertBackupParentStable(db, prepared);
+    assertBackupOperationStable(db, prepared, operationDirectory);
     renameSync(stagedPath, resolved);
     installed = true;
-    installedIdentity = fileIdentity(resolved);
+    installedIdentity = stagedIdentity;
+    if (!regularFileHasIdentity(resolved, installedIdentity)) {
+      throw new BackupValidationError('invalid_backup_destination');
+    }
     assertBackupParentStable(db, prepared);
     syncDirectory(parent);
     await options.afterInstall?.();
     assertBackupParentStable(db, prepared);
 
-    removeArtifact(previousPath);
     return result;
   } catch (error) {
-    if (installed && backupParentIsStable(db, prepared)) {
+    if (
+      installed &&
+      operationDirectory &&
+      previousPath &&
+      recoveryPath &&
+      backupOperationIsStable(db, prepared, operationDirectory)
+    ) {
       try {
         // Another writer may have replaced this operation's inode. Never
         // roll back or delete a later successful backup.
         if (identitiesMatch(installedIdentity, fileIdentity(resolved))) {
           if (hadPrevious) {
             createPrivateArtifact(recoveryPath);
+            assertBackupOperationStable(db, prepared, operationDirectory);
             copyFileSync(previousPath, recoveryPath);
             chmodSync(recoveryPath, 0o600);
             fsyncPath(recoveryPath);
@@ -493,17 +567,18 @@ async function backupDatabaseAtTarget(
         // failure; never delete the only known-good prior backup.
       }
     }
+    retainOperationDirectory =
+      installed && hadPrevious && previousSnapshotCreated && !previousRestored;
+    if (!backupParentIsStable(db, prepared) && !(error instanceof BackupValidationError)) {
+      throw new BackupValidationError('invalid_backup_destination');
+    }
     throw error;
   } finally {
-    // Do not follow a destination parent that changed identity during the
-    // operation. The random private artifacts are safer retained than cleanup
-    // through an untrusted replacement path.
-    if (backupParentIsStable(db, prepared)) {
-      removeArtifact(stagedPath);
-      removeArtifact(recoveryPath);
-      if (!hadPrevious || !installed || previousRestored) {
-        removeArtifact(previousPath);
-      }
+    // Do not follow a destination parent or operation directory that changed
+    // identity. A retained mode-0700 directory is safer than cleanup through
+    // an untrusted replacement path.
+    if (operationDirectory && !retainOperationDirectory) {
+      removePrivateOperationDirectory(operationDirectory);
     }
   }
 }
@@ -711,6 +786,91 @@ function createPrivateArtifact(path: string): void {
   }
 }
 
+function createPrivateOperationDirectory(
+  parent: string,
+  parentIdentity: FileIdentity,
+  kind: 'backup' | 'restore',
+): PrivateOperationDirectory {
+  if (!stableCanonicalDirectory(parent, parentIdentity)) {
+    throw new Error('operation_parent_invalid');
+  }
+  const path = join(parent, `.velograph-${kind}-${randomUUID()}`);
+  mkdirSync(path, { mode: 0o700 });
+  chmodSync(path, 0o700);
+  const stats = lstatSync(path);
+  const identity = lstatSync(path, { bigint: true });
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  if (
+    stats.isSymbolicLink() ||
+    !stats.isDirectory() ||
+    (stats.mode & 0o777) !== 0o700 ||
+    (uid !== undefined && stats.uid !== uid)
+  ) {
+    throw new Error('private_operation_directory_invalid');
+  }
+  if (!stableCanonicalDirectory(parent, parentIdentity)) {
+    throw new Error('operation_parent_changed');
+  }
+  return {
+    path,
+    parent,
+    parentIdentity,
+    identity: { dev: identity.dev, ino: identity.ino },
+  };
+}
+
+function privateOperationDirectoryIsStable(operation: PrivateOperationDirectory): boolean {
+  if (!stableCanonicalDirectory(operation.parent, operation.parentIdentity)) return false;
+  try {
+    const stats = lstatSync(operation.path);
+    const identity = lstatSync(operation.path, { bigint: true });
+    const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+    return (
+      !stats.isSymbolicLink() &&
+      stats.isDirectory() &&
+      (stats.mode & 0o777) === 0o700 &&
+      (uid === undefined || stats.uid === uid) &&
+      identitiesMatch(operation.identity, { dev: identity.dev, ino: identity.ino })
+    );
+  } catch {
+    return false;
+  }
+}
+
+function assertBackupOperationStable(
+  db: Database,
+  prepared: PreparedBackupTarget,
+  operation: PrivateOperationDirectory,
+): void {
+  assertBackupParentStable(db, prepared);
+  if (!privateOperationDirectoryIsStable(operation)) {
+    throw new BackupValidationError('invalid_backup_destination');
+  }
+}
+
+function backupOperationIsStable(
+  db: Database,
+  prepared: PreparedBackupTarget,
+  operation: PrivateOperationDirectory,
+): boolean {
+  try {
+    assertBackupOperationStable(db, prepared, operation);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removePrivateOperationDirectory(operation: PrivateOperationDirectory): void {
+  if (!privateOperationDirectoryIsStable(operation)) return;
+  try {
+    rmSync(operation.path, { recursive: true, force: true });
+  } catch {
+    // A private random-name directory is safer than masking the operation
+    // outcome or following a replacement path during cleanup.
+  }
+}
+
 function databaseMetadata(path: string): DatabaseMetadata {
   const stats = statSync(path);
   return {
@@ -784,17 +944,165 @@ function openAndValidateCanonical(path: string): Database {
   }
 }
 
+function requiredRegularFileIdentity(path: string): FileIdentity {
+  const stats = lstatSync(path);
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw new Error('regular_file_identity_invalid');
+  }
+  const identity = lstatSync(path, { bigint: true });
+  return { dev: identity.dev, ino: identity.ino };
+}
+
+function regularFileHasIdentity(path: string, expected: FileIdentity): boolean {
+  try {
+    const stats = lstatSync(path);
+    const identity = lstatSync(path, { bigint: true });
+    return (
+      !stats.isSymbolicLink() &&
+      stats.isFile() &&
+      identitiesMatch(expected, { dev: identity.dev, ino: identity.ino })
+    );
+  } catch {
+    return false;
+  }
+}
+
+function prepareRestoreTarget(liveDb: Database, dbPath: string): PreparedRestoreTarget {
+  try {
+    if (!liveDb.open || liveDb.memory || liveDb.name === '' || liveDb.name === ':memory:') {
+      throw new Error('restore_requires_file_database');
+    }
+    const liveTarget = realpathSync(resolve(liveDb.name));
+    const parent = dirname(liveTarget);
+    const parentIdentity = requiredRawDirectoryIdentity(parent);
+    const originalIdentity = requiredRegularFileIdentity(liveTarget);
+    const target = realpathSync(resolve(dbPath));
+    if (
+      target !== liveTarget ||
+      !identitiesMatch(originalIdentity, requiredRegularFileIdentity(target))
+    ) {
+      throw new Error('restore_live_database_mismatch');
+    }
+    const prepared = {
+      target,
+      parent,
+      parentIdentity,
+      originalIdentity,
+    };
+    if (!restoreTargetIsStable(prepared, originalIdentity)) {
+      throw new Error('restore_parent_invalid');
+    }
+    return prepared;
+  } catch {
+    throw new RestoreValidationError('restore_stage_failed');
+  }
+}
+
+function requiredRawDirectoryIdentity(path: string): FileIdentity {
+  const stats = lstatSync(path);
+  if (stats.isSymbolicLink() || !stats.isDirectory() || realpathSync(path) !== path) {
+    throw new Error('directory_identity_invalid');
+  }
+  const identity = lstatSync(path, { bigint: true });
+  return { dev: identity.dev, ino: identity.ino };
+}
+
+function restoreTargetIsStable(
+  prepared: PreparedRestoreTarget,
+  expectedIdentity: FileIdentity,
+): boolean {
+  if (!stableCanonicalDirectory(prepared.parent, prepared.parentIdentity)) return false;
+  try {
+    return (
+      realpathSync(prepared.target) === prepared.target &&
+      regularFileHasIdentity(prepared.target, expectedIdentity)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function assertRestoreTargetStable(
+  prepared: PreparedRestoreTarget,
+  expectedIdentity: FileIdentity,
+): void {
+  if (!restoreTargetIsStable(prepared, expectedIdentity)) {
+    throw new Error('restore_target_changed');
+  }
+}
+
+function restoreOperationIsStable(
+  prepared: PreparedRestoreTarget,
+  operation: PrivateOperationDirectory,
+  expectedIdentity: FileIdentity,
+): boolean {
+  return (
+    restoreTargetIsStable(prepared, expectedIdentity) &&
+    privateOperationDirectoryIsStable(operation)
+  );
+}
+
+function assertRestoreOperationStable(
+  prepared: PreparedRestoreTarget,
+  operation: PrivateOperationDirectory,
+  expectedIdentity: FileIdentity,
+): void {
+  assertRestoreTargetStable(prepared, expectedIdentity);
+  if (!privateOperationDirectoryIsStable(operation)) {
+    throw new Error('restore_operation_directory_changed');
+  }
+}
+
+function openExpectedCanonicalDatabase(
+  prepared: PreparedRestoreTarget,
+  expectedIdentity: FileIdentity,
+  afterReopen?: (db: Database) => void,
+): Database {
+  assertRestoreTargetStable(prepared, expectedIdentity);
+  let reopened: Database | undefined;
+  try {
+    reopened = new DatabaseConstructor(prepared.target, { fileMustExist: true });
+    assertRestoreTargetStable(prepared, expectedIdentity);
+    if (
+      reopened.memory ||
+      reopened.name === '' ||
+      reopened.name === ':memory:' ||
+      realpathSync(resolve(reopened.name)) !== prepared.target
+    ) {
+      throw new Error('restore_reopen_identity_mismatch');
+    }
+    validateCanonicalDatabase(reopened);
+    reopened.pragma('foreign_keys = ON');
+    reopened.pragma('synchronous = NORMAL');
+    if (reopened.pragma('journal_mode', { simple: true }) !== 'wal') {
+      reopened.pragma('journal_mode = WAL');
+    }
+    afterReopen?.(reopened);
+    if (!reopened.open) {
+      throw new Error('restore_reopen_closed');
+    }
+    assertRestoreTargetStable(prepared, expectedIdentity);
+    return reopened;
+  } catch (error) {
+    closeQuietly(reopened);
+    throw error;
+  }
+}
+
 async function reopenOriginal(
-  dbPath: string,
+  prepared: PreparedRestoreTarget,
+  operation: PrivateOperationDirectory,
   rollbackPath: string,
+  rollbackIdentity: FileIdentity,
   recoveryInstallPath: string,
   metadata: DatabaseMetadata,
   replacementInstalled: boolean,
-  reopen: (path: string) => Database,
+  installedIdentity: FileIdentity | undefined,
+  afterReopen?: (db: Database) => void,
 ): Promise<Database | undefined> {
   if (!replacementInstalled) {
     try {
-      return reopen(dbPath);
+      return openExpectedCanonicalDatabase(prepared, prepared.originalIdentity, afterReopen);
     } catch {
       // The original path should still be intact. Install the independently
       // validated rollback snapshot from a copy if reopening nevertheless
@@ -802,12 +1110,27 @@ async function reopenOriginal(
     }
   }
 
+  const currentIdentity = replacementInstalled ? installedIdentity : prepared.originalIdentity;
+  if (
+    !currentIdentity ||
+    !restoreOperationIsStable(prepared, operation, currentIdentity) ||
+    !regularFileHasIdentity(rollbackPath, rollbackIdentity)
+  ) {
+    return undefined;
+  }
+
   let source: Database | undefined;
   let recoveryProbe: Database | undefined;
   try {
+    assertRestoreOperationStable(prepared, operation, currentIdentity);
     createPrivateArtifact(recoveryInstallPath);
+    assertRestoreOperationStable(prepared, operation, currentIdentity);
     source = openBackupSource(rollbackPath);
     await source.backup(recoveryInstallPath);
+    assertRestoreOperationStable(prepared, operation, currentIdentity);
+    if (!regularFileHasIdentity(rollbackPath, rollbackIdentity)) {
+      throw new Error('restore_rollback_identity_changed');
+    }
     closeQuietly(source);
     source = undefined;
     chmodSync(recoveryInstallPath, 0o600);
@@ -822,42 +1145,47 @@ async function reopenOriginal(
     removeSidecars(recoveryInstallPath);
     applyDatabaseMetadata(recoveryInstallPath, metadata);
     fsyncPath(recoveryInstallPath);
+    const recoveryIdentity = requiredRegularFileIdentity(recoveryInstallPath);
 
-    removeSidecars(dbPath);
-    renameSync(recoveryInstallPath, dbPath);
-    fsyncDirectory(dirname(dbPath));
-    removeSidecars(dbPath);
-    fsyncDirectory(dirname(dbPath));
+    assertRestoreOperationStable(prepared, operation, currentIdentity);
+    removeSidecars(prepared.target);
+    assertRestoreOperationStable(prepared, operation, currentIdentity);
+    renameSync(recoveryInstallPath, prepared.target);
+    assertRestoreTargetStable(prepared, recoveryIdentity);
+    fsyncDirectory(prepared.parent);
+    removeSidecars(prepared.target);
+    assertRestoreTargetStable(prepared, recoveryIdentity);
+    fsyncDirectory(prepared.parent);
+    return openExpectedCanonicalDatabase(prepared, recoveryIdentity, afterReopen);
   } catch {
     return undefined;
   } finally {
     closeQuietly(recoveryProbe);
     closeQuietly(source);
-    try {
-      removeSidecars(rollbackPath);
-    } catch {
-      // Keep the validated main recovery snapshot even if sidecar cleanup
-      // cannot be completed.
+    if (privateOperationDirectoryIsStable(operation)) {
+      try {
+        removeSidecars(rollbackPath);
+      } catch {
+        // Keep the validated main recovery snapshot even if sidecar cleanup
+        // cannot be completed.
+      }
     }
-    removeArtifact(recoveryInstallPath);
-  }
-
-  try {
-    return reopen(dbPath);
-  } catch {
-    return undefined;
   }
 }
 
 /**
  * Restore the live database from a backup file. Both incoming stage and
  * original rollback snapshots are produced through SQLite's online backup
- * API, validated, closed, permissioned, and fsynced while `liveDb` remains
- * usable. The final same-directory rename is the replacement commit point.
+ * API inside a verified mode-0700 operation directory, validated, closed,
+ * permissioned, and fsynced while `liveDb` remains usable. The canonical live
+ * parent and expected inode are checked around each asynchronous boundary.
+ * The final same-filesystem rename is the replacement commit point.
  *
- * Any failure after the live handle closes reinstalls and reopens the
- * original snapshot. The caller must swap its old handle reference for either
- * the successful return value or `RestoreDatabaseError.recoveredDatabase`.
+ * Any failure after the live handle closes reinstalls and reopens the original
+ * snapshot only when the parent and expected inode remain bound. Reopen always
+ * requires an existing canonical database. The caller must swap its old
+ * handle reference for either the successful return value or
+ * `RestoreDatabaseError.recoveredDatabase`.
  */
 export async function restoreDatabase(
   liveDb: Database,
@@ -865,33 +1193,49 @@ export async function restoreDatabase(
   backupPath: string,
   options: RestoreOptions = {},
 ): Promise<Database> {
+  const prepared = prepareRestoreTarget(liveDb, dbPath);
   const resolvedBackup = resolve(backupPath);
-  const resolvedDbPath = resolve(dbPath);
-  const parent = dirname(resolvedDbPath);
-  const id = randomUUID();
-  const stagedPath = join(parent, `.${basename(resolvedDbPath)}.restore-${id}.tmp`);
-  const rollbackPath = join(parent, `.${basename(resolvedDbPath)}.rollback-${id}.tmp`);
-  const recoveryInstallPath = join(parent, `.${basename(resolvedDbPath)}.recovery-${id}.tmp`);
-  const reopen = options.reopenDatabase ?? openDatabase;
   const source = openBackupSource(resolvedBackup);
 
+  let operationDirectory: PrivateOperationDirectory | undefined;
+  let stagedPath: string | undefined;
+  let rollbackPath: string | undefined;
+  let recoveryInstallPath: string | undefined;
   let staged: Database | undefined;
   let rollbackProbe: Database | undefined;
   let metadata: DatabaseMetadata | undefined;
+  let stagedIdentity!: FileIdentity;
+  let rollbackIdentity: FileIdentity | undefined;
   let liveClosed = false;
   let replacementInstalled = false;
-  let cleanupRollback = true;
+  let installedIdentity: FileIdentity | undefined;
+  let retainOperationDirectory = false;
   try {
-    mkdirSync(parent, { recursive: true });
-    metadata = databaseMetadata(resolvedDbPath);
+    try {
+      operationDirectory = createPrivateOperationDirectory(
+        prepared.parent,
+        prepared.parentIdentity,
+        'restore',
+      );
+      assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
+    } catch {
+      throw new RestoreValidationError('restore_stage_failed');
+    }
+    stagedPath = join(operationDirectory.path, 'stage.sqlite3');
+    rollbackPath = join(operationDirectory.path, 'rollback.sqlite3');
+    recoveryInstallPath = join(operationDirectory.path, 'recovery.sqlite3');
+    metadata = databaseMetadata(prepared.target);
 
     try {
+      assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
       createPrivateArtifact(stagedPath);
+      assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
       if (options.stageBackup) {
         await options.stageBackup(source, stagedPath);
       } else {
         await source.backup(stagedPath);
       }
+      assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
       // SQLite must never inherit a permissive process umask for an artifact
       // that already contains private bytes.
       chmodSync(stagedPath, 0o600);
@@ -920,14 +1264,23 @@ export async function restoreDatabase(
     removeSidecars(stagedPath);
     applyDatabaseMetadata(stagedPath, metadata);
     fsyncPath(stagedPath);
+    stagedIdentity = requiredRegularFileIdentity(stagedPath);
+    assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
 
     // The request barrier is active before this function is called. Refuse
     // an incomplete checkpoint before taking the rollback snapshot or
     // closing the live handle.
     checkpointDatabase(liveDb);
     try {
+      assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
       createPrivateArtifact(rollbackPath);
-      await liveDb.backup(rollbackPath);
+      assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
+      if (options.rollbackBackup) {
+        await options.rollbackBackup(liveDb, rollbackPath);
+      } else {
+        await liveDb.backup(rollbackPath);
+      }
+      assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
       chmodSync(rollbackPath, 0o600);
     } catch {
       throw new RestoreValidationError('restore_rollback_failed');
@@ -942,13 +1295,18 @@ export async function restoreDatabase(
     removeSidecars(rollbackPath);
     applyRecoveryArtifactMetadata(rollbackPath, metadata);
     fsyncPath(rollbackPath);
+    rollbackIdentity = requiredRegularFileIdentity(rollbackPath);
+    assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
 
     try {
+      assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
       await options.beforeSwap?.();
+      assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
     } catch {
       throw new RestoreValidationError('restore_stage_failed');
     }
 
+    assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
     try {
       liveDb.close();
       liveClosed = true;
@@ -957,33 +1315,49 @@ export async function restoreDatabase(
       throw error;
     }
 
+    assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
     await options.afterLiveClose?.();
+    assertRestoreOperationStable(prepared, operationDirectory, prepared.originalIdentity);
 
-    renameSync(stagedPath, resolvedDbPath);
+    renameSync(stagedPath, prepared.target);
     replacementInstalled = true;
-    fsyncDirectory(parent);
-    removeSidecars(resolvedDbPath);
-    fsyncDirectory(parent);
+    installedIdentity = stagedIdentity;
+    assertRestoreOperationStable(prepared, operationDirectory, installedIdentity);
+    fsyncDirectory(prepared.parent);
+    removeSidecars(prepared.target);
+    assertRestoreOperationStable(prepared, operationDirectory, installedIdentity);
+    fsyncDirectory(prepared.parent);
 
+    assertRestoreOperationStable(prepared, operationDirectory, installedIdentity);
     await options.afterInstall?.();
+    assertRestoreOperationStable(prepared, operationDirectory, installedIdentity);
 
-    const restored = reopen(resolvedDbPath);
-    removeArtifact(rollbackPath);
+    const restored = openExpectedCanonicalDatabase(
+      prepared,
+      installedIdentity,
+      options.afterReopen,
+    );
     return restored;
   } catch (error) {
     if (!liveClosed) {
       throw normalizePreCutoverError(error);
     }
 
-    const recoveredDatabase = await reopenOriginal(
-      resolvedDbPath,
-      rollbackPath,
-      recoveryInstallPath,
-      metadata!,
-      replacementInstalled,
-      reopen,
-    );
-    cleanupRollback = recoveredDatabase !== undefined;
+    const recoveredDatabase =
+      operationDirectory && rollbackPath && rollbackIdentity && recoveryInstallPath && metadata
+        ? await reopenOriginal(
+            prepared,
+            operationDirectory,
+            rollbackPath,
+            rollbackIdentity,
+            recoveryInstallPath,
+            metadata,
+            replacementInstalled,
+            installedIdentity,
+            options.afterReopen,
+          )
+        : undefined;
+    retainOperationDirectory = recoveredDatabase === undefined;
     const primaryCode = replacementInstalled ? 'restore_reopen_failed' : 'restore_cutover_failed';
     throw new RestoreDatabaseError(
       recoveredDatabase ? primaryCode : 'restore_recovery_failed',
@@ -993,10 +1367,8 @@ export async function restoreDatabase(
     closeQuietly(staged);
     closeQuietly(rollbackProbe);
     closeQuietly(source);
-    removeArtifact(stagedPath);
-    removeArtifact(recoveryInstallPath);
-    if (cleanupRollback) {
-      removeArtifact(rollbackPath);
+    if (operationDirectory && !retainOperationDirectory) {
+      removePrivateOperationDirectory(operationDirectory);
     }
   }
 }
