@@ -77,6 +77,109 @@ const inSyntheticBox = (lat, lon) =>
 
 const looksBinary = (buf) => buf.subarray(0, 8000).includes(0);
 
+// Real binary signatures ("magic bytes") for every extension ALLOWED_BINARY
+// permits. A file extension is a claim, not proof — a renamed CSV, a JPEG
+// with a payload appended after EOF, or an SVG rewritten to carry binary
+// junk (real SVG is plain XML text and should never contain a NUL byte) must
+// all fail this check even though their name matches an allowed pattern.
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const ICO_SIGNATURE = Buffer.from([0x00, 0x00, 0x01, 0x00]);
+
+function hasValidBinarySignature(extension, buf) {
+  switch (extension) {
+    case 'png':
+      return buf.length >= 8 && buf.subarray(0, 8).equals(PNG_SIGNATURE);
+    case 'jpg':
+    case 'jpeg':
+      return buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+    case 'ico':
+      return buf.length >= 4 && buf.subarray(0, 4).equals(ICO_SIGNATURE);
+    case 'woff':
+      return buf.length >= 4 && buf.subarray(0, 4).toString('latin1') === 'wOFF';
+    case 'woff2':
+      return buf.length >= 4 && buf.subarray(0, 4).toString('latin1') === 'wOF2';
+    case 'svg':
+      // A legitimate SVG is text and would never have hit the looksBinary
+      // (NUL-byte) branch that routes into this function; a NUL-bearing
+      // "SVG" is therefore never a valid signature.
+      return false;
+    default:
+      return false;
+  }
+}
+
+const extensionOf = (path) => (path.match(/\.([A-Za-z0-9]+)$/)?.[1] ?? '').toLowerCase();
+
+// Extract runs of printable ASCII bytes (mirrors the Unix `strings` utility)
+// so forbidden text patterns can be found even when they are embedded as
+// metadata or an appended payload inside an otherwise-binary buffer.
+export function extractPrintableStrings(buf, minLen = 6) {
+  const runs = [];
+  let start = -1;
+  for (let i = 0; i <= buf.length; i++) {
+    const byte = i < buf.length ? buf[i] : -1;
+    const printable = byte >= 0x20 && byte <= 0x7e;
+    if (printable) {
+      if (start === -1) start = i;
+    } else if (start !== -1) {
+      if (i - start >= minLen) runs.push(buf.subarray(start, i).toString('latin1'));
+      start = -1;
+    }
+  }
+  return runs.join('\n');
+}
+
+// Shared forbidden-pattern scan used for both real text files (real line
+// numbers) and printable strings extracted from binary buffers (no
+// meaningful line numbers, so callers pass line-number functions that
+// return 0 — the report never needs to include a matched value, only a
+// rule id and location).
+function scanTextForForbiddenPatterns(text, add, inSynthetic, { lineForRow, lineForIndex }) {
+  const lines = text.split('\n');
+  lines.forEach((lineText, i) => {
+    if (lineText.includes(LEAK_MARKER)) add('leak-marker-canary', lineForRow(i));
+    if (HOME_PATH.test(lineText)) add('home-directory-absolute-path', lineForRow(i));
+    for (const { id, re } of APPLE_SOURCE_PATTERNS) {
+      if (re.test(lineText)) add(id, lineForRow(i));
+    }
+    for (const { id, re } of SECRET_PATTERNS) {
+      if (re.test(lineText)) add(id, lineForRow(i));
+    }
+  });
+
+  for (const match of text.matchAll(COORD_PAIR)) {
+    const lat = Number(match[1]);
+    const lon = Number(match[2]);
+    if (Math.abs(lat) > 90 || Math.abs(lon) > 180) continue; // not coordinates
+    if (!inSynthetic || !inSyntheticBox(lat, lon)) {
+      add('gps-coordinates-outside-synthetic-box', lineForIndex(match.index));
+    }
+  }
+  const attrCoords = { lat: [], lon: [] };
+  for (const match of text.matchAll(COORD_ATTR)) {
+    const kind = match[1].toLowerCase().startsWith('la') ? 'lat' : 'lon';
+    attrCoords[kind].push({ value: Number(match[2]), line: lineForIndex(match.index) });
+  }
+  for (const { value, line } of attrCoords.lat) {
+    if (Math.abs(value) > 90) continue;
+    if (!inSynthetic || value < SYNTHETIC_GEO_BOX.latMin || value > SYNTHETIC_GEO_BOX.latMax) {
+      add('gps-latitude-outside-synthetic-box', line);
+    }
+  }
+  for (const { value, line } of attrCoords.lon) {
+    // The attribute name already identifies this as a longitude — validate
+    // every syntactically valid longitude (magnitude <= 180) against the
+    // synthetic box regardless of magnitude. Do NOT skip low-magnitude
+    // values: a real-world longitude near 0 is exactly what an attacker
+    // (or an accident) would smuggle past a "must look like a longitude"
+    // heuristic.
+    if (Math.abs(value) > 180) continue;
+    if (!inSynthetic || value < SYNTHETIC_GEO_BOX.lonMin || value > SYNTHETIC_GEO_BOX.lonMax) {
+      add('gps-longitude-outside-synthetic-box', line);
+    }
+  }
+}
+
 export function scanFile(path, content) {
   const violations = [];
   const add = (rule, line = 0) => violations.push({ path, rule, line });
@@ -95,52 +198,33 @@ export function scanFile(path, content) {
     add('sqlite-magic-bytes');
   }
   if (looksBinary(content)) {
-    if (!ALLOWED_BINARY.test(path)) add('unexpected-binary-file');
+    const allowed = ALLOWED_BINARY.test(path);
+    if (!allowed) {
+      add('unexpected-binary-file');
+    } else if (!hasValidBinarySignature(extensionOf(path), content)) {
+      // The extension claims an allowed image/font type but the actual
+      // bytes don't match — a renamed file or a crafted asset.
+      add('binary-signature-mismatch');
+    }
     if (content.length > MAX_BINARY_BYTES) add('oversized-binary-file');
+    // Extension and even a valid signature are not proof the rest of the
+    // buffer is clean: scan printable strings inside for the same
+    // forbidden patterns applied to text files (metadata fields, appended
+    // payloads after a real image's EOF, etc).
+    scanTextForForbiddenPatterns(extractPrintableStrings(content), add, inSynthetic, {
+      lineForRow: () => 0,
+      lineForIndex: () => 0,
+    });
     return violations;
   }
   if (content.length > MAX_TEXT_BYTES) add('oversized-text-file');
 
   const text = content.toString('utf8');
-  const lines = text.split('\n');
   const lineOf = (index) => text.slice(0, index).split('\n').length;
-
-  lines.forEach((lineText, i) => {
-    if (lineText.includes(LEAK_MARKER)) add('leak-marker-canary', i + 1);
-    if (HOME_PATH.test(lineText)) add('home-directory-absolute-path', i + 1);
-    for (const { id, re } of APPLE_SOURCE_PATTERNS) {
-      if (re.test(lineText)) add(id, i + 1);
-    }
-    for (const { id, re } of SECRET_PATTERNS) {
-      if (re.test(lineText)) add(id, i + 1);
-    }
+  scanTextForForbiddenPatterns(text, add, inSynthetic, {
+    lineForRow: (i) => i + 1,
+    lineForIndex: lineOf,
   });
-
-  for (const match of text.matchAll(COORD_PAIR)) {
-    const lat = Number(match[1]);
-    const lon = Number(match[2]);
-    if (Math.abs(lat) > 90 || Math.abs(lon) > 180) continue; // not coordinates
-    if (!inSynthetic || !inSyntheticBox(lat, lon)) {
-      add('gps-coordinates-outside-synthetic-box', lineOf(match.index));
-    }
-  }
-  const attrCoords = { lat: [], lon: [] };
-  for (const match of text.matchAll(COORD_ATTR)) {
-    const kind = match[1].toLowerCase().startsWith('la') ? 'lat' : 'lon';
-    attrCoords[kind].push({ value: Number(match[2]), line: lineOf(match.index) });
-  }
-  for (const { value, line } of attrCoords.lat) {
-    if (Math.abs(value) > 90) continue;
-    if (!inSynthetic || value < SYNTHETIC_GEO_BOX.latMin || value > SYNTHETIC_GEO_BOX.latMax) {
-      add('gps-latitude-outside-synthetic-box', line);
-    }
-  }
-  for (const { value, line } of attrCoords.lon) {
-    if (Math.abs(value) > 180 || Math.abs(value) <= 90) continue; // skip lat-ambiguous
-    if (!inSynthetic || value < SYNTHETIC_GEO_BOX.lonMin || value > SYNTHETIC_GEO_BOX.lonMax) {
-      add('gps-longitude-outside-synthetic-box', line);
-    }
-  }
 
   return violations;
 }

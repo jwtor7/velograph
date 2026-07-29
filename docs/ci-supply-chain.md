@@ -1,0 +1,70 @@
+# CI supply-chain: pinned action SHAs
+
+PRD §14 (supply chain) and §16.3 (required merge gates) require every
+third-party GitHub Action used in `.github/workflows/` to be pinned to a
+full 40-character commit SHA, not a floating tag (`@v4`) or even an
+immutable-looking release tag (`@v4.4.0`). Tags can be moved by the
+upstream maintainer (accidentally or maliciously) to point at different
+code without any change in this repository; a commit SHA cannot.
+
+## Current pins
+
+| Action                     | Pinned SHA                                 | Release tag |
+| -------------------------- | ------------------------------------------ | ----------- |
+| `actions/checkout`         | `11d5960a326750d5838078e36cf38b85af677262` | v4.4.0      |
+| `pnpm/action-setup`        | `fc06bc1257f339d1d5d8b3a19a8cae5388b55320` | v4.4.0      |
+| `actions/setup-node`       | `49933ea5288caeca8642d1e84afbd3f7d6820020` | v4.4.0      |
+| `gitleaks/gitleaks-action` | `ff98106e4c7b2bc287b24eaf42907196329070c7` | v2.3.9      |
+
+Each `uses:` line in `.github/workflows/ci.yml` carries the SHA plus a
+trailing `# vX.Y.Z` comment with the human-readable tag it corresponds to,
+e.g.:
+
+```yaml
+- uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+```
+
+The comment is documentation only — GitHub Actions always resolves and
+runs the SHA, never the comment text.
+
+## How to review and update a pin
+
+1. **Identify the new release** you want to move to (from the action's
+   GitHub releases page or its `CHANGELOG`). Read the diff/release notes
+   before updating — this step is the actual security review; the SHA
+   pin only makes that review durable.
+2. **Resolve the tag to a commit SHA** using the GitHub API rather than
+   trusting a copy-pasted value from a blog post or README:
+
+   ```sh
+   gh api repos/<owner>/<repo>/git/ref/tags/<tag>
+   ```
+
+   The response's `object.sha` is the commit if `object.type` is
+   `"commit"`. If `object.type` is `"tag"` instead, the tag is
+   **annotated** and must be dereferenced one more step to reach the
+   commit it actually points at:
+
+   ```sh
+   gh api repos/<owner>/<repo>/git/tags/<object.sha-from-previous-step>
+   ```
+
+   That response's `object.sha` (with `object.type: "commit"`) is the
+   value to pin. `pnpm/action-setup` uses annotated tags and needs this
+   second step; `actions/checkout`, `actions/setup-node`, and
+   `gitleaks/gitleaks-action` currently use lightweight tags that resolve
+   directly to a commit.
+
+3. **Update `.github/workflows/ci.yml`**: replace the SHA and the trailing
+   `# vX.Y.Z` comment together so they never drift out of sync. Update the
+   table in this document to match.
+4. **Open a normal reviewed PR** with the diff (old SHA/tag → new SHA/tag)
+   and let CI run against the new pin before merging. Never pin to a SHA
+   that hasn't actually run green in this repository's CI at least once.
+
+## Adding a new third-party action
+
+Follow the same steps above for the new action, add both a table row here
+and the pinned `uses:` line with its trailing tag comment, and note in the
+PR description why the action is needed and what permissions/secrets it
+touches.
