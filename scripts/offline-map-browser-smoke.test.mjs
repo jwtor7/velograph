@@ -1,9 +1,18 @@
+import { EventEmitter } from 'node:events';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import {
   canvasTraceHasPolyline,
   cursorSnapshotIsSynchronized,
+  devToolsEndpointFromActivePort,
+  devToolsEndpointFromOutput,
+  safeSmokeErrorCode,
   summarizeBrowserErrors,
   summarizeRequestOrigins,
+  waitForDevToolsEndpoint,
 } from './offline-map-browser-smoke.mjs';
 
 const synchronizedCursorObservation = Object.freeze({
@@ -14,6 +23,101 @@ const synchronizedCursorObservation = Object.freeze({
   cursorX2: 140,
   viewBoxX: 0,
   viewBoxWidth: 560,
+});
+
+function syntheticChromiumChild() {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  return child;
+}
+
+describe('offline map browser Chromium startup', () => {
+  it('accepts only loopback browser-debug endpoints from output and active-port files', () => {
+    const endpoint = 'ws://127.0.0.1:49152/devtools/browser/synthetic-browser-id';
+    expect(devToolsEndpointFromOutput(`DevTools listening on ${endpoint}\n`)).toBe(endpoint);
+    expect(devToolsEndpointFromActivePort('49152\n/devtools/browser/synthetic-browser-id\n')).toBe(
+      endpoint,
+    );
+    expect(
+      devToolsEndpointFromOutput(
+        'DevTools listening on ws://example.invalid:49152/devtools/browser/synthetic-browser-id',
+      ),
+    ).toBeNull();
+    expect(
+      devToolsEndpointFromActivePort('0\n/devtools/browser/synthetic-browser-id\n'),
+    ).toBeNull();
+  });
+
+  it('discovers Chromium endpoints from stdout and stderr', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'velograph-chromium-startup-test-'));
+    try {
+      for (const streamName of ['stdout', 'stderr']) {
+        const child = syntheticChromiumChild();
+        const endpoint = `ws://127.0.0.1:4915${streamName === 'stdout' ? '2' : '3'}/devtools/browser/synthetic-${streamName}`;
+        const pending = waitForDevToolsEndpoint(child, 1_000, directory);
+        child[streamName].write(`DevTools listening on ${endpoint}\n`);
+        await expect(pending).resolves.toBe(endpoint);
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('discovers Chromium through its validated DevToolsActivePort file', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'velograph-active-port-test-'));
+    const child = syntheticChromiumChild();
+    try {
+      await writeFile(
+        join(directory, 'DevToolsActivePort'),
+        '49154\n/devtools/browser/synthetic-active-port\n',
+      );
+      await expect(waitForDevToolsEndpoint(child, 1_000, directory)).resolves.toBe(
+        'ws://127.0.0.1:49154/devtools/browser/synthetic-active-port',
+      );
+    } finally {
+      child.stdout.destroy();
+      child.stderr.destroy();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('retains an endpoint emitted during the final polling interval', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'velograph-endpoint-boundary-test-'));
+    const child = syntheticChromiumChild();
+    const endpoint = 'ws://127.0.0.1:49155/devtools/browser/synthetic-boundary';
+    try {
+      const pending = waitForDevToolsEndpoint(child, 20, directory);
+      setTimeout(() => child.stdout.write(`DevTools listening on ${endpoint}\n`), 10);
+      await expect(pending).resolves.toBe(endpoint);
+    } finally {
+      child.stdout.destroy();
+      child.stderr.destroy();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('maps persistent active-port read failures to a value-free error', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'velograph-active-port-error-test-'));
+    const child = syntheticChromiumChild();
+    const nonDirectory = join(directory, 'not-a-directory');
+    let capturedError;
+    try {
+      await writeFile(nonDirectory, 'synthetic');
+      try {
+        await waitForDevToolsEndpoint(child, 1_000, nonDirectory);
+      } catch (error) {
+        capturedError = error;
+      }
+      expect(safeSmokeErrorCode(capturedError)).toBe('chromium_active_port_unreadable');
+    } finally {
+      child.stdout.destroy();
+      child.stderr.destroy();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('offline map browser smoke geometry and cursor contracts', () => {

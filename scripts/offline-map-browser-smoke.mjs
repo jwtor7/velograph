@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -28,6 +28,10 @@ class SafeSmokeError extends Error {
 
 function safeError(code) {
   return new SafeSmokeError(code);
+}
+
+export function safeSmokeErrorCode(error) {
+  return error instanceof SafeSmokeError ? error.code : null;
 }
 
 export function canvasTraceHasPolyline(trace) {
@@ -300,36 +304,93 @@ function validatedRuntimeOptions(options) {
   };
 }
 
-function waitForDevToolsEndpoint(child, timeoutMs) {
-  return new Promise((resolveEndpoint, rejectEndpoint) => {
-    let settled = false;
-    let stderrBuffer = '';
+function validatedDevToolsEndpoint(rawEndpoint) {
+  if (typeof rawEndpoint !== 'string') return null;
+  try {
+    const endpoint = new URL(rawEndpoint);
+    if (
+      endpoint.protocol !== 'ws:' ||
+      !isLoopbackHostname(endpoint.hostname) ||
+      endpoint.username ||
+      endpoint.password ||
+      endpoint.search ||
+      endpoint.hash ||
+      !endpoint.port ||
+      !/^\/devtools\/browser\/[A-Za-z0-9._-]+$/.test(endpoint.pathname)
+    ) {
+      return null;
+    }
+    const port = Number(endpoint.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) return null;
+    return endpoint.href;
+  } catch {
+    return null;
+  }
+}
 
-    const finish = (callback, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.stderr?.off('data', onData);
-      child.off('error', onError);
-      child.off('exit', onExit);
-      callback(value);
-    };
+export function devToolsEndpointFromOutput(output) {
+  if (typeof output !== 'string') return null;
+  const match = /DevTools listening on (ws:\/\/\S+)/.exec(output);
+  return validatedDevToolsEndpoint(match?.[1]);
+}
+
+export function devToolsEndpointFromActivePort(contents) {
+  if (typeof contents !== 'string') return null;
+  const lines = contents.trim().split(/\r?\n/);
+  if (lines.length !== 2 || !/^[1-9]\d{0,4}$/.test(lines[0])) return null;
+  return validatedDevToolsEndpoint(`ws://127.0.0.1:${lines[0]}${lines[1]}`);
+}
+
+export async function waitForDevToolsEndpoint(child, timeoutMs, userDataDirectory) {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  const buffers = new Map();
+  const streamHandlers = [];
+  let discoveredEndpoint = null;
+  let terminalError = null;
+
+  const outputStreams = [child.stdout, child.stderr].filter(Boolean);
+  for (const stream of outputStreams) {
     const onData = (chunk) => {
-      stderrBuffer = `${stderrBuffer}${String(chunk)}`.slice(-65_536);
-      const match = /DevTools listening on (ws:\/\/\S+)/.exec(stderrBuffer);
-      if (match?.[1]) finish(resolveEndpoint, match[1]);
+      const buffer = `${buffers.get(stream) ?? ''}${String(chunk)}`.slice(-65_536);
+      buffers.set(stream, buffer);
+      discoveredEndpoint ??= devToolsEndpointFromOutput(buffer);
     };
-    const onError = () => finish(rejectEndpoint, safeError('chromium_launch_failed'));
-    const onExit = () => finish(rejectEndpoint, safeError('chromium_exited_before_ready'));
-    const timer = setTimeout(
-      () => finish(rejectEndpoint, safeError('chromium_start_timeout')),
-      timeoutMs,
-    );
+    stream.on('data', onData);
+    streamHandlers.push([stream, onData]);
+  }
 
-    child.stderr?.on('data', onData);
-    child.once('error', onError);
-    child.once('exit', onExit);
-  });
+  const onError = () => {
+    terminalError ??= safeError('chromium_launch_failed');
+  };
+  const onExit = () => {
+    terminalError ??= safeError('chromium_exited_before_ready');
+  };
+  child.once('error', onError);
+  child.once('exit', onExit);
+
+  try {
+    do {
+      if (discoveredEndpoint) return discoveredEndpoint;
+      if (terminalError) throw terminalError;
+      try {
+        const activePort = await readFile(join(userDataDirectory, 'DevToolsActivePort'), 'utf8');
+        discoveredEndpoint = devToolsEndpointFromActivePort(activePort);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') {
+          throw safeError('chromium_active_port_unreadable');
+        }
+      }
+      if (discoveredEndpoint) return discoveredEndpoint;
+      await delay(POLL_INTERVAL_MS);
+    } while (Date.now() < deadline);
+    if (discoveredEndpoint) return discoveredEndpoint;
+    if (terminalError) throw terminalError;
+    throw safeError('chromium_start_timeout');
+  } finally {
+    for (const [stream, onData] of streamHandlers) stream.off('data', onData);
+    child.off('error', onError);
+    child.off('exit', onExit);
+  }
 }
 
 async function waitForChildExit(child, timeoutMs) {
@@ -886,13 +947,15 @@ async function runBrowserSmoke(runtimeOptions) {
         '--window-size=1440,1000',
         'about:blank',
       ],
-      { stdio: ['ignore', 'ignore', 'pipe'] },
+      { stdio: ['ignore', 'pipe', 'pipe'] },
     );
 
     const endpoint = await waitForDevToolsEndpoint(
       chromium,
       Math.min(15_000, remainingTime(deadline)),
+      userDataDirectory,
     );
+    chromium.stdout?.resume();
     chromium.stderr?.resume();
     client = await CdpClient.connect(endpoint, Math.min(10_000, remainingTime(deadline)));
 

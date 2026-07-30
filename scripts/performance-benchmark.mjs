@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { runOfflineMapBrowserSmoke } from './offline-map-browser-smoke.mjs';
+import { runOfflineMapBrowserSmoke, safeSmokeErrorCode } from './offline-map-browser-smoke.mjs';
 
 export const BENCHMARK_SCHEMA_VERSION = 3;
 export const WORKOUT_COUNT = 100;
@@ -48,6 +48,12 @@ export class BenchmarkFailure extends Error {
     this.name = 'BenchmarkFailure';
     this.code = code;
   }
+}
+
+export function classifyBenchmarkError(error) {
+  if (error instanceof BenchmarkFailure) return error.code;
+  const smokeCode = safeSmokeErrorCode(error);
+  return smokeCode ? `browser_smoke_${smokeCode}` : 'unexpected_error';
 }
 
 export function resolveBenchmarkProfile(args = []) {
@@ -513,7 +519,7 @@ async function main() {
     console.log(result.output);
     process.exitCode = result.passed ? 0 : 1;
   } catch (error) {
-    const code = error instanceof BenchmarkFailure ? error.code : 'unexpected_error';
+    const code = classifyBenchmarkError(error);
     console.error(`performance-benchmark: ${code}`);
     process.exitCode = 1;
   }

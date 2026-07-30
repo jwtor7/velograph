@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   BENCHMARK_SCHEMA_VERSION,
@@ -12,6 +14,7 @@ import {
   ROUTE_POINT_COUNT,
   WORKOUT_COUNT,
   benchmarkPlan,
+  classifyBenchmarkError,
   formatBenchmarkSummary,
   percentile,
   resolveBenchmarkProfile,
@@ -19,6 +22,7 @@ import {
   renderBenchmarkWorkout,
   selectRepresentativeWorkoutIds,
 } from './performance-benchmark.mjs';
+import { runOfflineMapBrowserSmoke } from './offline-map-browser-smoke.mjs';
 import { scanFile } from './privacy-scan.mjs';
 
 describe('performance benchmark contract', () => {
@@ -99,6 +103,41 @@ describe('performance benchmark contract', () => {
     });
     expect(() => resolveBenchmarkProfile(['--unknown'])).toThrow(
       new BenchmarkFailure('invalid_benchmark_profile'),
+    );
+  });
+
+  it('preserves privacy-safe browser startup errors across the benchmark boundary', async () => {
+    let capturedError;
+    try {
+      await runOfflineMapBrowserSmoke({
+        chromeExecutable: 'synthetic-chrome',
+        baseUrl: 'https://example.invalid',
+        rideId: 1,
+      });
+    } catch (error) {
+      capturedError = error;
+    }
+
+    expect(classifyBenchmarkError(capturedError)).toBe('browser_smoke_invalid_loopback_url');
+
+    let startupError;
+    try {
+      await runOfflineMapBrowserSmoke({
+        chromeExecutable: join(tmpdir(), 'velograph-synthetic-missing-chrome'),
+        baseUrl: 'http://127.0.0.1:49156',
+        rideId: 1,
+        timeoutMs: 5_000,
+      });
+    } catch (error) {
+      startupError = error;
+    }
+    expect(classifyBenchmarkError(startupError)).toBe('browser_smoke_chromium_launch_failed');
+
+    expect(classifyBenchmarkError(new BenchmarkFailure('synthetic_benchmark_failure'))).toBe(
+      'synthetic_benchmark_failure',
+    );
+    expect(classifyBenchmarkError(new Error('Invented unsafe diagnostic'))).toBe(
+      'unexpected_error',
     );
   });
 

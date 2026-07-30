@@ -196,6 +196,11 @@ is pre-1.0, and for the release procedure.
 
 ### Fixed
 
+- **Hosted browser startup is deterministic and diagnosable.** The production benchmark now
+  discovers Chromium's loopback DevTools endpoint from either process stream or its validated
+  `DevToolsActivePort` file instead of depending on one platform-specific output stream. Safe
+  browser startup codes survive the benchmark boundary without exposing process output, URLs, or
+  local paths.
 - **Required GPX coordinates now fail atomically.** A missing, blank, non-finite, or
   out-of-range latitude/longitude on any track point quarantines the complete file instead of
   silently dropping that point and importing a partial route. The GPX parser version advances so

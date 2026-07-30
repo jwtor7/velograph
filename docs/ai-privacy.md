@@ -81,8 +81,9 @@ payload it was generated from. `validateFinding()` in `validation.ts`:
 
 - **removes** a finding with no evidence, or evidence citing an unknown/fabricated metric ID;
 - **removes** a finding using diagnostic/prescriptive phrasing (AI-011);
-- **flags** a finding whose numeric claims don't match any supplied fact within tolerance
-  (default ±1% relative / ±0.05 absolute floor);
+- **flags** a finding whose numeric claims don't match one of its cited metric facts, with
+  compatible unit semantics or an explicit approved conversion, within tolerance (default ±1%
+  relative / ±0.05 absolute floor);
 - otherwise marks it **valid**.
 
 Reason codes (`no_evidence`, `unknown_evidence_metric`, `diagnostic_phrasing`,

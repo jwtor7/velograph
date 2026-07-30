@@ -88,7 +88,7 @@ Any failure prints one value-free error code.
 
 ## Recorded reference result
 
-Machine-local time: `2026-07-29 20:41:03 EDT (-0400)`.
+Machine-local time: `2026-07-29 21:08:51 EDT (-0400)`.
 
 | Reference characteristic   | Value                            |
 | -------------------------- | -------------------------------- |
@@ -98,11 +98,11 @@ Machine-local time: `2026-07-29 20:41:03 EDT (-0400)`.
 | Architecture               | arm64                            |
 | Operating system           | macOS 26.5.2                     |
 | Runtime                    | Node 22.22.3                     |
-| Import result              | 2,498.577 ms (limit: 180,000 ms) |
-| Browser ride-open result   | 721.149 ms p95 (limit: 1,000 ms) |
+| Import result              | 2,179.569 ms (limit: 180,000 ms) |
+| Browser ride-open result   | 638.833 ms p95 (limit: 1,000 ms) |
 | Browser measurements       | 5 fresh Chrome profiles          |
 | Cold snapshots after run 1 | 100                              |
-| Warmed API result          | 17.030 ms p95 (limit: 1,000 ms)  |
+| Warmed API result          | 12.214 ms p95 (limit: 1,000 ms)  |
 | Measured API requests      | 40, after 5 warm-up requests     |
 | Overall result             | Pass                             |
 
