@@ -11,6 +11,20 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MIN_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 120_000;
 const POLL_INTERVAL_MS = 25;
+const BROWSER_BOOTSTRAP_ATTEMPTS = 2;
+const PROFILE_CLEANUP_MAX_RETRIES = 5;
+const PROFILE_CLEANUP_RETRY_DELAY_MS = 100;
+const RETRYABLE_BROWSER_BOOTSTRAP_CODES = new Set([
+  'chromium_exited_before_ready',
+  'chromium_launch_failed',
+  'chromium_start_timeout',
+  'cdp_connection_closed',
+  'cdp_connection_failed',
+  'cdp_connection_timeout',
+  'cdp_command_timeout',
+  'cdp_target_attachment_failed',
+  'cdp_target_creation_failed',
+]);
 const STATE_KEY = '__velographOfflineMapBrowserSmoke';
 const CANVAS_TRACE_KEY = '__velographOfflineMapCanvasTrace';
 const BASEMAP_TILE_PATH = /^\/api\/basemap\/tiles\/\d+\/\d+\/\d+\/?$/;
@@ -32,6 +46,80 @@ function safeError(code) {
 
 export function safeSmokeErrorCode(error) {
   return error instanceof SafeSmokeError ? error.code : null;
+}
+
+export async function finishBrowserCleanup(primaryError, cleanupTasks) {
+  let cleanupFailed = false;
+  for (const cleanupTask of cleanupTasks) {
+    try {
+      await cleanupTask();
+    } catch {
+      cleanupFailed = true;
+    }
+  }
+  if (primaryError) {
+    if (cleanupFailed && primaryError.browserCleanupFailed !== true) {
+      Object.defineProperty(primaryError, 'browserCleanupFailed', {
+        configurable: false,
+        enumerable: false,
+        value: true,
+        writable: false,
+      });
+    }
+    throw primaryError;
+  }
+  if (cleanupFailed) throw safeError('chromium_cleanup_failed');
+}
+
+export async function removeBrowserProfile(directory, remove = rm) {
+  await remove(directory, {
+    force: true,
+    maxRetries: PROFILE_CLEANUP_MAX_RETRIES,
+    recursive: true,
+    retryDelay: PROFILE_CLEANUP_RETRY_DELAY_MS,
+  });
+}
+
+export async function withBrowserBootstrapRetry(runAttempt) {
+  let lastError;
+  for (let attempt = 0; attempt < BROWSER_BOOTSTRAP_ATTEMPTS; attempt += 1) {
+    try {
+      return await runAttempt(attempt);
+    } catch (error) {
+      lastError = error;
+      if (
+        attempt + 1 >= BROWSER_BOOTSTRAP_ATTEMPTS ||
+        error?.retryableBrowserBootstrap !== true ||
+        error?.browserCleanupFailed === true
+      ) {
+        throw error;
+      }
+    }
+  }
+  throw lastError;
+}
+
+export function browserBootstrapDeadline(attempt, overallDeadline, now = Date.now()) {
+  const millisecondsRemaining = Math.max(0, overallDeadline - now);
+  if (attempt > 0) return overallDeadline;
+  const firstAttemptBudget = Math.min(
+    millisecondsRemaining,
+    Math.max(MIN_TIMEOUT_MS, Math.floor(millisecondsRemaining / 2)),
+  );
+  return now + firstAttemptBudget;
+}
+
+export function browserBootstrapIsRetryable(
+  error,
+  navigationBegan,
+  overallDeadline,
+  now = Date.now(),
+) {
+  return (
+    !navigationBegan &&
+    now < overallDeadline &&
+    RETRYABLE_BROWSER_BOOTSTRAP_CODES.has(safeSmokeErrorCode(error))
+  );
 }
 
 export function canvasTraceHasPolyline(trace) {
@@ -369,7 +457,7 @@ export async function waitForDevToolsEndpoint(child, timeoutMs, userDataDirector
   child.once('exit', onExit);
 
   try {
-    do {
+    while (true) {
       if (discoveredEndpoint) return discoveredEndpoint;
       if (terminalError) throw terminalError;
       try {
@@ -381,8 +469,10 @@ export async function waitForDevToolsEndpoint(child, timeoutMs, userDataDirector
         }
       }
       if (discoveredEndpoint) return discoveredEndpoint;
-      await delay(POLL_INTERVAL_MS);
-    } while (Date.now() < deadline);
+      const millisecondsRemaining = deadline - Date.now();
+      if (millisecondsRemaining <= 0) break;
+      await delay(Math.min(POLL_INTERVAL_MS, millisecondsRemaining));
+    }
     if (discoveredEndpoint) return discoveredEndpoint;
     if (terminalError) throw terminalError;
     throw safeError('chromium_start_timeout');
@@ -415,7 +505,9 @@ async function stopChromium(child) {
   child.kill('SIGTERM');
   if (await waitForChildExit(child, 2_000)) return;
   child.kill('SIGKILL');
-  await waitForChildExit(child, 2_000);
+  if (!(await waitForChildExit(child, 2_000))) {
+    throw safeError('chromium_cleanup_failed');
+  }
 }
 
 class CdpClient {
@@ -423,7 +515,12 @@ class CdpClient {
     if (typeof globalThis.WebSocket !== 'function') {
       throw safeError('node_websocket_unavailable');
     }
-    const socket = new globalThis.WebSocket(endpoint);
+    let socket;
+    try {
+      socket = new globalThis.WebSocket(endpoint);
+    } catch {
+      throw safeError('cdp_connection_failed');
+    }
     await new Promise((resolveOpen, rejectOpen) => {
       let settled = false;
       const finish = (callback, value) => {
@@ -510,7 +607,13 @@ class CdpClient {
         rejectCommand(safeError('cdp_command_timeout'));
       }, timeoutMs);
       this.pending.set(id, { resolve: resolveCommand, reject: rejectCommand, timer });
-      this.socket.send(JSON.stringify(message));
+      try {
+        this.socket.send(JSON.stringify(message));
+      } catch {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        rejectCommand(safeError('cdp_connection_failed'));
+      }
     });
   }
 
@@ -523,11 +626,25 @@ class CdpClient {
     }
     this.pending.clear();
     this.listeners.clear();
-    this.socket.close();
+    try {
+      this.socket.close();
+    } catch {
+      // Chromium process termination below remains the authoritative cleanup.
+    }
   }
 }
 
-async function evaluate(client, sessionId, expression) {
+function remainingTime(deadline) {
+  return Math.max(0, deadline - Date.now());
+}
+
+function commandTimeoutBefore(deadline) {
+  const timeoutMs = remainingTime(deadline);
+  if (timeoutMs <= 0) throw safeError('cdp_command_timeout');
+  return timeoutMs;
+}
+
+async function evaluate(client, sessionId, expression, deadline) {
   const response = await client.send(
     'Runtime.evaluate',
     {
@@ -537,22 +654,21 @@ async function evaluate(client, sessionId, expression) {
       userGesture: true,
     },
     sessionId,
+    commandTimeoutBefore(deadline),
   );
   if (response.exceptionDetails) throw safeError('browser_evaluation_failed');
   return response.result?.value;
 }
 
-async function waitForBoolean(client, sessionId, expression, timeoutMs) {
-  const deadline = Date.now() + Math.max(0, timeoutMs);
-  do {
-    if ((await evaluate(client, sessionId, expression)) === true) return true;
-    await delay(POLL_INTERVAL_MS);
-  } while (Date.now() < deadline);
+async function waitForBoolean(client, sessionId, expression, timeoutMs, overallDeadline) {
+  const deadline = Math.min(overallDeadline, Date.now() + Math.max(0, timeoutMs));
+  while (remainingTime(deadline) > 0) {
+    if ((await evaluate(client, sessionId, expression, deadline)) === true) return true;
+    const millisecondsRemaining = remainingTime(deadline);
+    if (millisecondsRemaining <= 0) break;
+    await delay(Math.min(POLL_INTERVAL_MS, millisecondsRemaining));
+  }
   return false;
-}
-
-function remainingTime(deadline) {
-  return Math.max(250, deadline - Date.now());
 }
 
 function installCanvasTraceExpression() {
@@ -904,23 +1020,35 @@ function movedCursorSynchronizedExpression() {
   })()`;
 }
 
-async function dispatchKey(client, sessionId, key, code, virtualKeyCode) {
+async function dispatchKey(client, sessionId, key, code, virtualKeyCode, deadline) {
   const common = {
     key,
     code,
     windowsVirtualKeyCode: virtualKeyCode,
     nativeVirtualKeyCode: virtualKeyCode,
   };
-  await client.send('Input.dispatchKeyEvent', { ...common, type: 'rawKeyDown' }, sessionId);
-  await client.send('Input.dispatchKeyEvent', { ...common, type: 'keyUp' }, sessionId);
+  await client.send(
+    'Input.dispatchKeyEvent',
+    { ...common, type: 'rawKeyDown' },
+    sessionId,
+    commandTimeoutBefore(deadline),
+  );
+  await client.send(
+    'Input.dispatchKeyEvent',
+    { ...common, type: 'keyUp' },
+    sessionId,
+    commandTimeoutBefore(deadline),
+  );
 }
 
-async function runBrowserSmoke(runtimeOptions) {
-  const deadline = Date.now() + runtimeOptions.timeoutMs;
+async function runBrowserSmokeAttempt(runtimeOptions, deadline, bootstrapDeadline) {
   const userDataDirectory = await mkdtemp(join(tmpdir(), 'velograph-offline-map-smoke-'));
   let chromium;
   let client;
   let removeEventListener = () => {};
+  let primaryError = null;
+  let navigationBegan = false;
+  let runtimeFailureCode = 'chromium_runtime_failed';
 
   try {
     chromium = spawn(
@@ -952,17 +1080,21 @@ async function runBrowserSmoke(runtimeOptions) {
 
     const endpoint = await waitForDevToolsEndpoint(
       chromium,
-      Math.min(15_000, remainingTime(deadline)),
+      remainingTime(bootstrapDeadline),
       userDataDirectory,
     );
     chromium.stdout?.resume();
     chromium.stderr?.resume();
-    client = await CdpClient.connect(endpoint, Math.min(10_000, remainingTime(deadline)));
+    client = await CdpClient.connect(endpoint, commandTimeoutBefore(bootstrapDeadline));
+    runtimeFailureCode = 'cdp_setup_failed';
+    let commandDeadline = bootstrapDeadline;
+    const sendBeforeDeadline = (method, params = {}, sessionId) =>
+      client.send(method, params, sessionId, commandTimeoutBefore(commandDeadline));
 
-    const { targetId } = await client.send('Target.createTarget', { url: 'about:blank' });
+    const { targetId } = await sendBeforeDeadline('Target.createTarget', { url: 'about:blank' });
     if (typeof targetId !== 'string') throw safeError('cdp_target_creation_failed');
-    await client.send('Target.activateTarget', { targetId });
-    const { sessionId } = await client.send('Target.attachToTarget', {
+    await sendBeforeDeadline('Target.activateTarget', { targetId });
+    const { sessionId } = await sendBeforeDeadline('Target.attachToTarget', {
       targetId,
       flatten: true,
     });
@@ -993,19 +1125,19 @@ async function runBrowserSmoke(runtimeOptions) {
     });
 
     await Promise.all([
-      client.send('Page.enable', {}, sessionId),
-      client.send('Runtime.enable', {}, sessionId),
-      client.send('Network.enable', {}, sessionId),
-      client.send('Log.enable', {}, sessionId),
-      client.send('Inspector.enable', {}, sessionId),
+      sendBeforeDeadline('Page.enable', {}, sessionId),
+      sendBeforeDeadline('Runtime.enable', {}, sessionId),
+      sendBeforeDeadline('Network.enable', {}, sessionId),
+      sendBeforeDeadline('Log.enable', {}, sessionId),
+      sendBeforeDeadline('Inspector.enable', {}, sessionId),
     ]);
-    await client.send(
+    await sendBeforeDeadline(
       'Page.addScriptToEvaluateOnNewDocument',
       { source: installCanvasTraceExpression() },
       sessionId,
     );
-    await client.send('Network.setCacheDisabled', { cacheDisabled: true }, sessionId);
-    await client.send(
+    await sendBeforeDeadline('Network.setCacheDisabled', { cacheDisabled: true }, sessionId);
+    await sendBeforeDeadline(
       'Emulation.setDeviceMetricsOverride',
       {
         width: 1440,
@@ -1015,22 +1147,27 @@ async function runBrowserSmoke(runtimeOptions) {
       },
       sessionId,
     );
-    const navigationStarted = performance.now();
-    await client.send('Page.navigate', { url: runtimeOptions.rideUrl }, sessionId);
+    runtimeFailureCode = 'browser_runtime_failed';
+    commandDeadline = deadline;
+    navigationBegan = true;
+    const navigationStartedAt = performance.now();
+    await sendBeforeDeadline('Page.navigate', { url: runtimeOptions.rideUrl }, sessionId);
 
     const mapRendered = await waitForBoolean(
       client,
       sessionId,
       settledRideExpression(),
       Math.min(12_000, remainingTime(deadline)),
+      deadline,
     );
-    const settledRenderMs = performance.now() - navigationStarted;
+    const settledRenderMs = performance.now() - navigationStartedAt;
     if (runtimeOptions.requireLocalBasemap) {
       await waitForBoolean(
         client,
         sessionId,
         `Boolean(document.querySelector('.leaflet-tile-pane img.leaflet-tile-loaded'))`,
         Math.min(8_000, remainingTime(deadline)),
+        deadline,
       );
     } else {
       await waitForBoolean(
@@ -1043,15 +1180,18 @@ async function runBrowserSmoke(runtimeOptions) {
             'No local basemap configured · showing route-only view'
         )`,
         Math.min(8_000, remainingTime(deadline)),
+        deadline,
       );
     }
 
     const mapDom =
-      (await evaluate(client, sessionId, mapDomSnapshotExpression())) ?? Object.create(null);
+      (await evaluate(client, sessionId, mapDomSnapshotExpression(), deadline)) ??
+      Object.create(null);
     const mapFocused =
-      mapRendered && (await evaluate(client, sessionId, installSmokeStateExpression())) === true;
+      mapRendered &&
+      (await evaluate(client, sessionId, installSmokeStateExpression(), deadline)) === true;
     if (mapFocused) {
-      await dispatchKey(client, sessionId, 'ArrowRight', 'ArrowRight', 39);
+      await dispatchKey(client, sessionId, 'ArrowRight', 'ArrowRight', 39, deadline);
     }
     const keyboardPan =
       mapFocused &&
@@ -1060,10 +1200,12 @@ async function runBrowserSmoke(runtimeOptions) {
         sessionId,
         mapPanChangedExpression(),
         Math.min(2_000, remainingTime(deadline)),
+        deadline,
       ));
-    await delay(350);
+    await delay(Math.min(350, remainingTime(deadline)));
 
-    const chartFocused = (await evaluate(client, sessionId, focusChartCursorExpression())) === true;
+    const chartFocused =
+      (await evaluate(client, sessionId, focusChartCursorExpression(), deadline)) === true;
     const initialCursorSync =
       chartFocused &&
       (await waitForBoolean(
@@ -1071,9 +1213,10 @@ async function runBrowserSmoke(runtimeOptions) {
         sessionId,
         firstCursorSynchronizedExpression(),
         Math.min(3_000, remainingTime(deadline)),
+        deadline,
       ));
     if (initialCursorSync) {
-      await dispatchKey(client, sessionId, 'PageUp', 'PageUp', 33);
+      await dispatchKey(client, sessionId, 'PageUp', 'PageUp', 33, deadline);
     }
     const movedCursorSync =
       initialCursorSync &&
@@ -1082,8 +1225,9 @@ async function runBrowserSmoke(runtimeOptions) {
         sessionId,
         movedCursorSynchronizedExpression(),
         Math.min(3_000, remainingTime(deadline)),
+        deadline,
       ));
-    await delay(250);
+    await delay(Math.min(250, remainingTime(deadline)));
 
     const browserErrors = summarizeBrowserErrors(browserErrorEvents);
     const assertions = [
@@ -1125,6 +1269,7 @@ async function runBrowserSmoke(runtimeOptions) {
         delete window['${STATE_KEY}'];
         return true;
       })()`,
+      deadline,
     ).catch(() => {});
 
     return Object.freeze({
@@ -1132,12 +1277,38 @@ async function runBrowserSmoke(runtimeOptions) {
       failedAssertionCodes: Object.freeze(failedAssertionCodes),
       settledRenderMs,
     });
+  } catch (error) {
+    primaryError = error instanceof SafeSmokeError ? error : safeError(runtimeFailureCode);
+    if (browserBootstrapIsRetryable(primaryError, navigationBegan, deadline)) {
+      Object.defineProperty(primaryError, 'retryableBrowserBootstrap', {
+        configurable: false,
+        enumerable: false,
+        value: true,
+        writable: false,
+      });
+    }
+    throw primaryError;
   } finally {
-    removeEventListener();
-    client?.close();
-    await stopChromium(chromium);
-    await rm(userDataDirectory, { force: true, recursive: true });
+    await finishBrowserCleanup(primaryError, [
+      () => removeEventListener(),
+      () => client?.close(),
+      () => stopChromium(chromium),
+      () => removeBrowserProfile(userDataDirectory),
+    ]);
   }
+}
+
+async function runBrowserSmoke(runtimeOptions) {
+  const deadline = Date.now() + runtimeOptions.timeoutMs;
+  return withBrowserBootstrapRetry((attempt) => {
+    const millisecondsRemaining = remainingTime(deadline);
+    if (millisecondsRemaining <= 0) throw safeError('chromium_start_timeout');
+    return runBrowserSmokeAttempt(
+      runtimeOptions,
+      deadline,
+      browserBootstrapDeadline(attempt, deadline),
+    );
+  });
 }
 
 export async function runOfflineMapBrowserSmoke(options) {

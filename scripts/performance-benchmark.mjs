@@ -56,6 +56,19 @@ export function classifyBenchmarkError(error) {
   return smokeCode ? `browser_smoke_${smokeCode}` : 'unexpected_error';
 }
 
+export async function finishBenchmarkCleanup(primaryError, cleanupTasks) {
+  let cleanupFailed = false;
+  for (const cleanupTask of cleanupTasks) {
+    try {
+      await cleanupTask();
+    } catch {
+      cleanupFailed = true;
+    }
+  }
+  if (primaryError) throw primaryError;
+  if (cleanupFailed) throw new BenchmarkFailure('benchmark_cleanup_failed');
+}
+
 export function resolveBenchmarkProfile(args = []) {
   if (args.length === 0) {
     return { id: 'release-reference', browserRideOpenLimitMs: BROWSER_RIDE_OPEN_LIMIT_MS };
@@ -293,6 +306,7 @@ async function measureBrowserRideOpen(createApiServer, database, workoutIds, chr
     now: () => Date.UTC(2038, 0, 1),
     staticDir: join(repositoryRoot, 'apps', 'api', 'dist', 'web'),
   });
+  let primaryError = null;
   try {
     const port = await listen(server);
     const baseUrl = `http://127.0.0.1:${port}`;
@@ -339,8 +353,13 @@ async function measureBrowserRideOpen(createApiServer, database, workoutIds, chr
       measuredRuns: timings.length,
       coldAnalyticsSnapshotsCreated,
     };
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    if (server.listening) await closeServer(server);
+    await finishBenchmarkCleanup(primaryError, [
+      () => (server.listening ? closeServer(server) : undefined),
+    ]);
   }
 }
 
@@ -349,6 +368,7 @@ async function measureRideDetailApi(createApiServer, database, workoutId) {
     db: database,
     now: () => Date.UTC(2038, 0, 1),
   });
+  let primaryError = null;
   try {
     const port = await listen(server);
     const url = `http://127.0.0.1:${port}/api/workouts/${workoutId}`;
@@ -395,8 +415,13 @@ async function measureRideDetailApi(createApiServer, database, workoutId) {
       measuredRuns: timings.length,
       warmupRuns: RIDE_DETAIL_WARMUP_RUNS,
     };
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    if (server.listening) await closeServer(server);
+    await finishBenchmarkCleanup(primaryError, [
+      () => (server.listening ? closeServer(server) : undefined),
+    ]);
   }
 }
 
@@ -420,6 +445,7 @@ export async function runBenchmark({ profile = resolveBenchmarkProfile() } = {})
   const cliLauncher = join(repositoryRoot, 'apps', 'cli', 'dist', 'velograph-import.mjs');
   const apiRuntime = join(repositoryRoot, 'apps', 'api', 'dist', 'api-runtime.mjs');
   let database;
+  let primaryError = null;
   try {
     await writeCorpus(corpusDirectory);
 
@@ -505,9 +531,22 @@ export async function runBenchmark({ profile = resolveBenchmarkProfile() } = {})
       throw new BenchmarkFailure('summary_contains_source_detail');
     }
     return { output, passed: summary.passed, summary };
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    if (database?.open) database.close();
-    await rm(sandbox, { recursive: true, force: true });
+    await finishBenchmarkCleanup(primaryError, [
+      () => {
+        if (database?.open) database.close();
+      },
+      () =>
+        rm(sandbox, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 100,
+        }),
+    ]);
   }
 }
 

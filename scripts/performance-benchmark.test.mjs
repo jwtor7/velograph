@@ -15,6 +15,7 @@ import {
   WORKOUT_COUNT,
   benchmarkPlan,
   classifyBenchmarkError,
+  finishBenchmarkCleanup,
   formatBenchmarkSummary,
   percentile,
   resolveBenchmarkProfile,
@@ -139,6 +140,29 @@ describe('performance benchmark contract', () => {
     expect(classifyBenchmarkError(new Error('Invented unsafe diagnostic'))).toBe(
       'unexpected_error',
     );
+  });
+
+  it('preserves primary benchmark failures through cleanup and safely classifies cleanup-only errors', async () => {
+    const primaryError = new BenchmarkFailure('synthetic_primary_failure');
+    await expect(
+      finishBenchmarkCleanup(primaryError, [
+        async () => {
+          throw new Error('Invented cleanup failure');
+        },
+      ]),
+    ).rejects.toBe(primaryError);
+
+    let cleanupError;
+    try {
+      await finishBenchmarkCleanup(null, [
+        async () => {
+          throw new Error('Invented cleanup failure');
+        },
+      ]);
+    } catch (error) {
+      cleanupError = error;
+    }
+    expect(classifyBenchmarkError(cleanupError)).toBe('benchmark_cleanup_failed');
   });
 
   it('emits one bounded stable aggregate record', () => {

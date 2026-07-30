@@ -49,7 +49,10 @@ the HTTP cache disabled, then times from `Page.navigate` until the packaged Reac
 UI has rendered seven KPIs, three synchronized time-series charts, the elevation
 profile, and an inked Leaflet route canvas. It includes asset loading,
 first-open deterministic analytics, React, charts, and map rendering; Chrome
-process launch is deliberately outside the navigation timer. The same smoke pass
+process launch is deliberately outside the navigation timer. One startup or CDP
+transport failure may retry before navigation with a fresh profile inside the
+same overall smoke deadline; navigation, assertions, and thresholds are never
+retried. The same smoke pass
 also requires the geospatial controls, endpoint markers, keyboard pan,
 chart/map cursor synchronization, clean browser diagnostics, and loopback-only
 network requests. A configured basemap is not required for this synthetic
@@ -88,7 +91,7 @@ Any failure prints one value-free error code.
 
 ## Recorded reference result
 
-Machine-local time: `2026-07-29 21:08:51 EDT (-0400)`.
+Machine-local time: `2026-07-29 21:30:31 EDT (-0400)`.
 
 | Reference characteristic   | Value                            |
 | -------------------------- | -------------------------------- |
@@ -98,11 +101,11 @@ Machine-local time: `2026-07-29 21:08:51 EDT (-0400)`.
 | Architecture               | arm64                            |
 | Operating system           | macOS 26.5.2                     |
 | Runtime                    | Node 22.22.3                     |
-| Import result              | 2,179.569 ms (limit: 180,000 ms) |
-| Browser ride-open result   | 638.833 ms p95 (limit: 1,000 ms) |
+| Import result              | 2,075.836 ms (limit: 180,000 ms) |
+| Browser ride-open result   | 614.546 ms p95 (limit: 1,000 ms) |
 | Browser measurements       | 5 fresh Chrome profiles          |
 | Cold snapshots after run 1 | 100                              |
-| Warmed API result          | 12.214 ms p95 (limit: 1,000 ms)  |
+| Warmed API result          | 12.395 ms p95 (limit: 1,000 ms)  |
 | Measured API requests      | 40, after 5 warm-up requests     |
 | Overall result             | Pass                             |
 

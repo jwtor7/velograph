@@ -5,14 +5,19 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import {
+  browserBootstrapDeadline,
+  browserBootstrapIsRetryable,
   canvasTraceHasPolyline,
   cursorSnapshotIsSynchronized,
   devToolsEndpointFromActivePort,
   devToolsEndpointFromOutput,
+  finishBrowserCleanup,
+  removeBrowserProfile,
   safeSmokeErrorCode,
   summarizeBrowserErrors,
   summarizeRequestOrigins,
   waitForDevToolsEndpoint,
+  withBrowserBootstrapRetry,
 } from './offline-map-browser-smoke.mjs';
 
 const synchronizedCursorObservation = Object.freeze({
@@ -117,6 +122,115 @@ describe('offline map browser Chromium startup', () => {
       child.stderr.destroy();
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it('preserves a primary startup error through failing cleanup', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'velograph-cleanup-primary-test-'));
+    const child = syntheticChromiumChild();
+    const pending = waitForDevToolsEndpoint(child, 1_000, directory);
+    child.emit('error', new Error('Invented launch failure'));
+    const primaryError = await pending.catch((error) => error);
+
+    try {
+      expect(safeSmokeErrorCode(primaryError)).toBe('chromium_launch_failed');
+      await expect(
+        finishBrowserCleanup(primaryError, [
+          async () => {
+            throw new Error('Invented cleanup failure');
+          },
+        ]),
+      ).rejects.toBe(primaryError);
+      expect(primaryError.browserCleanupFailed).toBe(true);
+      expect(browserBootstrapIsRetryable(primaryError, false, 30_000, 1_000)).toBe(true);
+      expect(browserBootstrapIsRetryable(primaryError, true, 30_000, 1_000)).toBe(false);
+      expect(browserBootstrapIsRetryable(primaryError, false, 1_000, 1_000)).toBe(false);
+    } finally {
+      child.stdout.destroy();
+      child.stderr.destroy();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('maps cleanup-only failures and configures bounded profile removal retries', async () => {
+    let cleanupError;
+    try {
+      await finishBrowserCleanup(null, [
+        async () => {
+          throw new Error('Invented cleanup failure');
+        },
+      ]);
+    } catch (error) {
+      cleanupError = error;
+    }
+    expect(safeSmokeErrorCode(cleanupError)).toBe('chromium_cleanup_failed');
+
+    let removalCall;
+    await removeBrowserProfile('synthetic-profile', async (directory, options) => {
+      removalCall = { directory, options };
+    });
+    expect(removalCall).toEqual({
+      directory: 'synthetic-profile',
+      options: {
+        force: true,
+        maxRetries: 5,
+        recursive: true,
+        retryDelay: 100,
+      },
+    });
+  });
+
+  it('retries one marked bootstrap failure with a fresh bounded attempt', async () => {
+    expect(browserBootstrapDeadline(0, 30_000, 0)).toBe(15_000);
+    expect(browserBootstrapDeadline(1, 30_000, 0)).toBe(30_000);
+    expect(browserBootstrapDeadline(0, 4_000, 0)).toBe(4_000);
+
+    let attempts = 0;
+    const result = await withBrowserBootstrapRetry(async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = new Error('Invented transient bootstrap failure');
+        error.retryableBrowserBootstrap = true;
+        throw error;
+      }
+      return 'synthetic-success';
+    });
+    expect(result).toBe('synthetic-success');
+    expect(attempts).toBe(2);
+
+    let unmarkedAttempts = 0;
+    await expect(
+      withBrowserBootstrapRetry(async () => {
+        unmarkedAttempts += 1;
+        throw new Error('Invented non-retryable failure');
+      }),
+    ).rejects.toThrow('Invented non-retryable failure');
+    expect(unmarkedAttempts).toBe(1);
+
+    let boundedAttempts = 0;
+    const terminalError = new Error('Invented second bootstrap failure');
+    terminalError.retryableBrowserBootstrap = true;
+    await expect(
+      withBrowserBootstrapRetry(async () => {
+        boundedAttempts += 1;
+        const error =
+          boundedAttempts === 1 ? new Error('Invented first bootstrap failure') : terminalError;
+        error.retryableBrowserBootstrap = true;
+        throw error;
+      }),
+    ).rejects.toBe(terminalError);
+    expect(boundedAttempts).toBe(2);
+
+    let cleanupFailureAttempts = 0;
+    await expect(
+      withBrowserBootstrapRetry(async () => {
+        cleanupFailureAttempts += 1;
+        const error = new Error('Invented unsafe-to-retry cleanup failure');
+        error.retryableBrowserBootstrap = true;
+        error.browserCleanupFailed = true;
+        throw error;
+      }),
+    ).rejects.toThrow('Invented unsafe-to-retry cleanup failure');
+    expect(cleanupFailureAttempts).toBe(1);
   });
 });
 
