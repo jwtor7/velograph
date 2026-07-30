@@ -241,7 +241,9 @@ describe('InteractiveRouteMap', () => {
     render(<InteractiveRouteMap segments={syntheticSegments} cursorT={null} />);
 
     expect(await screen.findByText('Local basemap · Synthetic QA grid')).toBeTruthy();
-    expect(leafletMock.tileLayers).toHaveLength(1);
+    await waitFor(() => {
+      expect(leafletMock.tileLayers).toHaveLength(1);
+    });
 
     const tileLayer = leafletMock.tileLayers[0]!;
     expect(tileLayer.url).toBe('/api/basemap/tiles/{z}/{x}/{y}');
@@ -283,6 +285,9 @@ describe('InteractiveRouteMap', () => {
     vi.spyOn(api, 'basemap').mockResolvedValue(readyBasemap);
     render(<InteractiveRouteMap segments={syntheticSegments} cursorT={null} />);
     await screen.findByText('Local basemap · Synthetic QA grid');
+    await waitFor(() => {
+      expect(leafletMock.tileLayers).toHaveLength(1);
+    });
 
     const tileLayer = leafletMock.tileLayers[0]!;
     act(() => {
