@@ -13,7 +13,12 @@ import { join, relative, resolve, sep } from 'node:path';
 import { guardAgainstCheckout } from '@velograph/db';
 import { sha256Hex, stableStringify } from '@velograph/shared';
 import { parseHaeFilename } from './adapters.ts';
-import type { ImportFile, ImportFileGroupLoader, ImportPreflightItem } from './importer.ts';
+import {
+  throwIfImportAborted,
+  type ImportFile,
+  type ImportFileGroupLoader,
+  type ImportPreflightItem,
+} from './importer.ts';
 
 /**
  * Path-based folder import (issue #51).
@@ -38,6 +43,7 @@ export const DEFAULT_MAX_DEPTH = 32;
 
 const IMPORTABLE_EXTENSION = /\.(csv|gpx|zip)$/i;
 const PLANNED_ENTRY_CHANGE_CODES = new Set(['EISDIR', 'ELOOP', 'ENOENT', 'ENOTDIR', 'ESTALE']);
+const COOPERATIVE_WALK_BATCH_ENTRIES = 32;
 
 export interface FolderWalkOptions {
   maxFiles?: number;
@@ -194,11 +200,11 @@ function isPlannedEntryChange(error: unknown): boolean {
  * toward explicit traversal bounds and contributes metadata to the private
  * confirmation manifest. No source contents are read.
  */
-export function walkImportFolder(
+function* walkImportFolderSteps(
   rootPath: string,
   opts: FolderWalkOptions = {},
   testHooks: FolderWalkTestHooks = {},
-): FolderWalkResult {
+): Generator<void, FolderWalkResult, void> {
   const maxFiles = opts.maxFiles ?? DEFAULT_MAX_FILES;
   const maxTotalBytes = opts.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
   const maxVisitedEntries = opts.maxVisitedEntries ?? DEFAULT_MAX_VISITED_ENTRIES;
@@ -353,7 +359,11 @@ export function walkImportFolder(
     traversalStopped = true;
   }
 
-  function walk(dirPath: string, depth: number, expected: DirectoryExpectation): void {
+  function* walk(
+    dirPath: string,
+    depth: number,
+    expected: DirectoryExpectation,
+  ): Generator<void, void, void> {
     if (traversalStopped) return;
     if (depth > maxDepth) {
       skipped.push({ relativePath: relativeToRoot(dirPath), reason: 'max_depth_exceeded' });
@@ -393,6 +403,10 @@ export function walkImportFolder(
           return;
         }
         visitedEntries++;
+        // The synchronous CLI consumes this checkpoint immediately. The
+        // loopback API consumes the same deterministic traversal in bounded
+        // batches and yields to request/disconnect events between batches.
+        yield;
 
         let entryStats: Stats;
         try {
@@ -449,7 +463,7 @@ export function walkImportFolder(
         if (entryStats.isDirectory()) {
           const childExpectation = captureNestedDirectory(fullPath, entryStats);
           addManifestEntry(fullPath, 'directory', entryStats);
-          walk(fullPath, depth + 1, childExpectation);
+          yield* walk(fullPath, depth + 1, childExpectation);
           if (traversalStopped) return;
           continue;
         }
@@ -480,7 +494,7 @@ export function walkImportFolder(
     }
   }
 
-  walk(root, 0, rootExpectation);
+  yield* walk(root, 0, rootExpectation);
   files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   manifestEntries.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   skipped.sort(
@@ -500,6 +514,66 @@ export function walkImportFolder(
     totalBytes,
     truncated,
   };
+}
+
+function consumeFolderWalkSteps(steps: Generator<void, FolderWalkResult, void>): FolderWalkResult {
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/**
+ * Synchronous traversal retained for CLI callers. It consumes the exact same
+ * checkpoints as the cancellable API path without yielding between them.
+ */
+export function walkImportFolder(
+  rootPath: string,
+  opts: FolderWalkOptions = {},
+  testHooks: FolderWalkTestHooks = {},
+): FolderWalkResult {
+  return consumeFolderWalkSteps(walkImportFolderSteps(rootPath, opts, testHooks));
+}
+
+function yieldToFolderRequestEvents(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Cooperative metadata traversal for loopback requests. Filesystem access
+ * stays synchronous within each small bounded batch so identity and TOCTOU
+ * semantics remain shared with the CLI, while event-loop checkpoints let a
+ * disconnected request update its AbortSignal during recursive walking.
+ */
+export async function walkImportFolderCancellable(
+  rootPath: string,
+  opts: FolderWalkOptions = {},
+  signal?: AbortSignal,
+  testHooks: FolderWalkTestHooks = {},
+): Promise<FolderWalkResult> {
+  throwIfImportAborted(signal);
+  const steps = walkImportFolderSteps(rootPath, opts, testHooks);
+  let checkpoints = 0;
+  try {
+    for (;;) {
+      throwIfImportAborted(signal);
+      const step = steps.next();
+      if (step.done) return step.value;
+      checkpoints++;
+      if (checkpoints === 1 || checkpoints % COOPERATIVE_WALK_BATCH_ENTRIES === 0) {
+        await yieldToFolderRequestEvents();
+        throwIfImportAborted(signal);
+      }
+    }
+  } catch (err) {
+    try {
+      steps.throw(err);
+    } catch {
+      // Preserve the traversal/cancellation error while still unwinding open
+      // directory handles through the generator's finally blocks.
+    }
+    throw err;
+  }
 }
 
 export interface PlannedFolderGroup {
@@ -574,8 +648,7 @@ function compareGroups(a: PlannedFolderGroup, b: PlannedFolderGroup): number {
  * over the resident-byte cap are excluded in full so a partial ride is
  * never imported merely to satisfy the memory bound.
  */
-export function planFolderImport(rootPath: string, opts: FolderWalkOptions = {}): FolderImportPlan {
-  const walk = walkImportFolder(rootPath, opts);
+function buildFolderImportPlan(walk: FolderWalkResult, opts: FolderWalkOptions): FolderImportPlan {
   const maxGroupBytes = opts.maxGroupBytes ?? DEFAULT_MAX_GROUP_BYTES;
   const limits: Required<FolderWalkOptions> = {
     maxFiles: opts.maxFiles ?? DEFAULT_MAX_FILES,
@@ -636,6 +709,27 @@ export function planFolderImport(rootPath: string, opts: FolderWalkOptions = {})
     truncated,
     limits,
   };
+}
+
+export function planFolderImport(rootPath: string, opts: FolderWalkOptions = {}): FolderImportPlan {
+  return buildFolderImportPlan(walkImportFolder(rootPath, opts), opts);
+}
+
+/**
+ * Abort-aware planner for server preview and confirmation. It produces the
+ * same plan and confirmation digest as the synchronous CLI path.
+ */
+export async function planFolderImportCancellable(
+  rootPath: string,
+  opts: FolderWalkOptions = {},
+  signal?: AbortSignal,
+  testHooks: FolderWalkTestHooks = {},
+): Promise<FolderImportPlan> {
+  const walk = await walkImportFolderCancellable(rootPath, opts, signal, testHooks);
+  throwIfImportAborted(signal);
+  const plan = buildFolderImportPlan(walk, opts);
+  throwIfImportAborted(signal);
+  return plan;
 }
 
 export interface FolderRideGroup {

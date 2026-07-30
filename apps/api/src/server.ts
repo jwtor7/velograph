@@ -19,7 +19,7 @@ import {
   confirmFolderImportPlan,
   FolderImportError,
   ImportAbortedError,
-  planFolderImport,
+  planFolderImportCancellable,
   preflightImportCancellable,
   preflightImportGroupsCancellable,
   previewFolderImportPlan,
@@ -641,7 +641,7 @@ function route(
           return;
         }
         try {
-          const plan = planFolderImport(p);
+          const plan = await planFolderImportCancellable(p, {}, cancellation.signal);
           await yieldToRequestEvents();
           throwIfImportAborted(cancellation.signal);
           let preflight: ImportPreflightItem[] = [];
@@ -687,7 +687,7 @@ function route(
           return;
         }
         try {
-          const plan = planFolderImportForConfirmation(p);
+          const plan = await planFolderImportForConfirmation(p, cancellation.signal);
           confirmFolderImportPlan(plan, confirmationToken);
           if (plan.totalFiles === 0) {
             send(res, 400, {
@@ -879,9 +879,9 @@ function readConfirmationToken(body: unknown): string | undefined {
  * removed or replaced with a non-directory, that is a stale-preview conflict,
  * not a fresh path-validation error.
  */
-function planFolderImportForConfirmation(path: string) {
+async function planFolderImportForConfirmation(path: string, signal: AbortSignal) {
   try {
-    return planFolderImport(path);
+    return await planFolderImportCancellable(path, {}, signal);
   } catch (err) {
     if (
       err instanceof FolderImportError &&

@@ -358,7 +358,7 @@
       "format": "esm"
     },
     "packages/importers/src/folder.ts": {
-      "bytes": 27516,
+      "bytes": 30505,
       "imports": [
         {
           "path": "node:fs",
@@ -384,6 +384,11 @@
           "path": "packages/importers/src/adapters.ts",
           "kind": "import-statement",
           "original": "./adapters.ts"
+        },
+        {
+          "path": "packages/importers/src/importer.ts",
+          "kind": "import-statement",
+          "original": "./importer.ts"
         }
       ],
       "format": "esm"
@@ -529,7 +534,7 @@
       "format": "esm"
     },
     "apps/api/src/server.ts": {
-      "bytes": 41375,
+      "bytes": 41511,
       "imports": [
         {
           "path": "node:http",
@@ -900,7 +905,7 @@
           "bytesInOutput": 7352
         },
         "apps/api/src/server.ts": {
-          "bytesInOutput": 32045
+          "bytesInOutput": 32157
         },
         "packages/importers/src/csv.ts": {
           "bytesInOutput": 3533
@@ -927,7 +932,7 @@
           "bytesInOutput": 17001
         },
         "packages/importers/src/folder.ts": {
-          "bytesInOutput": 19785
+          "bytesInOutput": 21261
         },
         "packages/analytics/src/index.ts": {
           "bytesInOutput": 0
@@ -957,7 +962,7 @@
           "bytesInOutput": 1026
         }
       },
-      "bytes": 262793
+      "bytes": 264381
     }
   }
 }

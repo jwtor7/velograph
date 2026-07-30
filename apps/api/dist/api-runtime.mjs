@@ -4141,6 +4141,7 @@ var DEFAULT_MAX_DIRECTORIES = 2e3;
 var DEFAULT_MAX_DEPTH = 32;
 var IMPORTABLE_EXTENSION = /\.(csv|gpx|zip)$/i;
 var PLANNED_ENTRY_CHANGE_CODES = /* @__PURE__ */ new Set(["EISDIR", "ELOOP", "ENOENT", "ENOTDIR", "ESTALE"]);
+var COOPERATIVE_WALK_BATCH_ENTRIES = 32;
 var FolderImportError = class extends Error {
   code;
   constructor(code, message) {
@@ -4178,7 +4179,7 @@ function insideCanonicalRoot(canonicalRoot, candidate) {
 function isPlannedEntryChange(error) {
   return error !== null && typeof error === "object" && "code" in error && typeof error.code === "string" && PLANNED_ENTRY_CHANGE_CODES.has(error.code);
 }
-function walkImportFolder(rootPath, opts = {}, testHooks = {}) {
+function* walkImportFolderSteps(rootPath, opts = {}, testHooks = {}) {
   const maxFiles = opts.maxFiles ?? DEFAULT_MAX_FILES;
   const maxTotalBytes = opts.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
   const maxVisitedEntries = opts.maxVisitedEntries ?? DEFAULT_MAX_VISITED_ENTRIES;
@@ -4302,7 +4303,7 @@ function walkImportFolder(rootPath, opts = {}, testHooks = {}) {
     truncated = true;
     traversalStopped = true;
   }
-  function walk(dirPath, depth, expected) {
+  function* walk(dirPath, depth, expected) {
     if (traversalStopped) return;
     if (depth > maxDepth) {
       skipped.push({ relativePath: relativeToRoot(dirPath), reason: "max_depth_exceeded" });
@@ -4339,6 +4340,7 @@ function walkImportFolder(rootPath, opts = {}, testHooks = {}) {
           return;
         }
         visitedEntries++;
+        yield;
         let entryStats;
         try {
           entryStats = lstatSync3(fullPath);
@@ -4392,7 +4394,7 @@ function walkImportFolder(rootPath, opts = {}, testHooks = {}) {
         if (entryStats.isDirectory()) {
           const childExpectation = captureNestedDirectory(fullPath, entryStats);
           addManifestEntry(fullPath, "directory", entryStats);
-          walk(fullPath, depth + 1, childExpectation);
+          yield* walk(fullPath, depth + 1, childExpectation);
           if (traversalStopped) return;
           continue;
         }
@@ -4419,7 +4421,7 @@ function walkImportFolder(rootPath, opts = {}, testHooks = {}) {
       revalidateDirectory(dirPath, expected);
     }
   }
-  walk(root, 0, rootExpectation);
+  yield* walk(root, 0, rootExpectation);
   files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   manifestEntries.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   skipped.sort(
@@ -4438,6 +4440,32 @@ function walkImportFolder(rootPath, opts = {}, testHooks = {}) {
     totalBytes,
     truncated
   };
+}
+function yieldToFolderRequestEvents() {
+  return new Promise((resolve5) => setImmediate(resolve5));
+}
+async function walkImportFolderCancellable(rootPath, opts = {}, signal, testHooks = {}) {
+  throwIfImportAborted(signal);
+  const steps = walkImportFolderSteps(rootPath, opts, testHooks);
+  let checkpoints = 0;
+  try {
+    for (; ; ) {
+      throwIfImportAborted(signal);
+      const step = steps.next();
+      if (step.done) return step.value;
+      checkpoints++;
+      if (checkpoints === 1 || checkpoints % COOPERATIVE_WALK_BATCH_ENTRIES === 0) {
+        await yieldToFolderRequestEvents();
+        throwIfImportAborted(signal);
+      }
+    }
+  } catch (err) {
+    try {
+      steps.throw(err);
+    } catch {
+    }
+    throw err;
+  }
 }
 function fileName(file) {
   return file.relativePath.split("/").pop() ?? file.relativePath;
@@ -4477,8 +4505,7 @@ function compareGroups(a, b) {
   }
   return a.groupKey.localeCompare(b.groupKey);
 }
-function planFolderImport(rootPath, opts = {}) {
-  const walk = walkImportFolder(rootPath, opts);
+function buildFolderImportPlan(walk, opts) {
   const maxGroupBytes = opts.maxGroupBytes ?? DEFAULT_MAX_GROUP_BYTES;
   const limits = {
     maxFiles: opts.maxFiles ?? DEFAULT_MAX_FILES,
@@ -4536,6 +4563,13 @@ function planFolderImport(rootPath, opts = {}) {
     truncated,
     limits
   };
+}
+async function planFolderImportCancellable(rootPath, opts = {}, signal, testHooks = {}) {
+  const walk = await walkImportFolderCancellable(rootPath, opts, signal, testHooks);
+  throwIfImportAborted(signal);
+  const plan = buildFolderImportPlan(walk, opts);
+  throwIfImportAborted(signal);
+  return plan;
 }
 function planConfirmationToken(plan) {
   return sha256Hex(
@@ -6276,7 +6310,7 @@ function route(req, res, opts, url, method, now, state, basemap) {
         return;
       }
       try {
-        const plan = planFolderImport(p);
+        const plan = await planFolderImportCancellable(p, {}, cancellation.signal);
         await yieldToRequestEvents();
         throwIfImportAborted(cancellation.signal);
         let preflight = [];
@@ -6318,7 +6352,7 @@ function route(req, res, opts, url, method, now, state, basemap) {
         return;
       }
       try {
-        const plan = planFolderImportForConfirmation(p);
+        const plan = await planFolderImportForConfirmation(p, cancellation.signal);
         confirmFolderImportPlan(plan, confirmationToken);
         if (plan.totalFiles === 0) {
           send(res, 400, {
@@ -6479,9 +6513,9 @@ function readConfirmationToken(body) {
   const token = body?.confirmationToken;
   return typeof token === "string" && /^[a-f0-9]{64}$/.test(token) ? token : void 0;
 }
-function planFolderImportForConfirmation(path) {
+async function planFolderImportForConfirmation(path, signal) {
   try {
-    return planFolderImport(path);
+    return await planFolderImportCancellable(path, {}, signal);
   } catch (err) {
     if (err instanceof FolderImportError && (err.code === "path_not_found" || err.code === "not_a_directory")) {
       throw new FolderImportError("path_changed", "folder changed after preview");

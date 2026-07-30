@@ -14,11 +14,13 @@ import {
   confirmFolderImportPlan,
   FolderImportError,
   planFolderImport,
+  planFolderImportCancellable,
   previewFolderImportPlan,
   previewImportFolder,
   readFolderFileGroups,
   walkImportFolder,
 } from './folder.ts';
+import { ImportAbortedError } from './importer.ts';
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -476,6 +478,54 @@ describe('planFolderImport — bounded deterministic groups', () => {
     expect(plan.truncated).toBe(true);
     expect(plan.skipped.filter((item) => item.reason === 'max_group_bytes_exceeded')).toHaveLength(
       2,
+    );
+  });
+});
+
+describe('planFolderImportCancellable — cooperative traversal', () => {
+  it('yields to the event loop and observes cancellation during recursive planning', async () => {
+    const root = tempDir();
+    const nested = join(root, 'nested');
+    mkdirSync(nested);
+    for (let index = 0; index < 64; index++) {
+      writeFileSync(join(nested, `synthetic-${index}.txt`), 'x');
+    }
+    const controller = new AbortController();
+    let nestedOpened = false;
+    let cancellationRan = false;
+    const pending = planFolderImportCancellable(root, {}, controller.signal, {
+      beforeDirectoryOpen: (relativePath) => {
+        if (relativePath !== 'nested') return;
+        nestedOpened = true;
+        queueMicrotask(() => {
+          cancellationRan = true;
+          controller.abort();
+        });
+      },
+    });
+
+    await expect(pending).rejects.toBeInstanceOf(ImportAbortedError);
+    expect(nestedOpened).toBe(true);
+    expect(cancellationRan).toBe(true);
+  });
+
+  it('produces the exact deterministic plan used by synchronous callers', async () => {
+    const root = tempDir();
+    const nested = join(root, 'nested');
+    mkdirSync(nested);
+    writeFileSync(
+      join(nested, 'Outdoor Cycling-Heart Rate-20260101_070000.csv'),
+      'synthetic-heart-rate',
+    );
+    writeFileSync(
+      join(root, 'Outdoor Cycling-Cycling Cadence-20260101_070000.csv'),
+      'synthetic-cadence',
+    );
+    writeFileSync(join(root, 'synthetic-notes.txt'), 'synthetic note');
+    const opts = { maxVisitedEntries: 100, maxDirectories: 10, maxDepth: 4 };
+
+    await expect(planFolderImportCancellable(root, opts)).resolves.toEqual(
+      planFolderImport(root, opts),
     );
   });
 });

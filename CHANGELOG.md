@@ -204,6 +204,13 @@ is pre-1.0, and for the release procedure.
 
 ### Fixed
 
+- **Loopback ingress and large-folder planning now fail safely under adversarial input.** The
+  container proxy rejects missing, duplicated, malformed, or non-loopback `Host` authorities
+  before rewriting headers, and rejects an `Origin` unless it exactly matches the validated
+  published loopback authority before rewriting. API folder preview and confirmation share an abort-aware
+  traversal that yields between bounded entry batches, while browser directory drops enumerate
+  sequentially with shared file, entry, and depth caps instead of materializing an unbounded
+  tree (#63).
 - **Hosted browser startup is deterministic and diagnosable.** The production benchmark now
   discovers Chromium's loopback DevTools endpoint from either process stream or its validated
   `DevToolsActivePort` file instead of depending on one platform-specific output stream. One

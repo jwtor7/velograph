@@ -21,27 +21,31 @@ documented reason.
 
 ## Primary threats and controls
 
-| Threat                                              | Control                                                                                                                                                  | Residual risk / release evidence                                                                                   |
-| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Real data or credentials enter Git history          | Default-deny ignore rules, synthetic-only fixtures, pre-commit and CI scans, history audit, incident runbook                                             | Deleted content remains exposed; maintainers must rotate, purge, and invalidate affected releases                  |
-| Private files enter a container layer or CI context | `.dockerignore`, production-only runtime copy, no source-export/auth mounts, exact OCI application-layer audit, SBOM-enabled multi-architecture CI       | Pinned base-image contents are reviewed through digest/SBOM; do not publish images built from an untrusted context |
-| Loopback API is exposed to a LAN                    | API refuses non-loopback binding; Compose maps only host loopback; relay rewrites only loopback Host/Origin                                              | A user can override Docker port settings; this is unsupported without authentication                               |
-| Browser cross-site or DNS-rebinding request         | Strict loopback Host/Origin checks, self-only CSP, CSRF header for mutation                                                                              | Browser and proxy behavior must remain covered by API tests when either changes                                    |
-| Malicious export archive or GPX                     | Parser limits, entity rejection, traversal/symlink/bomb defenses, atomic import                                                                          | Limits need regression tests and review as supported source shapes evolve                                          |
-| Optional AI reveals more than intended              | Disabled by default; minimized, previewed payload; no raw rows, coordinates, source files, notes, or auth cache                                          | Users may explicitly select a remote provider; documentation must keep that disclosure clear                       |
-| Dependency or build compromise                      | Frozen lockfile, pinned Actions, clean Node 20.19/26 installs, exact runtime licence/text gate, multi-architecture build, SBOM, manual dependency review | Base images, action pins, allowlist choices, and embedded components require review before a release               |
-| Local theft or filesystem recovery                  | OS permissions and full-disk encryption guidance; no unsupported encryption claim                                                                        | SQLite application-level encryption remains a PRD §20 decision                                                     |
+| Threat                                              | Control                                                                                                                                                        | Residual risk / release evidence                                                                                   |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Real data or credentials enter Git history          | Default-deny ignore rules, synthetic-only fixtures, pre-commit and CI scans, history audit, incident runbook                                                   | Deleted content remains exposed; maintainers must rotate, purge, and invalidate affected releases                  |
+| Private files enter a container layer or CI context | `.dockerignore`, production-only runtime copy, no source-export/auth mounts, exact OCI application-layer audit, SBOM-enabled multi-architecture CI             | Pinned base-image contents are reviewed through digest/SBOM; do not publish images built from an untrusted context |
+| Loopback API is exposed to a LAN                    | API refuses non-loopback binding; Compose maps only host loopback; relay accepts one lexical loopback Host authority                                           | A user can override Docker port settings; this is unsupported without authentication                               |
+| Browser cross-site or DNS-rebinding request         | Relay validates Host before rewriting it and rejects all but one matching HTTP Origin; API retains strict Host/Origin checks, self-only CSP, and mutation CSRF | Browser and proxy behavior must remain covered by API tests when either changes                                    |
+| Malicious export archive or GPX                     | Parser limits, entity rejection, traversal/symlink/bomb defenses, atomic import                                                                                | Limits need regression tests and review as supported source shapes evolve                                          |
+| Optional AI reveals more than intended              | Disabled by default; minimized, previewed payload; no raw rows, coordinates, source files, notes, or auth cache                                                | Users may explicitly select a remote provider; documentation must keep that disclosure clear                       |
+| Dependency or build compromise                      | Frozen lockfile, pinned Actions, clean Node 20.19/26 installs, exact runtime licence/text gate, multi-architecture build, SBOM, manual dependency review       | Base images, action pins, allowlist choices, and embedded components require review before a release               |
+| Local theft or filesystem recovery                  | OS permissions and full-disk encryption guidance; no unsupported encryption claim                                                                              | SQLite application-level encryption remains a PRD §20 decision                                                     |
 
 ## Container deployment review
 
 The supported Compose configuration has one service and one Docker-managed
 local data volume. The API stays on the container loopback interface. A tiny
 in-container HTTP relay is needed because Docker port forwarding cannot reach a
-process bound to that interface directly; it rewrites the public loopback
-Host/Origin to the internal loopback API. The image relay itself defaults to
-container loopback, making bare wildcard Docker publication inert. Supported
-Compose explicitly opts the relay into the container network only while
-publishing it as `127.0.0.1:5123` on the host.
+process bound to that interface directly. Before forwarding, the relay requires
+exactly one lexical `127.0.0.1`, `localhost`, or `[::1]` Host authority with an
+optional valid port. It then rewrites that Host for the internal API and rewrites
+an Origin only after its HTTP hostname and effective port match the validated
+published authority. This keeps an unknown ephemeral Docker host port usable
+without laundering a DNS-rebinding hostname or a different loopback origin. The
+image relay itself defaults to container loopback, making bare wildcard Docker
+publication inert. Supported Compose explicitly opts the relay into the
+container network only while publishing it as `127.0.0.1:5123` on the host.
 
 The runtime filesystem is read-only except for the data volume and a bounded
 temporary filesystem. Capabilities are dropped and privilege escalation is

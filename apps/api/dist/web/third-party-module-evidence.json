@@ -35,9 +35,9 @@
   ],
   "files": [
     {
-      "file": "assets/index-CADN-93P.js",
-      "sha256": "01825cd9b5477bffc37d447dcdad30ee52aaa2eb2db46c2ae8d280bdc3ddacd3",
-      "bytes": 429443,
+      "file": "assets/index-BfOX0-r1.js",
+      "sha256": "05e6ec9faa331e3be09537c29c34336b7d0c7485a78c3d84930f0da3b68cd1af",
+      "bytes": 430151,
       "generatedBy": "rollup-chunk",
       "packages": [
         "@fontsource/inter@5.3.0",
@@ -690,7 +690,7 @@
     },
     {
       "file": "index.html",
-      "sha256": "af5d9e38f24a58e3fb4ab778622e498c9cb2a46df30aefbec3cbcc2f7d82b40e",
+      "sha256": "2082be3c027585f8aedbbaa2d2ae80354efdb66f05c3d7e2805a1f535cd6e0c3",
       "bytes": 442,
       "generatedBy": "vite-html-entry",
       "packages": [

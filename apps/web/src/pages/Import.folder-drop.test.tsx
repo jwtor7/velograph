@@ -2,9 +2,10 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { DEFAULT_IMPORT_UPLOAD_LIMITS } from '@velograph/shared/import-limits';
 import { api, type FolderPreviewBody, type ImportInventoryItem } from '../api.ts';
 import { MemoryRouter } from '../router.tsx';
-import { ImportPage } from './Import.tsx';
+import { ImportPage, MAX_DROPPED_DIRECTORY_DEPTH, MAX_DROPPED_ENTRY_COUNT } from './Import.tsx';
 
 const FALLBACK_NOTICE =
   'This browser does not expose one verified absolute folder path. Velograph added the bounded loose files it could read; paste the path below for a large export.';
@@ -22,47 +23,61 @@ function syntheticFile(name: string, runtimePath?: string): File {
   return file;
 }
 
-function fileEntry(file: File): FileSystemFileEntry {
+function fileEntry(file: File, onRead: () => void = () => undefined): FileSystemFileEntry {
   return {
     isFile: true,
     isDirectory: false,
     name: file.name,
     fullPath: `/virtual/${file.name}`,
-    file: (successCallback: FileCallback) => successCallback(file),
+    file: (successCallback: FileCallback) => {
+      onRead();
+      successCallback(file);
+    },
   } as unknown as FileSystemFileEntry;
 }
 
-function directoryEntry(name: string, files: readonly File[]): FileSystemDirectoryEntry {
+function directoryEntry(
+  name: string,
+  entries: readonly FileSystemEntry[],
+  batchSize = entries.length || 1,
+  onOpen: () => void = () => undefined,
+): FileSystemDirectoryEntry {
   return {
     isFile: false,
     isDirectory: true,
     name,
     fullPath: `/${name}`,
     createReader: () => {
-      let exhausted = false;
+      onOpen();
+      let offset = 0;
       return {
         readEntries: (successCallback: FileSystemEntriesCallback) => {
-          const entries = exhausted ? [] : files.map(fileEntry);
-          exhausted = true;
-          successCallback(entries);
+          const batch = entries.slice(offset, offset + batchSize);
+          offset += batch.length;
+          successCallback([...batch]);
         },
       };
     },
   } as unknown as FileSystemDirectoryEntry;
 }
 
-function directoryDataTransfer(entry: FileSystemDirectoryEntry): DataTransfer {
+function directoryWithFiles(name: string, files: readonly File[]): FileSystemDirectoryEntry {
+  return directoryEntry(
+    name,
+    files.map((file) => fileEntry(file)),
+  );
+}
+
+function directoryDataTransfer(...entries: FileSystemEntry[]): DataTransfer {
   return {
     files: [] as unknown as FileList,
-    items: [
-      {
-        kind: 'file',
-        type: '',
-        getAsFile: () => null,
-        getAsString: () => undefined,
-        webkitGetAsEntry: () => entry,
-      },
-    ] as unknown as DataTransferItemList,
+    items: entries.map((entry) => ({
+      kind: 'file',
+      type: '',
+      getAsFile: () => null,
+      getAsString: () => undefined,
+      webkitGetAsEntry: () => entry,
+    })) as unknown as DataTransferItemList,
   } as DataTransfer;
 }
 
@@ -143,7 +158,7 @@ describe('Import folder drop integration', () => {
     renderImportPage();
 
     fireEvent.drop(screen.getByRole('group', { name: 'File import drop area' }), {
-      dataTransfer: directoryDataTransfer(directoryEntry('Health Export', files)),
+      dataTransfer: directoryDataTransfer(directoryWithFiles('Health Export', files)),
     });
 
     await waitFor(() => {
@@ -235,7 +250,7 @@ describe('Import folder drop integration', () => {
     renderImportPage();
 
     fireEvent.drop(screen.getByRole('group', { name: 'File import drop area' }), {
-      dataTransfer: directoryDataTransfer(directoryEntry('Health Export', files)),
+      dataTransfer: directoryDataTransfer(directoryWithFiles('Health Export', files)),
     });
 
     await waitFor(() =>
@@ -279,7 +294,7 @@ describe('Import folder drop integration', () => {
     renderImportPage();
 
     fireEvent.drop(screen.getByRole('group', { name: 'File import drop area' }), {
-      dataTransfer: directoryDataTransfer(directoryEntry('Health Export', files)),
+      dataTransfer: directoryDataTransfer(directoryWithFiles('Health Export', files)),
     });
 
     expect((await screen.findByRole('status')).textContent).toContain(FALLBACK_NOTICE);
@@ -305,5 +320,105 @@ describe('Import folder drop integration', () => {
         dataBase64: expect.any(String),
       },
     ]);
+  });
+
+  it('stops at the shared file-count bound across dropped directory roots', async () => {
+    let readCount = 0;
+    const entries = Array.from({ length: DEFAULT_IMPORT_UPLOAD_LIMITS.maxFiles + 1 }, (_, index) =>
+      fileEntry(syntheticFile(`invented-${index}.csv`), () => {
+        readCount += 1;
+      }),
+    );
+    const split = Math.floor(entries.length / 2);
+    renderImportPage();
+
+    fireEvent.drop(screen.getByRole('group', { name: 'File import drop area' }), {
+      dataTransfer: directoryDataTransfer(
+        directoryEntry('First export', entries.slice(0, split)),
+        directoryEntry('Second export', entries.slice(split)),
+      ),
+    });
+
+    expect(
+      await screen.findByText(
+        'Too many files for browser upload. Use folder path import for a large export.',
+      ),
+    ).toBeTruthy();
+    expect(readCount).toBe(DEFAULT_IMPORT_UPLOAD_LIMITS.maxFiles);
+    expect(screen.queryByRole('heading', { name: /Selected files/ })).toBeNull();
+  });
+
+  it('stops before reading a file below the safe directory-depth bound', async () => {
+    let readCount = 0;
+    let nestedEntry: FileSystemEntry = fileEntry(syntheticFile('too-deep.csv'), () => {
+      readCount += 1;
+    });
+    for (let depth = 0; depth < MAX_DROPPED_DIRECTORY_DEPTH + 2; depth += 1) {
+      nestedEntry = directoryEntry(`level-${depth}`, [nestedEntry]);
+    }
+    renderImportPage();
+
+    fireEvent.drop(screen.getByRole('group', { name: 'File import drop area' }), {
+      dataTransfer: directoryDataTransfer(nestedEntry),
+    });
+
+    expect(
+      await screen.findByText(
+        'This folder exceeds the safe browser traversal limit. Use folder path import instead.',
+      ),
+    ).toBeTruthy();
+    expect(readCount).toBe(0);
+    expect(screen.queryByRole('heading', { name: /Selected files/ })).toBeNull();
+  });
+
+  it('stops before opening an empty directory beyond the shared entry budget', async () => {
+    let openedDirectories = 0;
+    const emptyDirectories = Array.from({ length: MAX_DROPPED_ENTRY_COUNT }, (_, index) =>
+      directoryEntry(`empty-${index}`, [], 1, () => {
+        openedDirectories += 1;
+      }),
+    );
+    renderImportPage();
+
+    fireEvent.drop(screen.getByRole('group', { name: 'File import drop area' }), {
+      dataTransfer: directoryDataTransfer(directoryEntry('Health Export', emptyDirectories)),
+    });
+
+    expect(
+      await screen.findByText(
+        'This folder exceeds the safe browser traversal limit. Use folder path import instead.',
+      ),
+    ).toBeTruthy();
+    expect(openedDirectories).toBe(MAX_DROPPED_ENTRY_COUNT - 1);
+    expect(screen.queryByRole('heading', { name: /Selected files/ })).toBeNull();
+  });
+
+  it('reads normal nested directory batches sequentially', async () => {
+    let activeReads = 0;
+    let peakActiveReads = 0;
+    const deferredEntry = (file: File): FileSystemFileEntry =>
+      ({
+        ...fileEntry(file),
+        file: (successCallback: FileCallback) => {
+          activeReads += 1;
+          peakActiveReads = Math.max(peakActiveReads, activeReads);
+          queueMicrotask(() => {
+            activeReads -= 1;
+            successCallback(file);
+          });
+        },
+      }) as FileSystemFileEntry;
+    const files = [syntheticFile('nested-a.csv'), syntheticFile('nested-b.gpx')];
+    const nested = directoryEntry('nested', files.map(deferredEntry), 1);
+    renderImportPage();
+
+    fireEvent.drop(screen.getByRole('group', { name: 'File import drop area' }), {
+      dataTransfer: directoryDataTransfer(directoryEntry('Health Export', [nested])),
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Selected files (2)' })).toBeTruthy();
+    expect(screen.getByText('nested-a.csv')).toBeTruthy();
+    expect(screen.getByText('nested-b.gpx')).toBeTruthy();
+    expect(peakActiveReads).toBe(1);
   });
 });

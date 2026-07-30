@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { DEFAULT_IMPORT_UPLOAD_LIMITS } from '@velograph/shared/import-limits';
 import {
   ApiError,
   api,
@@ -25,6 +26,8 @@ import { resolveDroppedFolderPath, type DroppedFolderFile } from './import-folde
 import { requestCurrentFolderPreview } from './import-preview.ts';
 
 const ACCEPT = '.csv,.gpx,.zip';
+export const MAX_DROPPED_DIRECTORY_DEPTH = 32;
+export const MAX_DROPPED_ENTRY_COUNT = DEFAULT_IMPORT_UPLOAD_LIMITS.maxFiles * 4;
 const STALE_FOLDER_PREVIEW_CODES = new Set([
   'path_changed',
   'file_changed',
@@ -67,58 +70,97 @@ function uploadErrorMessage(err: unknown): string {
   return 'Import failed. Check that the local API is running, then try again.';
 }
 
+type DroppedEntryTraversalErrorCode =
+  | 'import_file_count_exceeded'
+  | 'import_directory_entry_count_exceeded'
+  | 'import_directory_depth_exceeded';
+
+class DroppedEntryTraversalError extends Error {
+  constructor(readonly code: DroppedEntryTraversalErrorCode) {
+    super(code);
+    this.name = 'DroppedEntryTraversalError';
+  }
+}
+
+interface DroppedEntryTraversalState {
+  files: DroppedFolderFile[];
+  visitedEntries: number;
+  visitedFiles: number;
+}
+
+function readFileEntry(entry: FileSystemFileEntry): Promise<File | null> {
+  return new Promise((resolve) => {
+    entry.file(resolve, () => resolve(null));
+  });
+}
+
+function readDirectoryBatch(reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> {
+  return new Promise((resolve) => {
+    reader.readEntries(resolve, () => resolve([]));
+  });
+}
+
 /**
- * Recursively read every file entry under a dropped `FileSystemEntry`, while
- * constructing a relative path from entry names. The virtual `entry.fullPath`
- * is intentionally ignored because it is not an OS path.
+ * Sequentially read bounded file entries under a dropped `FileSystemEntry`.
+ * One traversal state is shared across every dropped root, so neither directory
+ * batches nor top-level entries can fan out beyond the browser-upload limit.
+ * The virtual `entry.fullPath` is intentionally ignored because it is not an
+ * OS path.
  */
-function readEntryFiles(
+async function collectEntryFiles(
   entry: FileSystemEntry,
+  state: DroppedEntryTraversalState,
   relativeParent = '',
   droppedRoot = true,
-): Promise<DroppedFolderFile[]> {
-  return new Promise((resolve) => {
-    if (entry.isFile) {
-      (entry as FileSystemFileEntry).file(
-        (file) =>
-          resolve([
-            {
-              file,
-              relativePath: [relativeParent, entry.name].filter(Boolean).join('/'),
-            },
-          ]),
-        () => resolve([]),
-      );
-      return;
+  depth = 0,
+): Promise<void> {
+  if (state.visitedEntries >= MAX_DROPPED_ENTRY_COUNT) {
+    throw new DroppedEntryTraversalError('import_directory_entry_count_exceeded');
+  }
+  state.visitedEntries += 1;
+
+  if (entry.isFile) {
+    if (state.visitedFiles >= DEFAULT_IMPORT_UPLOAD_LIMITS.maxFiles) {
+      throw new DroppedEntryTraversalError('import_file_count_exceeded');
     }
-    if (!entry.isDirectory) {
-      resolve([]);
-      return;
+    state.visitedFiles += 1;
+    const file = await readFileEntry(entry as FileSystemFileEntry);
+    if (file) {
+      state.files.push({
+        file,
+        relativePath: [relativeParent, entry.name].filter(Boolean).join('/'),
+      });
     }
-    const childParent = droppedRoot
-      ? relativeParent
-      : [relativeParent, entry.name].filter(Boolean).join('/');
-    const reader = (entry as FileSystemDirectoryEntry).createReader();
-    const collected: DroppedFolderFile[] = [];
-    const readBatch = () => {
-      reader.readEntries(
-        (entries) => {
-          if (entries.length === 0) {
-            resolve(collected);
-            return;
-          }
-          Promise.all(entries.map((child) => readEntryFiles(child, childParent, false)))
-            .then((groups) => {
-              for (const g of groups) collected.push(...g);
-              readBatch(); // a directory reader may require several calls to exhaust all entries
-            })
-            .catch(() => resolve(collected));
-        },
-        () => resolve(collected),
-      );
-    };
-    readBatch();
-  });
+    return;
+  }
+  if (!entry.isDirectory) return;
+  if (depth > MAX_DROPPED_DIRECTORY_DEPTH) {
+    throw new DroppedEntryTraversalError('import_directory_depth_exceeded');
+  }
+
+  const childParent = droppedRoot
+    ? relativeParent
+    : [relativeParent, entry.name].filter(Boolean).join('/');
+  const reader = (entry as FileSystemDirectoryEntry).createReader();
+  while (true) {
+    const entries = await readDirectoryBatch(reader);
+    if (entries.length === 0) return;
+    for (const child of entries) {
+      await collectEntryFiles(child, state, childParent, false, depth + 1);
+    }
+  }
+}
+
+async function readDroppedEntryFiles(entries: readonly FileSystemEntry[]) {
+  const state: DroppedEntryTraversalState = {
+    files: [],
+    visitedEntries: 0,
+    visitedFiles: 0,
+  };
+  for (const entry of entries) {
+    await collectEntryFiles(entry, state);
+  }
+  return state.files;
 }
 
 /** Import screen (IMP-001, journey 7.2): inventory, confirm, value-free result. */
@@ -190,8 +232,21 @@ export function ImportPage() {
         ? [...items].map((it) => it.webkitGetAsEntry?.()).filter((x): x is FileSystemEntry => !!x)
         : [];
     if (entries.length > 0 && entries.some((en) => en.isDirectory)) {
-      const groups = await Promise.all(entries.map((entry) => readEntryFiles(entry)));
-      const droppedFiles = groups.flat();
+      let droppedFiles: DroppedFolderFile[];
+      try {
+        droppedFiles = await readDroppedEntryFiles(entries);
+      } catch (err) {
+        if (err instanceof DroppedEntryTraversalError) {
+          setDropNotice(null);
+          setError(
+            err.code === 'import_file_count_exceeded'
+              ? selectionErrorMessage(err.code)
+              : 'This folder exceeds the safe browser traversal limit. Use folder path import instead.',
+          );
+          return;
+        }
+        throw err;
+      }
       const folderPath =
         entries.length === 1 && entries[0]!.isDirectory
           ? resolveDroppedFolderPath(droppedFiles)
