@@ -475,6 +475,8 @@ Failed validation displays no polished narrative as if it were trustworthy. The 
 - Privacy impact
 - Data-handling changes
 - Dependency and licence impact
+- Contribution-licensing status; significant outside contributions require a signed CLA on
+  file before merge
 - Explicit attestation that no real health/location/credential data is present
 
 ### 16.3 Required merge gates
@@ -490,6 +492,9 @@ Failed validation displays no polished narrative as if it were trustworthy. The 
 - Privacy/data-leak scan
 - Secret scan
 - Dependency and licence policy
+- Maintainer verification that any significant outside contribution has a signed CLA on
+  file; until an execution-ready CLA process exists, such contributions are ineligible for
+  merge
 - Build for supported architectures
 - At least one independent review
 
@@ -501,7 +506,7 @@ The repository must contain an `AGENTS.md` describing architecture boundaries, s
 
 ### Phase 0 — Privacy and repository foundation
 
-- Licence decision and repository publication checklist
+- `AGPL-3.0-only` licence publication, ownership notice, and repository publication checklist
 - Protected branch and PR template
 - `AGENTS.md`
 - Ignore rules, synthetic fixture generator, privacy scanner, CI skeleton
@@ -583,11 +588,16 @@ Success is measured locally and voluntarily; Velograph does not phone home.
 - A backup can be moved between two clean supported installations without path edits.
 - New contributors can implement a scoped issue through the documented PR workflow without access to private data.
 
-## 20. Product decisions still required
+## 20. Product decisions
 
-These decisions do not block Phase 0 or the deterministic core, but must be resolved before public v1:
+These decisions do not block Phase 0 or the deterministic core, but the open items must be
+resolved before public v1:
 
-1. Open-source licence: Apache-2.0 is recommended for broad reuse and an explicit patent grant; AGPL-3.0 is the alternative if hosted modifications must remain open.
+1. **Resolved 2026-07-30 — open-source licence:** Velograph uses
+   `AGPL-3.0-only`. Junior Williams Consulting Inc. retains ownership of the original core
+   code. Before accepting significant outside contributions, the company will adopt a CLA
+   that lets contributors retain their copyright while granting the company the right to
+   relicense their contributions.
 2. Whether Windows is a v1 supported runtime or a post-v1 target.
 3. The default moving-speed threshold and route accuracy/outlier limits.
 4. Whether locally entered goals and subjective recovery notes are included in v1 or deferred.

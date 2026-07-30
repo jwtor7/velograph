@@ -23,12 +23,13 @@ put restricted data into a release archive merely to make the scanner pass.
 History, artifact, and container entries larger than 64 MiB fail closed instead
 of being skipped or buffered without a limit.
 
-The licence gate is a separate, equally blocking release check. It validates
-the exact runtime dependency closure, installed SPDX metadata and licence
-texts, Vite/SQLite embedded-component evidence, and the generated canonical
-notice. `package:web` records package provenance and hashes every emitted web
-file before placing and verifying that notice. The production API gate runs
-inside the Docker build after pruning.
+The licence gate is a separate, equally blocking release check. It hash-pins
+Velograph's canonical `AGPL-3.0-only` text, verifies all workspace declarations and the
+ownership notice, validates the exact runtime dependency closure, installed SPDX metadata
+and licence texts, Vite/SQLite embedded-component evidence, and the generated canonical
+third-party notice. `package:web` records package provenance and hashes every emitted web
+file before placing and separately verifying the project licence, ownership notice, and
+third-party notice. The production API gate runs inside the Docker build after pruning.
 
 The native-image command streams layers from `docker image save` without
 extracting their paths into the checkout. It scans the application-owned
@@ -75,10 +76,12 @@ maintainer reviews its digests and SBOM.
 Both the native-image and exact OCI audits reconstruct final layer state,
 including whiteouts and file/directory replacements. They re-verify the final
 web artifact's complete hashed file set and package provenance, require the
-native Node and `tini` notices, and require the canonical notice bytes at
+native Node and `tini` notices, and require the canonical third-party notice bytes at
 `/app/api/THIRD_PARTY_NOTICES.md` and
-`/app/api/dist/web/THIRD_PARTY_NOTICES.md`. A notice that existed only in an
-overwritten layer does not pass.
+`/app/api/dist/web/THIRD_PARTY_NOTICES.md`. They separately require exact Velograph
+`LICENSE` and `COPYRIGHT.md` bytes at `/app/api`, `/app/api/dist`, and
+`/app/api/dist/web`; Node's `/usr/local/LICENSE` cannot satisfy that application licence
+gate. Evidence that existed only in an overwritten layer does not pass.
 
 ## Operator checklist
 

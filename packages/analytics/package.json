@@ -2,6 +2,7 @@
   "name": "@velograph/analytics",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "description": "Pure deterministic analytics engine — no framework, db, network, or LLM deps",
   "engines": {

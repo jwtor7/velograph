@@ -19,6 +19,8 @@ import {
 
 const temporaryDirectories = [];
 const canonicalNotices = readFileSync(join(process.cwd(), 'THIRD_PARTY_NOTICES.md'));
+const canonicalProjectLicense = readFileSync(join(process.cwd(), 'LICENSE'));
+const canonicalProjectCopyright = readFileSync(join(process.cwd(), 'COPYRIGHT.md'));
 const thirdPartyManifest = JSON.parse(
   readFileSync(join(process.cwd(), 'third-party-licenses.json'), 'utf8'),
 );
@@ -46,7 +48,10 @@ function jsonBlob(layout, value, mediaType) {
   return writeBlob(layout, Buffer.from(`${JSON.stringify(value)}\n`), mediaType);
 }
 
-function writeSyntheticWebArtifact(root) {
+function writeSyntheticWebArtifact(
+  root,
+  { includeProjectLicense = true, includeProjectCopyright = true } = {},
+) {
   const webRoot = join(root, 'app', 'api', 'dist', 'web');
   const script = Buffer.from('const relList = {}; relList.supports("modulepreload");\n');
   const html = Buffer.from('<main>Synthetic container artifact</main>\n');
@@ -65,6 +70,12 @@ function writeSyntheticWebArtifact(root) {
   writeFileSync(join(webRoot, 'assets', 'index.js'), script);
   writeFileSync(join(webRoot, 'assets', 'synthetic-font.woff2'), font);
   writeFileSync(join(webRoot, 'index.html'), html);
+  if (includeProjectLicense) {
+    writeFileSync(join(webRoot, 'LICENSE'), canonicalProjectLicense);
+  }
+  if (includeProjectCopyright) {
+    writeFileSync(join(webRoot, 'COPYRIGHT.md'), canonicalProjectCopyright);
+  }
 
   const files = [
     {
@@ -107,6 +118,8 @@ function writeSyntheticWebArtifact(root) {
 function createSyntheticOciArchive({
   omitArmProvenance = false,
   omitWebNotices = false,
+  omitProjectLicense = false,
+  omitProjectCopyright = false,
   omitSystemNotices = false,
   whiteoutWebNotices = false,
   whiteoutPath,
@@ -116,6 +129,7 @@ function createSyntheticOciArchive({
   imageIndexDepth = 1,
   attestationPaddingBytes = 0,
   attestationLeakMarker = false,
+  includeExtraPlatformWithoutLegalFiles = false,
 } = {}) {
   const directory = makeArtifactDirectory();
   const layout = join(directory, 'layout');
@@ -125,9 +139,20 @@ function createSyntheticOciArchive({
 
   const layerRoot = join(directory, 'layer-root');
   mkdirSync(join(layerRoot, 'app', 'api'), { recursive: true });
-  const webRoot = writeSyntheticWebArtifact(layerRoot);
+  const webRoot = writeSyntheticWebArtifact(layerRoot, {
+    includeProjectLicense: !omitProjectLicense,
+    includeProjectCopyright: !omitProjectCopyright,
+  });
   writeFileSync(join(layerRoot, 'app', 'api', 'release.txt'), 'synthetic container payload\n');
   writeFileSync(join(layerRoot, 'app', 'api', 'THIRD_PARTY_NOTICES.md'), canonicalNotices);
+  if (!omitProjectLicense) {
+    writeFileSync(join(layerRoot, 'app', 'api', 'LICENSE'), canonicalProjectLicense);
+    writeFileSync(join(layerRoot, 'app', 'api', 'dist', 'LICENSE'), canonicalProjectLicense);
+  }
+  if (!omitProjectCopyright) {
+    writeFileSync(join(layerRoot, 'app', 'api', 'COPYRIGHT.md'), canonicalProjectCopyright);
+    writeFileSync(join(layerRoot, 'app', 'api', 'dist', 'COPYRIGHT.md'), canonicalProjectCopyright);
+  }
   if (!omitWebNotices) {
     writeFileSync(join(webRoot, 'THIRD_PARTY_NOTICES.md'), canonicalNotices);
   }
@@ -264,6 +289,21 @@ function createSyntheticOciArchive({
     });
   }
 
+  if (includeExtraPlatformWithoutLegalFiles) {
+    const architecture = 'ppc64le';
+    const config = jsonBlob(
+      layout,
+      { architecture, os: 'linux' },
+      'application/vnd.oci.image.config.v1+json',
+    );
+    const manifest = jsonBlob(
+      layout,
+      { schemaVersion: 2, config, layers: [] },
+      'application/vnd.oci.image.manifest.v1+json',
+    );
+    descriptors.push({ ...manifest, platform: { architecture, os: 'linux' } });
+  }
+
   let rootDescriptors = descriptors;
   for (let depth = 0; depth < imageIndexDepth; depth += 1) {
     rootDescriptors = [
@@ -344,6 +384,16 @@ describe('release privacy artifact audit', () => {
     ).resolves.toBe(0);
   });
 
+  it('rejects an extra image platform that omits the required legal files', async () => {
+    await expect(
+      auditOciArchive(
+        createSyntheticOciArchive({
+          includeExtraPlatformWithoutLegalFiles: true,
+        }),
+      ),
+    ).rejects.toThrow('oci_unexpected_platform');
+  });
+
   it('still scans oversized attestations for forbidden content', async () => {
     const messages = [];
     const error = vi
@@ -391,6 +441,18 @@ describe('release privacy artifact audit', () => {
     await expect(
       auditOciArchive(createSyntheticOciArchive({ omitWebNotices: true })),
     ).rejects.toThrow('container_third_party_notices_missing');
+  });
+
+  it('requires the exact Velograph project licence in each platform image', async () => {
+    await expect(
+      auditOciArchive(createSyntheticOciArchive({ omitProjectLicense: true })),
+    ).rejects.toThrow('container_project_license_missing');
+  });
+
+  it('requires the exact Velograph ownership notice in each platform image', async () => {
+    await expect(
+      auditOciArchive(createSyntheticOciArchive({ omitProjectCopyright: true })),
+    ).rejects.toThrow('container_project_copyright_missing');
   });
 
   it('requires native Node and tini notice files in each platform image', async () => {
@@ -448,6 +510,13 @@ describe('release privacy artifact audit', () => {
     mkdirSync(dirname(addon), { recursive: true });
     writeFileSync(addon, Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00]));
     writeFileSync(join(directory, 'THIRD_PARTY_NOTICES.md'), canonicalNotices);
+    mkdirSync(join(directory, 'dist', 'web'), { recursive: true });
+    for (const relativePath of ['LICENSE', 'dist/LICENSE', 'dist/web/LICENSE']) {
+      writeFileSync(join(directory, relativePath), canonicalProjectLicense);
+    }
+    for (const relativePath of ['COPYRIGHT.md', 'dist/COPYRIGHT.md', 'dist/web/COPYRIGHT.md']) {
+      writeFileSync(join(directory, relativePath), canonicalProjectCopyright);
+    }
 
     expect(auditProductionDeploy(directory)).toBe(0);
   });

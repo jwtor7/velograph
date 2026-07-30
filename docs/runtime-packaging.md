@@ -20,17 +20,19 @@ anything outside that external allowlist survived.
 
 Both packages include an exact copy of every ordered SQL migration. The build requires the
 canonical `0001` through `0004` files, rejects extra or missing output migrations, and verifies
-byte parity with `packages/db/migrations`. The canonical root `THIRD_PARTY_NOTICES.md` is
-mandatory and is copied byte-for-byte into each package. The project `LICENSE` is never selected
-as a substitute.
+byte parity with `packages/db/migrations`. The canonical root `LICENSE`, `COPYRIGHT.md`, and
+`THIRD_PARTY_NOTICES.md` are mandatory and are copied byte-for-byte into each package. The
+project licence, ownership notice, and third-party notices are verified as separate evidence
+and cannot substitute for one another.
 
 The API build, prepack, and local lifecycle commands all call one canonical Node orchestrator.
-It runs `package-web.mjs`, stages the web licence evidence and notice, then builds the API package
+It runs `package-web.mjs`, stages the web project licence, ownership notice, and third-party
+notice, then builds the API package
 without recursively resolving a package-manager shim. The resulting complete `dist` tree is copied
 into `apps/api/dist/web`. That tree includes
 `third-party-module-evidence.json`, hashes for every emitted asset, and the exact canonical
-notice. It is authoritative in runtime packages and containers; the source-tree fallback exists
-only for development compatibility.
+project licence, ownership notice, and third-party notice. It is authoritative in runtime
+packages and containers; the source-tree fallback exists only for development compatibility.
 
 pnpm is a pinned build-time prerequisite, not a production runtime dependency. The final container
 starts the API and ingress relay directly with Node under `tini`; it contains no pnpm invocation.
@@ -42,7 +44,8 @@ pnpm runtime:build
 pnpm runtime:verify-artifacts
 ```
 
-The artifact verifier checks entry points, esbuild metadata, migration and notice parity,
+The artifact verifier checks entry points, esbuild metadata, migration, project-licence,
+ownership-notice, and third-party-notice parity,
 the complete web module/hash/licence evidence, symlinks, ignore-rule visibility, and privacy
 for every generated file, including assets that are not yet tracked.
 

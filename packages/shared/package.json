@@ -2,6 +2,7 @@
   "name": "@velograph/shared",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "description": "Canonical types, units, and helpers shared across Velograph packages",
   "engines": {

@@ -1,8 +1,8 @@
 # Third-party licence and notices gate
 
-Velograph does not currently have a project licence. The third-party notices
-described here preserve upstream terms for distributed dependencies; they do
-not grant any right to use Velograph itself.
+Velograph's original core code is licensed under `AGPL-3.0-only`; see
+[`LICENSE`](../LICENSE). The third-party notices described here preserve upstream terms for
+distributed dependencies and do not alter the Velograph project licence.
 
 ## Canonical evidence
 
@@ -40,11 +40,11 @@ Run the workspace gate after every dependency or lockfile change:
 pnpm license:check
 ```
 
-It fails when a runtime dependency is unreviewed or missing, a version or SPDX
-declaration changes, a selected licence is outside the allowlist, an installed
-or checked licence text changes, embedded evidence drifts, the canonical
-notice is stale, or a project-level `LICENSE`/root `package.json` licence
-appears without a policy change.
+It fails when the canonical project `LICENSE` or any workspace
+`AGPL-3.0-only` declaration drifts, a runtime dependency is unreviewed or missing, a version
+or SPDX declaration changes, a selected third-party licence is outside the allowlist, an
+installed or checked licence text changes, embedded evidence drifts, or the canonical notice
+is stale.
 
 Build a distributable browser artifact with:
 
@@ -52,21 +52,23 @@ Build a distributable browser artifact with:
 pnpm package:web
 ```
 
-That command builds the client, copies the exact canonical notice into
-`apps/web/dist`, and verifies the notice, exact output hashes, package-module
-provenance, locally bundled font provenance, and Vite's injected-code
-evidence. The container build separately copies the same notice into the API
+That command builds the client, copies the exact project `LICENSE`, `COPYRIGHT.md`, and
+canonical notice into `apps/web/dist`, and verifies the project licence, ownership notice,
+third-party notice, exact output hashes, package-module provenance, locally bundled font
+provenance, and Vite's injected-code evidence. The container build separately copies the same
+three files into the API
 deployment, follows nested package links, verifies every physically retained
 production package and the native SQLite evidence, then reconstructs the final
-web artifact from image layers and requires exact notices at both
-`/app/api/THIRD_PARTY_NOTICES.md` and
-`/app/api/dist/web/THIRD_PARTY_NOTICES.md` in each final image platform.
+web artifact from image layers and requires the exact project licence, ownership notice, and
+third-party notice at `/app/api`, `/app/api/dist`, and `/app/api/dist/web` in every final
+image platform.
 
-The canonical notice covers application-owned dependencies. The final image
-also retains the official Node distribution licence at `/usr/local/LICENSE`
-and Debian's `tini` copyright file at `/usr/share/doc/tini/copyright`; the
-image audit requires both. The pinned base digest and per-platform SBOM remain
-the inventory evidence for the rest of the operating-system layer.
+The canonical notice covers application-owned dependencies. The Velograph project licence has
+its own distinct application path and is not substituted by the official Node distribution
+licence at `/usr/local/LICENSE`. The final image also retains that Node licence and Debian's
+`tini` copyright file at `/usr/share/doc/tini/copyright`; the image audit requires all three.
+The pinned base digest and per-platform SBOM remain the inventory evidence for the rest of the
+operating-system layer.
 
 ## Reviewing a dependency change
 

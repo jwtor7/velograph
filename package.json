@@ -1,6 +1,7 @@
 {
   "name": "velograph-monorepo",
   "private": true,
+  "license": "AGPL-3.0-only",
   "version": "0.1.0",
   "description": "Velograph — local-first cycling analytics for Apple Health exports",
   "type": "module",

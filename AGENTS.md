@@ -16,7 +16,7 @@ See the root [`README.md`](README.md) Quick start for the verified install → i
 sequence. In summary: `pnpm install`, `pnpm cli:build`, then
 `pnpm velograph-import import <path>` to import rides, and `pnpm app:start` to build the web
 client and API runtime and serve it on `127.0.0.1:5123`. CI-equivalent checks include
-`pnpm test`, `pnpm lint`, `pnpm typecheck`, `pnpm format`, `pnpm runtime:build`,
+`pnpm test`, `pnpm lint`, `pnpm typecheck`, `pnpm format`, `pnpm license:check`, `pnpm runtime:build`,
 `pnpm runtime:verify-artifacts`, the two package verifiers, and
 `node scripts/privacy-scan.mjs --all`. Run only declared scripts.
 
@@ -47,6 +47,12 @@ No test framework or numeric coverage threshold is selected. Add proportionate u
 ## Commit & Pull Request Guidelines
 
 Start from a typed, prioritized issue; reference relevant PRD requirement IDs; and use `<agent>/<issue>-<short-description>` branches. Write imperative, issue-linked squash titles. Pull requests must state scope, tests and evidence, privacy/data-handling impact, dependency/licence impact, and migration rollback notes. Include synthetic-only UI screenshots and attest that no real health, location, account, credential, or user data is present. Never push directly or force-push to `main`.
+
+Velograph is licensed under `AGPL-3.0-only`, and Junior Williams Consulting Inc. retains
+ownership of the original core code. Follow [`CONTRIBUTING.md`](CONTRIBUTING.md): no
+significant outside contribution may be merged until the required CLA is signed and recorded
+privately. Never put signed agreements or contributor PII in the repository, issues, or pull
+requests.
 
 Any PR that changes behaviour must update `CHANGELOG.md` under `## [Unreleased]` in the same commit. CI's "Changelog enforcement" job fails a PR that touches `packages/**`, `apps/**`, or `scripts/**` without a `CHANGELOG.md` change; for a genuinely non-behavioural change (docs typo, formatting, comment/test-only edit), add a `Changelog-Exempt: <reason>` trailer to a commit message instead of a changelog entry. Milestones bump the version — root and every workspace package move together, in lockstep — and get a git tag. See `CHANGELOG.md` and `docs/releasing.md` for the full procedure.
 

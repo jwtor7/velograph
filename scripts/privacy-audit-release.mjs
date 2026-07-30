@@ -35,7 +35,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 import { createGunzip } from 'node:zlib';
 import { scanFile } from './privacy-scan.mjs';
-import { verifyWebArtifactContents } from './third-party-license-gate.mjs';
+import {
+  loadCanonicalProjectCopyright,
+  loadCanonicalProjectLicense,
+  verifyWebArtifactContents,
+} from './third-party-license-gate.mjs';
 
 export const MAX_AUDIT_ENTRY_BYTES = 64 * 1024 * 1024;
 export const MAX_OCI_ATTESTATION_BYTES = 16 * 1024 * 1024;
@@ -45,6 +49,16 @@ const CANONICAL_NOTICES_PATH = join(REPOSITORY_ROOT, 'THIRD_PARTY_NOTICES.md');
 export const REQUIRED_CONTAINER_NOTICE_PATHS = [
   'app/api/THIRD_PARTY_NOTICES.md',
   'app/api/dist/web/THIRD_PARTY_NOTICES.md',
+];
+export const REQUIRED_CONTAINER_PROJECT_LICENSE_PATHS = [
+  'app/api/LICENSE',
+  'app/api/dist/LICENSE',
+  'app/api/dist/web/LICENSE',
+];
+export const REQUIRED_CONTAINER_PROJECT_COPYRIGHT_PATHS = [
+  'app/api/COPYRIGHT.md',
+  'app/api/dist/COPYRIGHT.md',
+  'app/api/dist/web/COPYRIGHT.md',
 ];
 export const REQUIRED_CONTAINER_SYSTEM_NOTICE_PATHS = [
   'usr/local/LICENSE',
@@ -91,6 +105,22 @@ function canonicalNotices() {
     fail('canonical_notices_unreadable');
   }
   return content;
+}
+
+function canonicalProjectLicense() {
+  try {
+    return loadCanonicalProjectLicense(REPOSITORY_ROOT);
+  } catch {
+    fail('canonical_project_license_invalid');
+  }
+}
+
+function canonicalProjectCopyright() {
+  try {
+    return loadCanonicalProjectCopyright(REPOSITORY_ROOT);
+  } catch {
+    fail('canonical_project_copyright_invalid');
+  }
 }
 
 export function assertAuditableSize(size, code = 'entry_exceeds_64_mib') {
@@ -319,6 +349,33 @@ export function auditProductionDeploy(path) {
   if (!packagedNotices.equals(canonicalNotices())) {
     fail('production_deploy_notices_mismatch');
   }
+  for (const { filename, expected, code } of [
+    { filename: 'LICENSE', expected: canonicalProjectLicense(), code: 'project_license' },
+    {
+      filename: 'COPYRIGHT.md',
+      expected: canonicalProjectCopyright(),
+      code: 'project_copyright',
+    },
+  ]) {
+    for (const relativePath of [filename, `dist/${filename}`, `dist/web/${filename}`]) {
+      let packagedProjectFile;
+      try {
+        const artifactPath = join(root, relativePath);
+        const stat = lstatSync(artifactPath);
+        if (!stat.isFile() || stat.isSymbolicLink()) {
+          fail(`production_deploy_${code}_invalid`);
+        }
+        assertAuditableSize(stat.size, `production_deploy_${code}_exceeds_64_mib`);
+        packagedProjectFile = readFileSync(artifactPath);
+      } catch (error) {
+        if (error instanceof AuditFailure) throw error;
+        fail(`production_deploy_${code}_missing`);
+      }
+      if (!packagedProjectFile.equals(expected)) {
+        fail(`production_deploy_${code}_mismatch`);
+      }
+    }
+  }
   const violations = [];
   for (const file of files) {
     const deploymentPath = relative(root, file).replaceAll('\\', '/');
@@ -439,6 +496,8 @@ function isApplicationEntry(path) {
 function shouldTrackContainerEntry(path) {
   return (
     REQUIRED_CONTAINER_NOTICE_PATHS.includes(path) ||
+    REQUIRED_CONTAINER_PROJECT_LICENSE_PATHS.includes(path) ||
+    REQUIRED_CONTAINER_PROJECT_COPYRIGHT_PATHS.includes(path) ||
     REQUIRED_CONTAINER_SYSTEM_NOTICE_PATHS.includes(path) ||
     path.startsWith(WEB_ARTIFACT_PREFIX)
   );
@@ -510,6 +569,18 @@ function verifyContainerNotices(containerState) {
     const content = containerState.get(path);
     if (!content) fail('container_third_party_notices_missing');
     if (!content.equals(expected)) fail('container_third_party_notices_mismatch');
+  }
+  const expectedProjectLicense = canonicalProjectLicense();
+  for (const path of REQUIRED_CONTAINER_PROJECT_LICENSE_PATHS) {
+    const content = containerState.get(path);
+    if (!content) fail('container_project_license_missing');
+    if (!content.equals(expectedProjectLicense)) fail('container_project_license_mismatch');
+  }
+  const expectedProjectCopyright = canonicalProjectCopyright();
+  for (const path of REQUIRED_CONTAINER_PROJECT_COPYRIGHT_PATHS) {
+    const content = containerState.get(path);
+    if (!content) fail('container_project_copyright_missing');
+    if (!content.equals(expectedProjectCopyright)) fail('container_project_copyright_mismatch');
   }
   for (const path of REQUIRED_CONTAINER_SYSTEM_NOTICE_PATHS) {
     if (!containerState.get(path)?.length) fail('container_system_notices_missing');
@@ -872,6 +943,9 @@ export async function auditOciArchive(archive) {
       noticesByPlatform.set(platform, noticeState);
     }
 
+    for (const platform of imagesByPlatform.keys()) {
+      if (!TARGET_PLATFORMS.includes(platform)) fail('oci_unexpected_platform');
+    }
     for (const platform of TARGET_PLATFORMS) {
       const subject = imagesByPlatform.get(platform);
       if (!subject) fail(`oci_missing_${platform.replace('/', '_')}`);

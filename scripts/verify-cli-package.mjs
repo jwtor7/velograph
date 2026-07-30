@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertRuntimeDependencyContract } from './runtime-package-contract.mjs';
+import { PROJECT_LICENSE_SPDX } from './third-party-license-gate.mjs';
 
 const repositoryRoot = process.cwd();
 const sandbox = await mkdtemp(join(tmpdir(), 'velograph-cli-package-'));
@@ -342,6 +343,7 @@ try {
   if (
     packagedManifest.private !== true ||
     packagedManifest.bin?.['velograph-import'] !== './dist/velograph-import.mjs' ||
+    packagedManifest.license !== PROJECT_LICENSE_SPDX ||
     packagedManifest.engines?.node !== '^20.19.0 || >=22.12.0 <27'
   ) {
     throw new Error('installed CLI manifest does not target the supported built runtime');
@@ -357,13 +359,31 @@ try {
 
   await verifyMigrationCopies(installedPackageDirectory);
   const canonicalNotice = join(repositoryRoot, 'THIRD_PARTY_NOTICES.md');
-  const [canonical, installed] = await Promise.all([
+  const canonicalLicense = join(repositoryRoot, 'LICENSE');
+  const canonicalCopyright = join(repositoryRoot, 'COPYRIGHT.md');
+  const [
+    canonicalNoticeBytes,
+    installedNotice,
+    canonicalLicenseBytes,
+    installedLicense,
+    canonicalCopyrightBytes,
+    installedCopyright,
+  ] = await Promise.all([
     readFile(canonicalNotice),
     readFile(join(installedPackageDirectory, 'dist', 'THIRD_PARTY_NOTICES.md')),
+    readFile(canonicalLicense),
+    readFile(join(installedPackageDirectory, 'dist', 'LICENSE')),
+    readFile(canonicalCopyright),
+    readFile(join(installedPackageDirectory, 'dist', 'COPYRIGHT.md')),
   ]);
-  if (!canonical.equals(installed)) throw new Error('installed CLI notice differs from canonical');
-  if (existsSync(join(installedPackageDirectory, 'dist', 'LICENSE'))) {
-    throw new Error('installed CLI substituted the project LICENSE for third-party notices');
+  if (!canonicalNoticeBytes.equals(installedNotice)) {
+    throw new Error('installed CLI notice differs from canonical');
+  }
+  if (!canonicalLicenseBytes.equals(installedLicense)) {
+    throw new Error('installed CLI project license differs from canonical');
+  }
+  if (!canonicalCopyrightBytes.equals(installedCopyright)) {
+    throw new Error('installed CLI project copyright notice differs from canonical');
   }
 
   const launcher = join(installedPackageDirectory, 'dist', 'velograph-import.mjs');

@@ -1,7 +1,9 @@
 # Third-party notices
 
-This document covers third-party components distributed in Velograph application-owned runtime artifacts.
-**It does not grant a licence to Velograph itself. No licence for Velograph has been selected.**
+Velograph's original core code is licensed under `AGPL-3.0-only`; see
+[`LICENSE`](LICENSE). This document covers third-party components distributed in
+Velograph application-owned runtime artifacts. Those components remain under their own
+licences and copyright ownership.
 
 The package inventory, SPDX declarations, and normalized licence texts are verified by
 `scripts/third-party-license-gate.mjs` against installed production packages and the

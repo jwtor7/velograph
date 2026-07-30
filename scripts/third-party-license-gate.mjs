@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Fail-closed third-party runtime licence and notice verification.
+ * Fail-closed project and third-party runtime licence verification.
  *
- * This gate covers dependencies that are shipped in the built web client,
- * retained API production deployment, or CLI runtime package. It deliberately
- * does not select or imply a licence for Velograph itself.
+ * This gate verifies Velograph's canonical AGPL licence and workspace metadata,
+ * plus dependencies shipped in the built web client, retained API production
+ * deployment, or CLI runtime package.
  */
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -27,6 +27,15 @@ export const REPOSITORY_ROOT = join(scriptDirectory, '..');
 export const MANIFEST_PATH = join(REPOSITORY_ROOT, 'third-party-licenses.json');
 export const NOTICES_PATH = join(REPOSITORY_ROOT, 'THIRD_PARTY_NOTICES.md');
 export const LICENSE_TEXT_DIRECTORY = join(REPOSITORY_ROOT, 'third_party_licenses');
+export const PROJECT_LICENSE_SPDX = 'AGPL-3.0-only';
+export const PROJECT_LICENSE_FILE = 'LICENSE';
+export const PROJECT_COPYRIGHT_FILE = 'COPYRIGHT.md';
+export const PROJECT_LICENSE_SHA256 =
+  'd8a6cc31abc16b6748c7a21f21611f5a1ec33f67d22ca23d7da1c19b95496bee';
+export const PROJECT_LICENSE_BYTES = 34_020;
+export const PROJECT_COPYRIGHT_SHA256 =
+  '52f9319813ce2145cb22018ce0f7a1944d354b20947df5b3bd5a186c65e8ee46';
+export const PROJECT_COPYRIGHT_BYTES = 1_071;
 
 const APPROVED_SELECTED_LICENSES = new Set([
   'Apache-2.0',
@@ -41,6 +50,8 @@ const FORBIDDEN_LICENSE = /\b(?:A?GPL|LGPL|SSPL|BUSL|Commons-Clause|CC-BY-NC)\b/
 const VALID_SCOPES = new Set(['api', 'cli', 'web']);
 const MAX_LICENSE_BYTES = 128 * 1024;
 const MAX_ARTIFACT_ENTRY_BYTES = 64 * 1024 * 1024;
+const MAX_PROJECT_MANIFEST_BYTES = 1024 * 1024;
+const PROJECT_WORKSPACE_DIRECTORIES = ['apps', 'packages'];
 const WEB_ARTIFACT_EVIDENCE_FILE = 'third-party-module-evidence.json';
 
 export class LicenseGateFailure extends Error {
@@ -820,8 +831,10 @@ export function renderNotices(manifest, texts) {
   const lines = [
     '# Third-party notices',
     '',
-    'This document covers third-party components distributed in Velograph application-owned runtime artifacts.',
-    '**It does not grant a licence to Velograph itself. No licence for Velograph has been selected.**',
+    "Velograph's original core code is licensed under `AGPL-3.0-only`; see",
+    '[`LICENSE`](LICENSE). This document covers third-party components distributed in',
+    'Velograph application-owned runtime artifacts. Those components remain under their own',
+    'licences and copyright ownership.',
     '',
     'The package inventory, SPDX declarations, and normalized licence texts are verified by',
     '`scripts/third-party-license-gate.mjs` against installed production packages and the',
@@ -917,41 +930,136 @@ function verifyRecords(
   }
 }
 
-function packageManifestSelectsLicence(packageJson) {
-  return Object.hasOwn(packageJson, 'license') || Object.hasOwn(packageJson, 'licenses');
-}
-
-function conventionalLicenceFile(root) {
-  return readdirSync(root).find((name) =>
-    /^(?:licenses?|licences?|copying)(?:$|[._-])/i.test(name),
-  );
-}
-
-export function assertVelographLicenceUnselected(repositoryRoot) {
-  const rootPackage = safeReadJson(
-    join(repositoryRoot, 'package.json'),
-    'root_package_manifest_unreadable',
-  );
-  const projectLicenceFile = conventionalLicenceFile(repositoryRoot);
-  if (packageManifestSelectsLicence(rootPackage) || projectLicenceFile) {
-    fail('velograph_license_selection_out_of_scope');
+export function loadCanonicalProjectLicense(repositoryRoot = REPOSITORY_ROOT) {
+  const content = readRegularFile(join(repositoryRoot, PROJECT_LICENSE_FILE), {
+    code: 'project_license_missing_or_invalid',
+    maxBytes: MAX_LICENSE_BYTES,
+  });
+  if (content.length !== PROJECT_LICENSE_BYTES || sha256(content) !== PROJECT_LICENSE_SHA256) {
+    fail('project_license_content_mismatch');
   }
-  for (const root of workspacePackageRoots(repositoryRoot).values()) {
-    const packageJson = safeReadJson(
-      join(root, 'package.json'),
-      'workspace_package_manifest_unreadable',
-    );
-    if (packageManifestSelectsLicence(packageJson) || conventionalLicenceFile(root)) {
-      fail('velograph_license_selection_out_of_scope');
+  return content;
+}
+
+export function loadCanonicalProjectCopyright(repositoryRoot = REPOSITORY_ROOT) {
+  const content = readRegularFile(join(repositoryRoot, PROJECT_COPYRIGHT_FILE), {
+    code: 'project_copyright_missing_or_invalid',
+    maxBytes: MAX_LICENSE_BYTES,
+  });
+  if (content.length !== PROJECT_COPYRIGHT_BYTES || sha256(content) !== PROJECT_COPYRIGHT_SHA256) {
+    fail('project_copyright_content_mismatch');
+  }
+  return content;
+}
+
+export function discoverProjectManifestPaths(repositoryRoot = REPOSITORY_ROOT) {
+  let rootStat;
+  try {
+    rootStat = lstatSync(repositoryRoot);
+  } catch {
+    fail('project_workspace_root_missing_or_invalid');
+  }
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    fail('project_workspace_root_missing_or_invalid');
+  }
+
+  let root;
+  try {
+    root = realpathSync(repositoryRoot);
+  } catch {
+    fail('project_workspace_root_missing_or_invalid');
+  }
+
+  const manifestPaths = ['package.json'];
+  for (const directory of PROJECT_WORKSPACE_DIRECTORIES) {
+    const parent = join(root, directory);
+    let parentStat;
+    try {
+      parentStat = lstatSync(parent);
+    } catch {
+      fail('project_workspace_directory_missing_or_invalid', directory);
+    }
+    if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
+      fail('project_workspace_directory_missing_or_invalid', directory);
+    }
+
+    let entries;
+    try {
+      entries = readdirSync(parent, { withFileTypes: true });
+    } catch {
+      fail('project_workspace_directory_missing_or_invalid', directory);
+    }
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+
+    for (const entry of entries) {
+      // pnpm's apps/* and packages/* patterns do not select dot entries.
+      if (entry.name.startsWith('.')) continue;
+      const workspacePath = `${directory}/${entry.name}`;
+      if (!isSafeRelativePath(workspacePath)) {
+        fail('project_workspace_entry_unsafe', workspacePath);
+      }
+
+      const absoluteWorkspacePath = join(parent, entry.name);
+      let workspaceStat;
+      try {
+        workspaceStat = lstatSync(absoluteWorkspacePath);
+      } catch {
+        fail('project_workspace_entry_missing_or_invalid', workspacePath);
+      }
+      if (!workspaceStat.isDirectory() || workspaceStat.isSymbolicLink()) {
+        fail('project_workspace_entry_missing_or_invalid', workspacePath);
+      }
+      manifestPaths.push(`${workspacePath}/package.json`);
     }
   }
+  return manifestPaths;
+}
+
+// Compatibility snapshot for callers that need the canonical checkout's current
+// manifest list. Policy verification always performs a fresh discovery.
+export const PROJECT_MANIFEST_PATHS = Object.freeze(discoverProjectManifestPaths(REPOSITORY_ROOT));
+
+function readProjectPackageManifest(repositoryRoot, manifestPath) {
+  let content;
+  try {
+    content = readRegularFile(join(repositoryRoot, manifestPath), {
+      code: 'project_package_manifest_unreadable',
+      maxBytes: MAX_PROJECT_MANIFEST_BYTES,
+      encoding: 'utf8',
+    });
+  } catch {
+    fail('project_package_manifest_unreadable', manifestPath);
+  }
+  try {
+    return JSON.parse(content);
+  } catch {
+    fail('project_package_manifest_unreadable', manifestPath);
+  }
+}
+
+export function verifyProjectLicensePolicy(repositoryRoot = REPOSITORY_ROOT) {
+  const license = loadCanonicalProjectLicense(repositoryRoot);
+  loadCanonicalProjectCopyright(repositoryRoot);
+  for (const manifestPath of discoverProjectManifestPaths(repositoryRoot)) {
+    const packageJson = readProjectPackageManifest(repositoryRoot, manifestPath);
+    if (
+      !packageJson ||
+      typeof packageJson !== 'object' ||
+      Array.isArray(packageJson) ||
+      packageJson.license !== PROJECT_LICENSE_SPDX ||
+      Object.hasOwn(packageJson, 'licenses')
+    ) {
+      fail('project_package_license_mismatch', manifestPath);
+    }
+  }
+  return license;
 }
 
 export function verifyWorkspace(repositoryRoot = REPOSITORY_ROOT) {
+  verifyProjectLicensePolicy(repositoryRoot);
   const manifest = loadManifest(join(repositoryRoot, 'third-party-licenses.json'));
   const texts = loadCheckedLicenseTexts(manifest, join(repositoryRoot, 'third_party_licenses'));
   verifyCanonicalNotices(manifest, texts, join(repositoryRoot, 'THIRD_PARTY_NOTICES.md'));
-  assertVelographLicenceUnselected(repositoryRoot);
 
   const closures = collectWorkspaceClosures(repositoryRoot);
   verifyRecords(closures.webRecords, manifest, texts, 'web', closures.root);
@@ -977,6 +1085,26 @@ function verifyArtifactNotice(artifactRoot, canonicalNotices) {
     encoding: 'utf8',
   });
   if (content !== canonicalNotices) fail('artifact_third_party_notices_mismatch');
+}
+
+function verifyArtifactProjectLicense(artifactRoot, canonicalProjectLicense) {
+  const content = readRegularFile(join(artifactRoot, PROJECT_LICENSE_FILE), {
+    code: 'artifact_project_license_missing_or_invalid',
+    maxBytes: MAX_LICENSE_BYTES,
+  });
+  if (!content.equals(canonicalProjectLicense)) {
+    fail('artifact_project_license_mismatch');
+  }
+}
+
+function verifyArtifactProjectCopyright(artifactRoot, canonicalProjectCopyright) {
+  const content = readRegularFile(join(artifactRoot, PROJECT_COPYRIGHT_FILE), {
+    code: 'artifact_project_copyright_missing_or_invalid',
+    maxBytes: MAX_LICENSE_BYTES,
+  });
+  if (!content.equals(canonicalProjectCopyright)) {
+    fail('artifact_project_copyright_mismatch');
+  }
 }
 
 function verifyProductionEmbeddedEvidence(manifest, deployment) {
@@ -1116,6 +1244,8 @@ function verifyWebArtifactEvidence(manifest, contents, repositoryRoot) {
       !isSafeRelativePath(file.file) ||
       file.file === WEB_ARTIFACT_EVIDENCE_FILE ||
       file.file === 'THIRD_PARTY_NOTICES.md' ||
+      file.file === PROJECT_LICENSE_FILE ||
+      file.file === PROJECT_COPYRIGHT_FILE ||
       !/^[0-9a-f]{64}$/.test(file.sha256) ||
       !Number.isSafeInteger(file.bytes) ||
       file.bytes <= 0 ||
@@ -1152,7 +1282,13 @@ function verifyWebArtifactEvidence(manifest, contents, repositoryRoot) {
   }
 
   const actualPayloadFiles = [...contents.keys()]
-    .filter((path) => path !== WEB_ARTIFACT_EVIDENCE_FILE && path !== 'THIRD_PARTY_NOTICES.md')
+    .filter(
+      (path) =>
+        path !== WEB_ARTIFACT_EVIDENCE_FILE &&
+        path !== 'THIRD_PARTY_NOTICES.md' &&
+        path !== PROJECT_LICENSE_FILE &&
+        path !== PROJECT_COPYRIGHT_FILE,
+    )
     .sort((left, right) => left.localeCompare(right));
   if (actualPayloadFiles.join('\0') !== filePaths.join('\0')) {
     fail('artifact_file_set_mismatch');
@@ -1236,6 +1372,8 @@ function verifyWebArtifactEvidence(manifest, contents, repositoryRoot) {
 }
 
 export function verifyWebArtifactContents(contents, repositoryRoot = REPOSITORY_ROOT) {
+  const canonicalProjectLicense = loadCanonicalProjectLicense(repositoryRoot);
+  const canonicalProjectCopyright = loadCanonicalProjectCopyright(repositoryRoot);
   const manifest = loadManifest(join(repositoryRoot, 'third-party-licenses.json'));
   const texts = loadCheckedLicenseTexts(manifest, join(repositoryRoot, 'third_party_licenses'));
   const canonicalNotices = verifyCanonicalNotices(
@@ -1250,11 +1388,27 @@ export function verifyWebArtifactContents(contents, repositoryRoot = REPOSITORY_
   if (!packagedNotices.equals(Buffer.from(canonicalNotices))) {
     fail('artifact_third_party_notices_mismatch');
   }
+  const packagedProjectLicense = contents.get(PROJECT_LICENSE_FILE);
+  if (!Buffer.isBuffer(packagedProjectLicense)) {
+    fail('artifact_project_license_missing_or_invalid');
+  }
+  if (!packagedProjectLicense.equals(canonicalProjectLicense)) {
+    fail('artifact_project_license_mismatch');
+  }
+  const packagedProjectCopyright = contents.get(PROJECT_COPYRIGHT_FILE);
+  if (!Buffer.isBuffer(packagedProjectCopyright)) {
+    fail('artifact_project_copyright_missing_or_invalid');
+  }
+  if (!packagedProjectCopyright.equals(canonicalProjectCopyright)) {
+    fail('artifact_project_copyright_mismatch');
+  }
   verifyWebArtifactEvidence(manifest, contents, repositoryRoot);
   return 0;
 }
 
 export function verifyProductionDeployment(deploymentRoot, repositoryRoot = REPOSITORY_ROOT) {
+  const canonicalProjectLicense = loadCanonicalProjectLicense(repositoryRoot);
+  const canonicalProjectCopyright = loadCanonicalProjectCopyright(repositoryRoot);
   const manifest = loadManifest(join(repositoryRoot, 'third-party-licenses.json'));
   const texts = loadCheckedLicenseTexts(manifest, join(repositoryRoot, 'third_party_licenses'));
   const canonicalNotices = verifyCanonicalNotices(
@@ -1268,6 +1422,10 @@ export function verifyProductionDeployment(deploymentRoot, repositoryRoot = REPO
   });
   verifyProductionEmbeddedEvidence(manifest, deployment);
   verifyArtifactNotice(deployment.root, canonicalNotices);
+  verifyArtifactProjectLicense(deployment.root, canonicalProjectLicense);
+  verifyArtifactProjectLicense(join(deployment.root, 'dist'), canonicalProjectLicense);
+  verifyArtifactProjectCopyright(deployment.root, canonicalProjectCopyright);
+  verifyArtifactProjectCopyright(join(deployment.root, 'dist'), canonicalProjectCopyright);
   verifyWebArtifactContents(
     collectArtifactContents(join(deployment.root, 'dist', 'web')),
     repositoryRoot,
@@ -1306,14 +1464,20 @@ export function stageAndVerifyArtifact(artifactRoot, repositoryRoot = REPOSITORY
     if (error instanceof LicenseGateFailure) throw error;
     fail('artifact_unreadable');
   }
-  const destination = join(root, 'THIRD_PARTY_NOTICES.md');
-  if (existsSync(destination)) {
-    const stat = lstatSync(destination);
-    if (!stat.isFile() || stat.isSymbolicLink()) {
-      fail('artifact_third_party_notices_invalid');
+  for (const [file, invalidCode] of [
+    ['THIRD_PARTY_NOTICES.md', 'artifact_third_party_notices_invalid'],
+    [PROJECT_LICENSE_FILE, 'artifact_project_license_missing_or_invalid'],
+    [PROJECT_COPYRIGHT_FILE, 'artifact_project_copyright_missing_or_invalid'],
+  ]) {
+    const destination = join(root, file);
+    if (existsSync(destination)) {
+      const stat = lstatSync(destination);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        fail(invalidCode);
+      }
     }
+    copyFileSync(join(repositoryRoot, file), destination);
   }
-  copyFileSync(join(repositoryRoot, 'THIRD_PARTY_NOTICES.md'), destination);
   return verifyArtifact(root, repositoryRoot);
 }
 

@@ -11,6 +11,14 @@ is pre-1.0, and for the release procedure.
 
 ### Added
 
+- **AGPL project licensing and contribution ownership policy**: Velograph is now licensed
+  under `AGPL-3.0-only`, with Junior Williams Consulting Inc. retaining ownership of the
+  original core code. Workspace metadata, copyright and third-party boundaries, and a
+  privacy-safe contribution policy prohibit significant outside contributions from being
+  merged before the company has a CLA on file that preserves its right to relicense. The
+  existing artifact-aware licence gate now verifies the canonical project licence, every
+  workspace manifest, release packages, web artifacts, and container output in addition to
+  the reviewed production dependency and embedded-component notices.
 - **Production API and CLI packages** now run from checked-in esbuild bundles instead of
   TypeScript source. The API package contains the complete offline web build, and both packages
   carry byte-identical migrations and dependency notices. The API uses the audited web packager

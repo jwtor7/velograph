@@ -2,6 +2,7 @@
   "name": "@velograph/importers",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "description": "Versioned import adapters, parsers, and the import engine",
   "engines": {

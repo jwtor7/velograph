@@ -13,13 +13,19 @@ const requiredFiles = [
   join(apiRoot, 'dist', 'velograph-api.mjs'),
   join(apiRoot, 'dist', 'api-runtime.mjs'),
   join(apiRoot, 'dist', 'api-runtime.meta.json'),
+  join(apiRoot, 'dist', 'COPYRIGHT.md'),
+  join(apiRoot, 'dist', 'LICENSE'),
   join(apiRoot, 'dist', 'THIRD_PARTY_NOTICES.md'),
   join(apiRoot, 'dist', 'web', 'index.html'),
+  join(apiRoot, 'dist', 'web', 'COPYRIGHT.md'),
+  join(apiRoot, 'dist', 'web', 'LICENSE'),
   join(apiRoot, 'dist', 'web', 'THIRD_PARTY_NOTICES.md'),
   join(apiRoot, 'dist', 'web', 'third-party-module-evidence.json'),
   join(cliRoot, 'dist', 'velograph-import.mjs'),
   join(cliRoot, 'dist', 'cli-runtime.mjs'),
   join(cliRoot, 'dist', 'cli-runtime.meta.json'),
+  join(cliRoot, 'dist', 'COPYRIGHT.md'),
+  join(cliRoot, 'dist', 'LICENSE'),
   join(cliRoot, 'dist', 'THIRD_PARTY_NOTICES.md'),
 ];
 
@@ -75,14 +81,27 @@ await Promise.all([verifyMigrationCopy(apiRoot), verifyMigrationCopy(cliRoot)]);
 verifyWebArtifactContents(await collectContents(join(apiRoot, 'dist', 'web')), repositoryRoot);
 
 const canonicalNotice = join(repositoryRoot, 'THIRD_PARTY_NOTICES.md');
-const canonical = await readFile(canonicalNotice);
+const canonicalLicense = join(repositoryRoot, 'LICENSE');
+const canonicalCopyright = join(repositoryRoot, 'COPYRIGHT.md');
+const [canonicalNoticeBytes, canonicalLicenseBytes, canonicalCopyrightBytes] = await Promise.all([
+  readFile(canonicalNotice),
+  readFile(canonicalLicense),
+  readFile(canonicalCopyright),
+]);
 for (const packageRoot of [apiRoot, cliRoot]) {
-  const copied = await readFile(join(packageRoot, 'dist', 'THIRD_PARTY_NOTICES.md'));
-  if (!canonical.equals(copied)) throw new Error('runtime_artifact_notice_mismatch');
-}
-for (const packageRoot of [apiRoot, cliRoot]) {
-  if (existsSync(join(packageRoot, 'dist', 'LICENSE'))) {
-    throw new Error('runtime_artifact_project_license_substituted');
+  const [copiedNotice, copiedLicense, copiedCopyright] = await Promise.all([
+    readFile(join(packageRoot, 'dist', 'THIRD_PARTY_NOTICES.md')),
+    readFile(join(packageRoot, 'dist', 'LICENSE')),
+    readFile(join(packageRoot, 'dist', 'COPYRIGHT.md')),
+  ]);
+  if (!canonicalNoticeBytes.equals(copiedNotice)) {
+    throw new Error('runtime_artifact_notice_mismatch');
+  }
+  if (!canonicalLicenseBytes.equals(copiedLicense)) {
+    throw new Error('runtime_artifact_project_license_mismatch');
+  }
+  if (!canonicalCopyrightBytes.equals(copiedCopyright)) {
+    throw new Error('runtime_artifact_project_copyright_mismatch');
   }
 }
 

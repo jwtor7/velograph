@@ -83,6 +83,14 @@ async function copyDirectory(source, destination) {
   await cp(source, destination, { recursive: true });
 }
 
+async function copyAndVerifyLegalFile(repositoryRoot, outputDirectory, filename, mismatchCode) {
+  const source = join(repositoryRoot, filename);
+  const destination = join(outputDirectory, basename(source));
+  await copyFile(source, destination);
+  const [sourceBytes, copiedBytes] = await Promise.all([readFile(source), readFile(destination)]);
+  if (!sourceBytes.equals(copiedBytes)) throw new Error(mismatchCode);
+}
+
 /**
  * Build one self-contained Velograph workspace runtime. Workspace source is
  * bundled; only the native SQLite driver and ZIP implementation remain normal
@@ -136,12 +144,26 @@ export async function buildRuntimePackage({
     await copyDirectory(webDirectory, join(outputDirectory, 'web'));
   }
 
-  // Third-party notices are mandatory in every runtime tarball. Deliberately
-  // do not fall back to a project LICENSE file: those documents have different
-  // legal purposes.
-  const notice = join(repositoryRoot, 'THIRD_PARTY_NOTICES.md');
-  const destination = join(outputDirectory, basename(notice));
-  await copyFile(notice, destination);
-  const [sourceBytes, copiedBytes] = await Promise.all([readFile(notice), readFile(destination)]);
-  if (!sourceBytes.equals(copiedBytes)) throw new Error('runtime_build_notice_content_mismatch');
+  // The project licence, ownership notice, and third-party notices have
+  // different legal purposes; every runtime tarball carries exact copies.
+  await Promise.all([
+    copyAndVerifyLegalFile(
+      repositoryRoot,
+      outputDirectory,
+      'THIRD_PARTY_NOTICES.md',
+      'runtime_build_notice_content_mismatch',
+    ),
+    copyAndVerifyLegalFile(
+      repositoryRoot,
+      outputDirectory,
+      'LICENSE',
+      'runtime_build_project_license_content_mismatch',
+    ),
+    copyAndVerifyLegalFile(
+      repositoryRoot,
+      outputDirectory,
+      'COPYRIGHT.md',
+      'runtime_build_project_copyright_content_mismatch',
+    ),
+  ]);
 }

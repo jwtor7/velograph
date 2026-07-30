@@ -255,6 +255,7 @@ fixtures/synthetic/   invented data used by tests and this quickstart
 
 - [Product requirements (PRD)](Velograph-PRD.md) — the source of truth for all requirements
 - [Repository guidelines](AGENTS.md) — structure, workflow, and privacy boundaries for contributors
+- [Contributing](CONTRIBUTING.md) — contribution workflow and CLA gate
 - [Changelog](CHANGELOG.md) — what shipped, release by release
 - [Release procedure](docs/releasing.md) — versioning scheme and how a release is cut
 - [Runtime packaging](docs/runtime-packaging.md) — production bundles, artifact checks, and
@@ -265,7 +266,7 @@ fixtures/synthetic/   invented data used by tests and this quickstart
 - [Data management](docs/data-management.md) — delete, backup, restore, and repair: cascade behaviour and the delete/re-import idempotency decision
 - [AI insight privacy](docs/ai-privacy.md) — exact provider destinations, minimized payload, and validation boundary
 - [CI supply-chain policy](docs/ci-supply-chain.md) — pinned-SHA GitHub Actions and how to update them
-- [Third-party notices](THIRD_PARTY_NOTICES.md) — bundled dependency licences and notices
+- [Third-party notices](THIRD_PARTY_NOTICES.md) — recorded dependency licences and release-audit requirements
 - [Release privacy audit](docs/release-privacy-audit.md) — worktree, history, artifact, and image-layer release checks
 - [Third-party licence gate](docs/third-party-licences.md) — exact runtime inventory, canonical notices, and artifact checks
 - [Threat model](docs/threat-model.md) — privacy/security boundaries and release evidence
@@ -273,7 +274,16 @@ fixtures/synthetic/   invented data used by tests and this quickstart
 
 ## License
 
-No licence has been selected for Velograph (Apache-2.0 remains a PRD §20
-recommendation only). Until a project licence is published, all rights are
-reserved. Distributed dependencies retain their own terms; see
-[Third-party notices](THIRD_PARTY_NOTICES.md).
+Velograph's original core code is copyright (C) 2026
+Junior Williams Consulting Inc. and is licensed under the
+[GNU Affero General Public License version 3 only](LICENSE) (`AGPL-3.0-only`).
+
+Junior Williams Consulting Inc. retains ownership of the original core code. Significant
+outside contributions require a signed CLA that grants the company the right to relicense
+the contribution while keeping it available under the Velograph licence in effect when it
+was submitted. See [`CONTRIBUTING.md`](CONTRIBUTING.md) and
+[`COPYRIGHT.md`](COPYRIGHT.md).
+
+The project licence does not claim ownership of health, workout, or route data that a user
+imports into Velograph. Third-party components remain under their respective licences; see
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

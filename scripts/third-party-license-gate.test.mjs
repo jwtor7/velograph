@@ -1,22 +1,29 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  assertVelographLicenceUnselected,
   extractEmbeddedLicenseText,
   normalizeLicenseText,
+  PROJECT_COPYRIGHT_FILE,
+  PROJECT_LICENSE_FILE,
+  PROJECT_LICENSE_SPDX,
+  PROJECT_MANIFEST_PATHS,
   renderNotices,
+  stageAndVerifyArtifact,
   validateManifest,
   verifyArtifact,
   verifyPackageLicense,
+  verifyProjectLicensePolicy,
   verifyProductionDeployment,
   verifyScopeCoverage,
   verifySqliteRuntimeVersion,
 } from './third-party-license-gate.mjs';
 
 const temporaryDirectories = [];
+const canonicalProjectLicense = readFileSync(join(process.cwd(), PROJECT_LICENSE_FILE));
+const canonicalProjectCopyright = readFileSync(join(process.cwd(), PROJECT_COPYRIGHT_FILE));
 
 function makeDirectory(prefix = 'velograph-license-gate-') {
   const directory = mkdtempSync(join(tmpdir(), prefix));
@@ -72,6 +79,34 @@ function writeCanonicalEvidence(repositoryRoot, manifest, texts) {
   }
   writeJson(join(repositoryRoot, 'third-party-licenses.json'), manifest);
   writeFileSync(join(repositoryRoot, 'THIRD_PARTY_NOTICES.md'), renderNotices(manifest, texts));
+  writeFileSync(join(repositoryRoot, PROJECT_LICENSE_FILE), canonicalProjectLicense);
+  writeFileSync(join(repositoryRoot, PROJECT_COPYRIGHT_FILE), canonicalProjectCopyright);
+}
+
+function writeProjectPolicy(repositoryRoot, manifestLicense = PROJECT_LICENSE_SPDX) {
+  writeFileSync(join(repositoryRoot, PROJECT_LICENSE_FILE), canonicalProjectLicense);
+  writeFileSync(join(repositoryRoot, PROJECT_COPYRIGHT_FILE), canonicalProjectCopyright);
+  for (const [index, manifestPath] of PROJECT_MANIFEST_PATHS.entries()) {
+    const path = join(repositoryRoot, manifestPath);
+    mkdirSync(dirname(path), { recursive: true });
+    writeJson(path, {
+      name: index === 0 ? 'synthetic-project' : `@synthetic/workspace-${index}`,
+      version: '1.0.0',
+      private: true,
+      license: manifestLicense,
+    });
+  }
+}
+
+function writeDeploymentProjectFiles(deploymentRoot) {
+  mkdirSync(join(deploymentRoot, 'dist'), { recursive: true });
+  for (const [filename, content] of [
+    [PROJECT_LICENSE_FILE, canonicalProjectLicense],
+    [PROJECT_COPYRIGHT_FILE, canonicalProjectCopyright],
+  ]) {
+    writeFileSync(join(deploymentRoot, filename), content);
+    writeFileSync(join(deploymentRoot, 'dist', filename), content);
+  }
 }
 
 function makePackage(root, entry, text) {
@@ -105,6 +140,8 @@ function writeWebArtifactEvidence(
   mkdirSync(join(artifactRoot, 'assets'), { recursive: true });
   writeFileSync(join(artifactRoot, 'assets', 'index.js'), script);
   writeFileSync(join(artifactRoot, 'index.html'), html);
+  writeFileSync(join(artifactRoot, PROJECT_LICENSE_FILE), canonicalProjectLicense);
+  writeFileSync(join(artifactRoot, PROJECT_COPYRIGHT_FILE), canonicalProjectCopyright);
   const fileEvidence = [
     {
       file: 'assets/index.js',
@@ -164,37 +201,57 @@ describe('third-party licence manifest', () => {
     expect(() => validateManifest(manifestWith([entry]))).toThrow('unsupported_spdx_expression');
   });
 
-  it('rejects project licence files and workspace package licence fields', () => {
+  it('requires the canonical project licence, ownership notice, and workspace declarations', () => {
     const repositoryRoot = makeDirectory();
-    writeJson(join(repositoryRoot, 'package.json'), {
-      name: 'synthetic-project',
-      version: '1.0.0',
-    });
-    mkdirSync(join(repositoryRoot, 'apps', 'web'), { recursive: true });
-    mkdirSync(join(repositoryRoot, 'packages'), { recursive: true });
-    writeJson(join(repositoryRoot, 'apps', 'web', 'package.json'), {
-      name: '@synthetic/web',
-      version: '1.0.0',
-    });
-    expect(() => assertVelographLicenceUnselected(repositoryRoot)).not.toThrow();
+    writeProjectPolicy(repositoryRoot);
+    expect(verifyProjectLicensePolicy(repositoryRoot)).toEqual(canonicalProjectLicense);
 
-    writeFileSync(join(repositoryRoot, 'LICENSE.md'), 'Synthetic project licence.\n');
-    expect(() => assertVelographLicenceUnselected(repositoryRoot)).toThrow(
-      'velograph_license_selection_out_of_scope',
+    writeFileSync(join(repositoryRoot, PROJECT_LICENSE_FILE), 'Changed project licence.\n');
+    expect(() => verifyProjectLicensePolicy(repositoryRoot)).toThrow(
+      'project_license_content_mismatch',
     );
-    unlinkSync(join(repositoryRoot, 'LICENSE.md'));
-    writeFileSync(join(repositoryRoot, 'apps', 'web', 'COPYING'), 'Synthetic workspace licence.\n');
-    expect(() => assertVelographLicenceUnselected(repositoryRoot)).toThrow(
-      'velograph_license_selection_out_of_scope',
+    writeFileSync(join(repositoryRoot, PROJECT_LICENSE_FILE), canonicalProjectLicense);
+
+    rmSync(join(repositoryRoot, PROJECT_COPYRIGHT_FILE));
+    expect(() => verifyProjectLicensePolicy(repositoryRoot)).toThrow(
+      'project_copyright_missing_or_invalid',
     );
-    unlinkSync(join(repositoryRoot, 'apps', 'web', 'COPYING'));
+    writeFileSync(join(repositoryRoot, PROJECT_COPYRIGHT_FILE), canonicalProjectCopyright);
+
+    writeFileSync(join(repositoryRoot, PROJECT_COPYRIGHT_FILE), 'Changed ownership notice.\n');
+    expect(() => verifyProjectLicensePolicy(repositoryRoot)).toThrow(
+      'project_copyright_content_mismatch',
+    );
+    writeFileSync(join(repositoryRoot, PROJECT_COPYRIGHT_FILE), canonicalProjectCopyright);
+
     writeJson(join(repositoryRoot, 'apps', 'web', 'package.json'), {
       name: '@synthetic/web',
       version: '1.0.0',
       license: 'MIT',
     });
-    expect(() => assertVelographLicenceUnselected(repositoryRoot)).toThrow(
-      'velograph_license_selection_out_of_scope',
+    expect(() => verifyProjectLicensePolicy(repositoryRoot)).toThrow(
+      'project_package_license_mismatch:apps/web/package.json',
+    );
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['wrong', 'MIT'],
+  ])('discovers an added workspace with a %s licence declaration', (_label, license) => {
+    const repositoryRoot = makeDirectory();
+    writeProjectPolicy(repositoryRoot);
+    const manifest = {
+      name: '@synthetic/added-workspace',
+      version: '1.0.0',
+      private: true,
+    };
+    if (license !== undefined) manifest.license = license;
+    const manifestPath = join(repositoryRoot, 'packages', 'added-workspace', 'package.json');
+    mkdirSync(dirname(manifestPath), { recursive: true });
+    writeJson(manifestPath, manifest);
+
+    expect(() => verifyProjectLicensePolicy(repositoryRoot)).toThrow(
+      'project_package_license_mismatch:packages/added-workspace/package.json',
     );
   });
 });
@@ -392,9 +449,9 @@ describe('third-party licence artifact gates', () => {
     writeWebArtifactEvidence(artifactRoot, {
       packageIds: ['@synthetic/web@1.0.0', 'synthetic-runtime@1.0.0'],
     });
-    writeFileSync(join(artifactRoot, 'THIRD_PARTY_NOTICES.md'), renderNotices(manifest, texts));
-
-    expect(verifyArtifact(artifactRoot, repositoryRoot)).toBe(0);
+    rmSync(join(artifactRoot, PROJECT_LICENSE_FILE));
+    rmSync(join(artifactRoot, PROJECT_COPYRIGHT_FILE));
+    expect(stageAndVerifyArtifact(artifactRoot, repositoryRoot)).toBe(0);
     writeFileSync(join(artifactRoot, 'assets', 'index.js'), 'tampered\n');
     expect(() => verifyArtifact(artifactRoot, repositoryRoot)).toThrow(
       /^artifact_file_evidence_mismatch$/,
@@ -405,6 +462,11 @@ describe('third-party licence artifact gates', () => {
     writeFileSync(join(artifactRoot, 'THIRD_PARTY_NOTICES.md'), 'stale\n');
     expect(() => verifyArtifact(artifactRoot, repositoryRoot)).toThrow(
       'artifact_third_party_notices_mismatch',
+    );
+    writeFileSync(join(artifactRoot, 'THIRD_PARTY_NOTICES.md'), renderNotices(manifest, texts));
+    writeFileSync(join(artifactRoot, PROJECT_COPYRIGHT_FILE), 'Changed ownership notice.\n');
+    expect(() => verifyArtifact(artifactRoot, repositoryRoot)).toThrow(
+      'artifact_project_copyright_mismatch',
     );
   });
 
@@ -468,6 +530,7 @@ describe('third-party licence artifact gates', () => {
       version: '1.0.0',
     });
     const deployedWeb = join(deploymentRoot, 'dist', 'web');
+    writeDeploymentProjectFiles(deploymentRoot);
     writeWebArtifactEvidence(deployedWeb, {
       packageIds: ['@synthetic/web@1.0.0'],
       injectedModules: [],
@@ -484,6 +547,12 @@ describe('third-party licence artifact gates', () => {
     );
     makePackage(packageRoot, entry, text);
     expect(verifyProductionDeployment(deploymentRoot, repositoryRoot)).toBe(0);
+
+    writeFileSync(join(deploymentRoot, 'dist', PROJECT_LICENSE_FILE), 'Changed licence.\n');
+    expect(() => verifyProductionDeployment(deploymentRoot, repositoryRoot)).toThrow(
+      'artifact_project_license_mismatch',
+    );
+    writeFileSync(join(deploymentRoot, 'dist', PROJECT_LICENSE_FILE), canonicalProjectLicense);
 
     const extra = packageEntry({ name: 'synthetic-unreviewed' });
     makePackage(

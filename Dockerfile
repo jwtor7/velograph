@@ -35,6 +35,8 @@ RUN pnpm --filter @velograph/api deploy --prod --legacy /opt/velograph/api
 # that exact reviewed fixture and fail if any other archive or dev package
 # appears in the production deployment.
 RUN cp THIRD_PARTY_NOTICES.md /opt/velograph/api/THIRD_PARTY_NOTICES.md \
+    && cp LICENSE /opt/velograph/api/LICENSE \
+    && cp COPYRIGHT.md /opt/velograph/api/COPYRIGHT.md \
     && node scripts/prune-deployed-api.mjs /opt/velograph/api \
     && node scripts/third-party-license-gate.mjs --production-deploy /opt/velograph/api \
     && node scripts/privacy-audit-release.mjs --production-deploy /opt/velograph/api
