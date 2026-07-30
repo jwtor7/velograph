@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, type WorkoutSummary } from '../api.ts';
-import { fmtDate, fmtDuration, fmtInt, fmtKm, fmtSpeedKmh } from '../chartspec/spec.ts';
+import { fmtDate, fmtDuration, fmtInt } from '../chartspec/spec.ts';
 import { ConfirmDialog, EmptyState } from '../components/ui.tsx';
+import {
+  displayDistanceToMetres,
+  formatDistance,
+  formatElevation,
+  formatSpeed,
+} from '../display-units.ts';
 import { Link, useNavigate } from '../router.tsx';
 
 /** Ride library (RIDE-001/002): date-listed rides with search and filters. */
@@ -17,6 +23,7 @@ export function Library() {
   const [timeZone, setTimeZone] = useState(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
   );
+  const [displayUnits, setDisplayUnits] = useState<'metric' | 'imperial'>('metric');
   const navigate = useNavigate();
 
   const load = () =>
@@ -29,7 +36,10 @@ export function Library() {
     load();
     api
       .settings()
-      .then((r) => setTimeZone(r.settings.timeZone))
+      .then((r) => {
+        setTimeZone(r.settings.timeZone);
+        setDisplayUnits(r.settings.displayUnits);
+      })
       .catch(() => {});
   }, []);
 
@@ -53,10 +63,12 @@ export function Library() {
       if (from && w.startUtc < Date.parse(`${from}T00:00:00Z`)) return false;
       if (to && w.startUtc > Date.parse(`${to}T23:59:59Z`)) return false;
       if (routeOnly && !w.hasRoute) return false;
-      if (minKm && (w.distanceM ?? 0) < Number(minKm) * 1000) return false;
+      if (minKm && (w.distanceM ?? 0) < displayDistanceToMetres(Number(minKm), displayUnits)) {
+        return false;
+      }
       return true;
     });
-  }, [workouts, from, to, routeOnly, minKm]);
+  }, [workouts, from, to, routeOnly, minKm, displayUnits]);
 
   return (
     <div className="stack">
@@ -83,7 +95,9 @@ export function Library() {
             <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
           </label>
           <label>
-            <span className="field-label">Min distance (km)</span>
+            <span className="field-label">
+              Min distance ({displayUnits === 'imperial' ? 'mi' : 'km'})
+            </span>
             <input
               type="number"
               min="0"
@@ -137,55 +151,60 @@ export function Library() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((w) => (
-                  <tr
-                    key={w.id}
-                    className="row-link"
-                    tabIndex={0}
-                    onClick={() => navigate(`/rides/${w.id}`)}
-                    onKeyDown={(e) => e.key === 'Enter' && navigate(`/rides/${w.id}`)}
-                  >
-                    <td>{fmtDate(w.startUtc, timeZone)}</td>
-                    <td>{fmtDuration(w.durationS)}</td>
-                    <td>
-                      {fmtKm(w.distanceM)} <span className="muted">km</span>
-                    </td>
-                    <td>
-                      {fmtSpeedKmh(w.avgSpeedMs)} <span className="muted">km/h</span>
-                    </td>
-                    <td style={{ color: 'var(--vg-ch-hr)' }}>
-                      {fmtInt(w.avgHr)} <span className="muted">bpm</span>
-                    </td>
-                    <td style={{ color: 'var(--vg-ch-elevation)' }}>
-                      {fmtInt(w.elevationGainM)} <span className="muted">m</span>
-                    </td>
-                    <td>
-                      {w.hasRoute ? (
-                        <span className="badge ok">GPS</span>
-                      ) : (
-                        <span className="badge">none</span>
-                      )}
-                    </td>
-                    <td>
-                      <span className={`badge ${w.qualityState === 'ok' ? 'ok' : 'warn'}`}>
-                        {w.qualityState}
-                      </span>
-                    </td>
-                    <td>
-                      <button
-                        className="btn"
-                        style={{ padding: '4px 10px', fontSize: 12 }}
-                        aria-label={`Delete ride from ${fmtDate(w.startUtc, timeZone)}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setPendingDelete(w);
-                        }}
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map((w) => {
+                  const distance = formatDistance(w.distanceM, displayUnits);
+                  const speed = formatSpeed(w.avgSpeedMs, displayUnits);
+                  const elevation = formatElevation(w.elevationGainM, displayUnits);
+                  return (
+                    <tr
+                      key={w.id}
+                      className="row-link"
+                      tabIndex={0}
+                      onClick={() => navigate(`/rides/${w.id}`)}
+                      onKeyDown={(e) => e.key === 'Enter' && navigate(`/rides/${w.id}`)}
+                    >
+                      <td>{fmtDate(w.startUtc, timeZone)}</td>
+                      <td>{fmtDuration(w.durationS)}</td>
+                      <td>
+                        {distance.value} <span className="muted">{distance.unit}</span>
+                      </td>
+                      <td>
+                        {speed.value} <span className="muted">{speed.unit}</span>
+                      </td>
+                      <td style={{ color: 'var(--vg-ch-hr)' }}>
+                        {fmtInt(w.avgHr)} <span className="muted">bpm</span>
+                      </td>
+                      <td style={{ color: 'var(--vg-ch-elevation)' }}>
+                        {elevation.value} <span className="muted">{elevation.unit}</span>
+                      </td>
+                      <td>
+                        {w.hasRoute ? (
+                          <span className="badge ok">GPS</span>
+                        ) : (
+                          <span className="badge">none</span>
+                        )}
+                      </td>
+                      <td>
+                        <span className={`badge ${w.qualityState === 'ok' ? 'ok' : 'warn'}`}>
+                          {w.qualityState}
+                        </span>
+                      </td>
+                      <td>
+                        <button
+                          className="btn"
+                          style={{ padding: '4px 10px', fontSize: 12 }}
+                          aria-label={`Delete ride from ${fmtDate(w.startUtc, timeZone)}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPendingDelete(w);
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

@@ -47,7 +47,8 @@ jobs:
       matrix:
         # Vite 7 requires Node 20.19 or newer. Node 26 is the upper
         # supported major and catches assumptions hidden by the primary runtime.
-        node: ['20.19.0', '26.x']
+        # Exact Node 22 also owns the release-performance evidence.
+        node: ['20.19.0', '22.22.3', '26.x']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -69,6 +70,11 @@ jobs:
         run: pnpm cli:verify-package
       - name: Verify clean-installed API package
         run: pnpm api:verify-package
+      - name: Synthetic production-browser and API regression gate
+        if: matrix.node == '22.22.3'
+        env:
+          VELO_BROWSER_SMOKE_CHROME: google-chrome
+        run: pnpm performance:benchmark:ci
       - name: Built runtime artifacts are current
         run: |
           git diff --exit-code -- \

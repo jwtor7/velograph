@@ -3,9 +3,8 @@ import type { InsightOutput } from './schema.ts';
 
 /**
  * Provider interface (AI-002). `disabled` is fully implemented and is the
- * default (AI-001). `codex` and `ollama` are stubs in this phase: no
- * network call, no child-process spawn, no filesystem probing for a binary,
- * no credential access — see packages/insights/src/providers/.
+ * default (AI-001). Provider implementations must route model output through
+ * the shared all-or-nothing orchestrator before returning it.
  */
 export type ProviderId = 'codex' | 'ollama' | 'disabled';
 
@@ -30,6 +29,8 @@ export type AvailabilityResult =
 export interface GenerateRequest {
   payload: InsightPayload;
   promptVersion: string;
+  /** Cancels provider I/O/process work and discards any partial output. */
+  signal?: AbortSignal;
 }
 
 export type RefusalReasonCode = 'ai_disabled';
@@ -54,8 +55,10 @@ export interface InsightProvider {
   describe(): ProviderDescription;
   availability(): AvailabilityResult;
   /**
-   * Disabled resolves to a typed refusal (never throws). Unimplemented
-   * providers (codex, ollama) reject with `ProviderNotImplementedError`.
+   * Disabled resolves to a typed refusal (never throws). Configured providers
+   * either return a fully validated output or reject with an
+   * `InsightGenerationError`; partial/unvalidated model output is never
+   * returned.
    */
   generate(request: GenerateRequest): Promise<GenerateResult>;
 }

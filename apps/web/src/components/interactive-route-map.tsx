@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import * as L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { api, type BasemapResponse, type RoutePoint } from '../api.ts';
+import type { DisplayUnits } from '../display-units.ts';
 import {
   buildRouteMapModel,
   routePositionAtTime,
@@ -170,15 +171,17 @@ export function InteractiveRouteMap({
   segments,
   cursorT,
   height = 360,
+  displayUnits = 'metric',
 }: {
   segments: { points: RoutePoint[] }[];
   cursorT: number | null;
   height?: number;
+  displayUnits?: DisplayUnits;
 }) {
   const mapId = `route-map-${useId().replaceAll(':', '')}`;
   const helpId = `${mapId}-help`;
   const summaryId = `${mapId}-summary`;
-  const model = useMemo(() => buildRouteMapModel(segments), [segments]);
+  const model = useMemo(() => buildRouteMapModel(segments, displayUnits), [displayUnits, segments]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const cursorRef = useRef<L.CircleMarker | null>(null);
@@ -227,7 +230,12 @@ export function InteractiveRouteMap({
     mapRef.current = map;
     cursorRendererRef.current = addRouteLayers(map, model, container);
     L.control
-      .scale({ imperial: false, metric: true, maxWidth: 120, position: 'bottomleft' })
+      .scale({
+        imperial: displayUnits === 'imperial',
+        metric: displayUnits === 'metric',
+        maxWidth: 120,
+        position: 'bottomleft',
+      })
       .addTo(map);
     fitRoute(map, model, false);
 
@@ -238,7 +246,7 @@ export function InteractiveRouteMap({
       mapRef.current = null;
       map.remove();
     };
-  }, [model]);
+  }, [displayUnits, model]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -333,9 +341,13 @@ export function InteractiveRouteMap({
             ? 'Local basemap invalid · showing route-only view'
             : 'No local basemap configured · showing route-only view';
   const distanceSummary =
-    model.totalDistanceM >= 1_000
-      ? `${(model.totalDistanceM / 1_000).toFixed(1)} kilometres`
-      : `${Math.round(model.totalDistanceM)} metres`;
+    displayUnits === 'imperial'
+      ? model.totalDistanceM >= 160.9344
+        ? `${(model.totalDistanceM / 1_609.344).toFixed(1)} miles`
+        : `${Math.round(model.totalDistanceM * 3.280_839_895)} feet`
+      : model.totalDistanceM >= 1_000
+        ? `${(model.totalDistanceM / 1_000).toFixed(1)} kilometres`
+        : `${Math.round(model.totalDistanceM)} metres`;
   const distanceMarkerSummary = model.distanceMarkers.map((marker) => marker.label).join(', ');
   const directionMarkerSummary = model.directionMarkers.map((marker) => marker.label).join(', ');
 

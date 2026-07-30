@@ -17,6 +17,7 @@ const validSettings = {
   ...DEFAULT_ANALYTICS_SETTINGS,
   hrZoneBounds: [90, 110, 130, 150, 170],
   timeZone: 'Etc/UTC',
+  displayUnits: 'metric' as const,
 };
 
 describe('analytics settings storage boundary', () => {
@@ -30,6 +31,7 @@ describe('analytics settings storage boundary', () => {
     { ...validSettings, unexpected: true },
     { ...validSettings, timeZone: '' },
     { ...validSettings, timeZone: 'Not/A_Zone' },
+    { ...validSettings, displayUnits: 'nautical' },
     { ...validSettings, hrZoneBounds: [90, 130, 130, 150, 170] },
   ])('rejects invalid complete settings with a value-free code', (value) => {
     expect(() => parseAppSettings(value)).toThrow(InvalidAppSettingsError);
@@ -48,6 +50,9 @@ describe('analytics settings storage boundary', () => {
     });
     expect(() => mergeAppSettings(validSettings, { unexpected: true })).toThrow(
       InvalidAppSettingsError,
+    );
+    expect(mergeAppSettings(validSettings, { displayUnits: 'imperial' }).displayUnits).toBe(
+      'imperial',
     );
   });
 

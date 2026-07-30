@@ -1,9 +1,28 @@
-# Data management — delete, backup, restore, repair (issue #38)
+# Data management — export, delete, backup, restore, repair (issue #38)
 
 PRD Phase 1 ("Backup, restore, delete, and repair") and §12.2 (repository leak prevention —
 backups carry real health data and must never enter the checkout). This document covers the four
 operations, and in particular the delete/idempotency decision the issue calls out as the subtle
 part.
+
+## Export one ride
+
+Ride detail provides an explicit browser download of `velograph-ride.json`. The
+`velograph-ride-export-v1` document contains the canonical workout bounds, normalized metric
+samples, deterministic analytics, and route geometry with declared units. It omits the local
+workout ID, metric-sample context, route course metadata, and all source filename/device metadata,
+contains no generated timestamp, and sorts object keys so identical canonical data and export
+privacy settings produce byte-identical JSON.
+
+Route start/finish redaction is enabled by default at 500 metres and can be configured from 50
+through 5,000 metres for each export. An enabled value below 50 metres is clamped to that safe
+minimum, so the export can never claim redaction while preserving exact endpoints. Every point
+within the chosen radius of either recorded endpoint is removed without joining route segments
+across the resulting gaps. Turning redaction off is an explicit action in the confirmation dialog
+and shows a warning that exact endpoints may reveal a home or another private location. Metric
+sample and analytics units are declared separately because canonical energy samples are joules
+while the derived analytics total is kilojoules. The export is assembled entirely in the local
+browser; it is not sent to the API or an external service.
 
 ## Delete
 
@@ -71,6 +90,64 @@ Forgetting the hash was chosen because:
 skipped as a duplicate'`) and `apps/cli/src/index.test.ts` (`'imports, deletes, and repairs a
 workout end to end'`) both exercise the full round trip: import → delete → re-import the
 identical bytes → the ride comes back.
+
+## Delete all local database data
+
+`Repository.deleteAllData()` implements PRD v1 acceptance criterion 12 and advances IMP-011. One
+`better-sqlite3` transaction deletes every row from the application-state tables in explicit
+child-to-parent order: import batches and source inventory/reprocessing failures, workout/source
+ownership, workouts, metric series and samples, routes and points, notes and tags, analytics
+snapshots, insight runs, user settings, and any live `backup_manifests` row. Nullable global
+analytics/insight rows are deleted explicitly instead of relying only on workout cascades. The
+transaction leaves `sqlite_schema` and `schema_migrations` untouched, so the result is a migrated,
+empty database that the running app can continue to use.
+
+IMP-011's one-import-batch export/deletion operation remains separate future work. The current
+delete-all operation is deliberately database-wide and does not claim that narrower batch
+selection workflow.
+
+Deletion is confirmation-gated on every surface:
+
+- `DELETE /api/data` accepts only the exact JSON body `{ "confirmed": true }` and still requires
+  the normal loopback, Host/Origin, fetch-metadata, and `x-velograph-request` protections. Missing
+  confirmation returns `delete_all_confirmation_required`; storage failures return only
+  `delete_all_failed`. Admission closes before the request body is read, already-accepted work is
+  allowed to settle, and deletion executes last; later database requests receive
+  `delete_all_in_progress`.
+- Settings opens a blocking alert dialog before calling the API. Cancel receives initial focus,
+  focus stays trapped in the dialog, Escape cancels, and focus returns to the triggering button
+  afterward. The dialog names each category, the backup exception, and the remanence limitation.
+- The CLI requires the separate command and flag
+  `velograph-import delete-all --confirm-delete-all [--data-dir <dir>]`. Without the flag it does
+  not open or change the database.
+
+The delete-all transaction does not remove independent files:
+
+- Velograph currently stores source hashes and normalized rows, not retained raw source bytes.
+  If raw-file retention is implemented later, its files must join the same user-visible deletion
+  contract before that feature can ship.
+- Backup files are deliberately not deleted. They are independent recovery copies at
+  user-selected paths, may live on other volumes, and can restore everything that delete-all
+  removed. The user must locate and delete every unwanted backup separately.
+- A configured `basemap.mbtiles` file is a read-only offline map package, not imported health or
+  user-authored state. The core database has no basemap-derived cache table, so delete-all has no
+  basemap rows to clear and leaves that external package in place.
+
+### Secure-deletion and remanence limitations
+
+Delete-all is an atomic **logical SQLite deletion**, not a promise of forensic erasure. Deleted
+content can remain in SQLite free pages, a rollback journal, or WAL/SHM sidecars until SQLite
+reuses, checkpoints, or removes them. `VACUUM`, `PRAGMA secure_delete`, file overwrite, and TRIM
+cannot provide a portable guarantee: copy-on-write filesystems, filesystem or system snapshots,
+swap, crash-recovery data, cloud/device backups, SSD wear levelling, and storage-controller
+remapping may retain older physical blocks.
+
+For stronger protection, use full-disk or encrypted-volume protection before importing data,
+delete independent Velograph backups and relevant filesystem/system snapshots, and follow the
+operating system or storage vendor's whole-device sanitization guidance when disposing of media.
+Closing Velograph and deleting the data directory removes the live database files, but it has the
+same snapshot and SSD limitations. A later restore or surviving backup can intentionally bring the
+data back.
 
 Migration `0003_workout_source_files.sql` backfills every ownership relationship that can be
 recovered from existing metric and route rows. Older successful source rows with no remaining
@@ -323,10 +400,10 @@ overwriting or deleting its prior analytical evidence.
 ## Surfaces
 
 - **API** (`apps/api/src/server.ts`): `DELETE /api/workouts/:id`,
-  `POST /api/workouts/:id/repair`, `POST /api/backup` (`{ path }`), and
-  `POST /api/restore` (`{ path, confirmed: true }`) — all mutating, so all require the existing loopback/CSRF
-  hardening (`x-velograph-request` header, Host/Origin checks) already applied to every
-  non-`GET`/`HEAD` route.
+  `DELETE /api/data` (`{ confirmed: true }`), `POST /api/workouts/:id/repair`,
+  `POST /api/backup` (`{ path }`), and `POST /api/restore` (`{ path, confirmed: true }`) — all
+  mutating, so all require the existing loopback/CSRF hardening (`x-velograph-request` header,
+  Host/Origin checks) already applied to every non-`GET`/`HEAD` route.
 - **UI**: a "Delete" action on each ride list row (`apps/web/src/pages/Library.tsx`) and a
   "Delete ride" / "Repair ride" pair on the ride detail page
   (`apps/web/src/pages/RideDetail.tsx`), both routed through a shared `ConfirmDialog`
@@ -335,7 +412,8 @@ overwriting or deleting its prior analytical evidence.
   live in Settings (`apps/web/src/pages/Settings.tsx`) as path-based fields — this is a
   local-first app talking to a loopback API on the same machine, so "the user's chosen path" is a
   filesystem path on that machine, not an upload; restore is behind the same confirmation
-  pattern, since it discards everything since the backup.
+  pattern, since it discards everything since the backup. Delete-all is a separate, explicit
+  Settings action with its own confirmation and value-free status.
 - **CLI** (`apps/cli/src/index.ts`): `delete <workoutId>`, `backup <destPath>`,
-  `restore <backupPath> --confirm-replace`, and `repair <workoutId>`, alongside the existing `import`, each
-  accepting `--data-dir`.
+  `delete-all --confirm-delete-all`, `restore <backupPath> --confirm-replace`, and
+  `repair <workoutId>`, alongside the existing `import`, each accepting `--data-dir`.

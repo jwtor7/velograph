@@ -117,6 +117,24 @@ describe('interactive route map model', () => {
     expect(model.distanceMarkers.at(-1)?.label).not.toBe('20 km');
   });
 
+  it('labels route markers in the selected display units', () => {
+    const model = buildRouteMapModel(
+      [
+        {
+          points: [
+            { lat: -48, lon: -123, t: null },
+            { lat: -48, lon: -122.9, t: null },
+          ],
+        },
+      ],
+      'imperial',
+    )!;
+
+    expect(model.distanceMarkers.length).toBeGreaterThan(0);
+    expect(model.distanceMarkers.every((marker) => /\b(?:mi|ft)$/.test(marker.label))).toBe(true);
+    expect(model.distanceMarkers.some((marker) => marker.label.endsWith(' km'))).toBe(false);
+  });
+
   it('keeps hundreds of recorded segments visible while bounding gradient layers', () => {
     const segmentWidth = 1 / 1_000;
     const segments = Array.from({ length: 500 }, (_, index) => ({

@@ -162,9 +162,44 @@ is pre-1.0, and for the release procedure.
   run when nothing is up. Previously there was no supported way to tell whether a server was
   running or which data directory it served, and a stale API could end up serving a
   freshly-built web client whose endpoints it did not implement (#49).
+- **Portable ride management and presentation.** Ride detail now exports byte-stable canonical
+  JSON without source/device metadata or local workout identifiers, declares every raw-sample and
+  derived-analytics numeric unit separately, and redacts configurable start/finish radii with a
+  positive safe minimum by default.
+  Comparison supports the immediately previous ride, any user-selected ride, and the recent
+  five-ride median with per-metric coverage, formula, and source-quality provenance. Metric or
+  imperial presentation is persisted locally and applied to library filters, ride
+  metrics/charts/map labels/splits, and trends without changing canonical SI storage. Settings
+  and CLI also provide confirmation-gated, atomic deletion of all live application rows behind an
+  admission barrier while preserving the migrated empty schema and clearly documenting backup and
+  storage-remanence limits. This advances IMP-011; its narrower one-import-batch export/deletion
+  workflow remains future work (ANA-008, ROUTE-008).
+- **Synthetic performance and clean-install release gates.** A deterministic 100-workout corpus
+  with 800,000 metric samples and 200,000 route points enforces the three-minute import and
+  one-second production-browser ride-open p95 limit across cold analytics, React, four charts, and
+  an inked Leaflet route canvas, plus a separate warmed API p95 diagnostic, on exact Node 22. The
+  packed CLI verifier now proves complete folder and ZIP imports, normalized counts, idempotency,
+  exact value-free stdout/stderr grammar, and delete-all behavior from an otherwise empty install.
+  CI runs the package matrix on Node 20.19, 22.22.3, and 26. The exact Node 22 lane runs the same
+  functional/cold-cache regression corpus with a bounded 3-second browser ceiling suitable for
+  variable hosted runners, while the strict 1-second release certification remains owned by
+  documented stable reference hardware.
+- **Configurable bounded local log retention.** Managed app logs remain owner-only and retain one
+  current plus one previous generation; `VELO_LOG_MAX_BYTES` now selects a validated 64 KiB to
+  100 MiB per-generation cap while the default remains 5 MiB.
+- **Opt-in validated insight runtimes.** `@velograph/insights` can invoke a user-installed Codex
+  CLI without a shell or send a bounded request only to an IP-literal loopback Ollama endpoint.
+  Both paths use the same minimized canonical payload, cancellation and resource caps, exact
+  structured-output contract, non-clinical disclaimer, and all-or-nothing evidence/numeric
+  validation. The app itself remains on the disabled provider because API/web configuration and
+  first-use disclosure are not yet wired.
 
 ### Fixed
 
+- **Required GPX coordinates now fail atomically.** A missing, blank, non-finite, or
+  out-of-range latitude/longitude on any track point quarantines the complete file instead of
+  silently dropping that point and importing a partial route. The GPX parser version advances so
+  previously accepted files are re-evaluated under the corrected rule (#13).
 - **Loose-file review never silently drops unsupported selections.** Files outside the importable
   CSV, GPX, and ZIP set remain in the exact ordered selection so the server inventory can label
   them explicitly before confirmation (#26).

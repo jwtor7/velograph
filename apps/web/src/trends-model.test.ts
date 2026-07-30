@@ -51,4 +51,9 @@ describe('nullable ride trend model', () => {
       expect(unavailableItemCount(items)).toBe(1);
     },
   );
+
+  it('converts speed trends at the imperial display boundary', () => {
+    const items = buildRideTrendItems(rides, 'avgSpeedKmh', 'imperial');
+    expect(items.map((item) => item.value)).toEqual([0, null, expect.closeTo(11.18468146)]);
+  });
 });

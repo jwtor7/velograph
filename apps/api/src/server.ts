@@ -84,9 +84,25 @@ export interface ApiOptions {
   restoreDatabaseFn?: typeof restoreDatabaseWithReport;
   /** Testable override; production uses the shared bounded upload contract. */
   importUploadLimits?: ImportUploadLimits;
+  /** Value-free structured request sink. Raw URLs, bodies, and values are never passed. */
+  log?: (record: ApiRequestLogRecord) => void;
+}
+
+export interface ApiRequestLogRecord {
+  event: 'http_request';
+  method: string;
+  route: string;
+  status: number;
+}
+
+const LOGGABLE_HTTP_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'DELETE']);
+
+export function requestLogMethod(method: string | undefined): string {
+  return method !== undefined && LOGGABLE_HTTP_METHODS.has(method) ? method : 'UNKNOWN';
 }
 
 interface ApiRuntimeState {
+  deleteAllInProgress: boolean;
   importInProgress: boolean;
   activeRequests: number;
   databaseAvailable: boolean;
@@ -129,6 +145,7 @@ function waitForRequests(state: ApiRuntimeState): Promise<void> {
 export function createApiServer(opts: ApiOptions): VelographApiServer {
   const now = opts.now ?? Date.now;
   const state: ApiRuntimeState = {
+    deleteAllInProgress: false,
     importInProgress: false,
     activeRequests: 0,
     databaseAvailable: true,
@@ -147,6 +164,21 @@ export function createApiServer(opts: ApiOptions): VelographApiServer {
       state.activeRequests += 1;
       let finished = false;
       let operationPending = false;
+      let requestLogged = false;
+      const logRequest = () => {
+        if (requestLogged || !opts.log) return;
+        requestLogged = true;
+        try {
+          opts.log({
+            event: 'http_request',
+            method: requestLogMethod(req.method),
+            route: requestLogRoute(req.url),
+            status: res.writableEnded ? res.statusCode : 499,
+          });
+        } catch {
+          // Observability is never allowed to break a local API response.
+        }
+      };
       const finishRequest = () => {
         if (finished) return;
         finished = true;
@@ -156,8 +188,14 @@ export function createApiServer(opts: ApiOptions): VelographApiServer {
       const finishResponse = () => {
         if (!operationPending) finishRequest();
       };
-      res.once('finish', finishResponse);
-      res.once('close', finishResponse);
+      res.once('finish', () => {
+        logRequest();
+        finishResponse();
+      });
+      res.once('close', () => {
+        logRequest();
+        finishResponse();
+      });
 
       try {
         const operation = handle(req, res, opts, now, server, state, basemap);
@@ -198,6 +236,33 @@ export function createApiServer(opts: ApiOptions): VelographApiServer {
     waitForRequests: () => waitForRequests(state),
     closeBasemap,
   });
+}
+
+export function requestLogRoute(rawUrl: string | undefined): string {
+  const path = (rawUrl ?? '').split('?', 1)[0] ?? '';
+  const exact = new Set([
+    '/api/health',
+    '/api/basemap',
+    '/api/workouts',
+    '/api/trends',
+    '/api/settings',
+    '/api/data',
+    '/api/import',
+    '/api/import/inventory',
+    '/api/import/path',
+    '/api/import/path/inventory',
+    '/api/backup',
+    '/api/restore',
+  ]);
+  if (exact.has(path)) return path;
+  if (/^\/api\/workouts\/\d+$/.test(path)) return '/api/workouts/:workoutId';
+  if (/^\/api\/workouts\/\d+\/repair$/.test(path)) {
+    return '/api/workouts/:workoutId/repair';
+  }
+  if (/^\/api\/basemap\/tiles\/\d+\/\d+\/\d+$/.test(path)) {
+    return '/api/basemap/tiles/:z/:x/:y';
+  }
+  return path.startsWith('/api/') ? '/api/unknown' : '/web-asset';
 }
 
 function expectedPort(server: Server): number | null {
@@ -299,6 +364,10 @@ function handle(
   }
   if (state.restoreInProgress && path !== '/api/health') {
     send(res, 503, { error: 'restore_in_progress' });
+    return;
+  }
+  if (state.deleteAllInProgress && path !== '/api/health') {
+    send(res, 503, { error: 'delete_all_in_progress' });
     return;
   }
 
@@ -455,6 +524,33 @@ function route(
         if (!res.headersSent) send(res, 400, { error: 'invalid_body' });
       });
     return;
+  }
+
+  if (method === 'DELETE' && path === '/api/data') {
+    // Claim the exclusive operation before the first asynchronous body read.
+    // Requests accepted earlier are allowed to settle, then deletion runs
+    // last. Every later database request is rejected at admission.
+    state.deleteAllInProgress = true;
+    return readJsonBody(req, 1024)
+      .then(async (body) => {
+        if (!isRecord(body) || !hasExactKeys(body, ['confirmed']) || body['confirmed'] !== true) {
+          send(res, 409, { error: 'delete_all_confirmation_required' });
+          return;
+        }
+        await waitForExclusiveRequest(state);
+        try {
+          new Repository(db).deleteAllData();
+          send(res, 200, { deleted: true });
+        } catch {
+          send(res, 500, { error: 'delete_all_failed' });
+        }
+      })
+      .catch(() => {
+        if (!res.headersSent) send(res, 400, { error: 'invalid_body' });
+      })
+      .finally(() => {
+        state.deleteAllInProgress = false;
+      });
   }
 
   if (method === 'POST' && path === '/api/import/inventory') {
@@ -684,6 +780,10 @@ function route(
         }
         if (state.restoreInProgress) {
           send(res, 409, { error: 'restore_in_progress' });
+          return;
+        }
+        if (state.deleteAllInProgress) {
+          send(res, 503, { error: 'delete_all_in_progress' });
           return;
         }
         state.restoreInProgress = true;

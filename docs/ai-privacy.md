@@ -1,10 +1,9 @@
-# AI insight privacy — `@velograph/insights` (Phase 3 stub)
+# AI insight privacy — `@velograph/insights`
 
-AI narrative generation implements PRD §8.5 (AI-001..AI-012). This phase ships the provider
-interface, the minimized-payload builder, the versioned output schema, and evidence/numeric
-validation — **no provider actually calls out anywhere yet**. `codex` and `ollama` are typed
-stubs that reject with `ProviderNotImplementedError`; they contain no filesystem probing, no
-child-process spawn, no HTTP client, and no `codex exec` invocation.
+The insights package implements the PRD §8.5 privacy and validation boundary plus opt-in Codex
+CLI and Ollama runtimes. AI remains disabled by default. The loopback API and web client do not
+yet expose provider configuration or generation, so no provider runs merely by starting or using
+the Velograph app. A caller must explicitly select and invoke a configured package provider.
 
 ## AI is off by default, and never required
 
@@ -13,7 +12,7 @@ child-process spawn, no HTTP client, and no `codex exec` invocation.
 never throws — with a typed refusal explaining AI is off. **Import, analytics, comparisons,
 and visualization all function completely without AI enabled**, in this phase and always.
 
-## What would leave the machine, per provider (once implemented)
+## What leaves the machine, per provider
 
 | Provider   | Destination                                                     | Data classification (`DestinationKind`) |
 | ---------- | --------------------------------------------------------------- | --------------------------------------- |
@@ -24,6 +23,13 @@ and visualization all function completely without AI enabled**, in this phase an
 `InsightProvider.describe()` returns this classification plus a one-sentence human-readable
 explanation, so the app can render it before every first use and whenever the privacy policy
 changes (AI-004) — see `POLICY_VERSION` in `packages/insights/src/preview.ts`.
+
+The Codex runtime launches the user-installed `codex` executable directly with `shell: false`,
+sends the bounded prompt over stdin, supplies a private temporary output-schema directory, and
+removes that directory on every success or failure path. Velograph does not open Codex credential
+files; the CLI owns its own authentication. The Ollama runtime accepts only IP-literal loopback
+origins, checks the configured model without pulling one, and bounds request/response bytes and
+time. Both runtimes support cancellation and convert failures to stable value-free error codes.
 
 ## The payload allow-list (AI-003)
 
@@ -84,6 +90,12 @@ Reason codes (`no_evidence`, `unknown_evidence_metric`, `diagnostic_phrasing`,
 metric ID or the unsupported number back into logs or UI, matching the repo's log-hygiene and
 privacy-scanner rules.
 
+Provider output passes through one all-or-nothing orchestrator before it can be returned. The
+orchestrator reprojects the minimized payload at runtime, builds a bounded deterministic prompt,
+requires one JSON object with the exact schema, prompt version, and non-clinical disclaimer, and
+requires every finding to validate as supported. Partial or merely flagged model output is never
+returned as a successful generated insight.
+
 ## Non-clinical guidance (AI-011)
 
 `NON_CLINICAL_DISCLAIMER` (in `guidance.ts`) frames every insight as informational training
@@ -102,10 +114,10 @@ stable-stringified payload. The record's field set is fixed and audited by test
 for a provider credential anywhere in this type, so there is nothing to accidentally persist or
 leak.
 
-## What's explicitly out of scope in this phase
+## Current application integration boundary
 
-No network call, no child-process spawn, no `codex exec` invocation, no Ollama HTTP client, no
-API route wiring, and no web UI. `packages/insights` depends only on `@velograph/shared` and
-`@velograph/analytics` — no new runtime dependencies. Real provider implementations (host
-`codex` detection/login flow, sandboxed `codex exec` child process, loopback Ollama HTTP calls)
-land in a later phase, built strictly on top of this interface and payload boundary.
+`packages/insights` depends only on `@velograph/shared` and `@velograph/analytics`; it adds no
+third-party runtime dependency. Provider selection, first-use disclosure acknowledgement,
+generation API routes, local audit persistence, and a web insight view remain outside the current
+loopback app surface. Until those pieces are implemented and tested together, the app stays on
+the `disabled` provider even though the package runtimes are functional.

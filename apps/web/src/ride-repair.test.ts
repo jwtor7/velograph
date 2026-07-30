@@ -95,6 +95,7 @@ describe('canonical ride repair refresh', () => {
     expect(refreshed.detail.route).toHaveLength(1);
     expect(refreshed.detail.analytics?.formulaVersion).toBe('analytics-v2');
     expect(refreshed.previous?.id).toBe(7);
+    expect(refreshed.workouts).toBe(library);
   });
 
   it('uses start time and id as deterministic comparison ordering', () => {

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api, type TrendsResponse } from '../api.ts';
-import { fmtKm } from '../chartspec/spec.ts';
 import { BarChart } from '../components/charts.tsx';
 import { EmptyState } from '../components/ui.tsx';
+import { distanceChartValue, formatDistance, type DisplayUnits } from '../display-units.ts';
 import {
   buildRideTrendItems,
   unavailableItemCount,
@@ -13,12 +13,17 @@ import {
 export function Trends() {
   const [data, setData] = useState<TrendsResponse | null>(null);
   const [error, setError] = useState(false);
+  const [displayUnits, setDisplayUnits] = useState<DisplayUnits>('metric');
 
   useEffect(() => {
     api
       .trends()
       .then(setData)
       .catch(() => setError(true));
+    api
+      .settings()
+      .then((response) => setDisplayUnits(response.settings.displayUnits))
+      .catch(() => {});
   }, []);
 
   if (error) return <EmptyState title="The local API is not reachable." />;
@@ -28,7 +33,7 @@ export function Trends() {
   const weekLabel = (t: number) => new Date(t).toISOString().slice(5, 10);
   const rides = [...data.rides].sort((a, b) => a.startUtc - b.startUtc);
   const heartRateItems = buildRideTrendItems(rides, 'avgHr');
-  const speedItems = buildRideTrendItems(rides, 'avgSpeedKmh');
+  const speedItems = buildRideTrendItems(rides, 'avgSpeedKmh', displayUnits);
   const efficiencyItems = buildRideTrendItems(rides, 'efficiency');
 
   // Aggregate zone share across rides that have zones.
@@ -58,14 +63,16 @@ export function Trends() {
 
       <div className="chart-grid">
         <div className="card">
-          <h2 className="card-title">Weekly distance (km)</h2>
+          <h2 className="card-title">
+            Weekly distance ({displayUnits === 'imperial' ? 'mi' : 'km'})
+          </h2>
           <BarChart
             items={data.weekly.map((w) => ({
               label: weekLabel(w.weekStartUtc),
-              value: w.distanceM / 1000,
+              value: distanceChartValue(w.distanceM, displayUnits),
             }))}
             color="var(--vg-brand-blue)"
-            format={(v) => `${v.toFixed(1)} km`}
+            format={(v) => `${v.toFixed(1)} ${displayUnits === 'imperial' ? 'mi' : 'km'}`}
           />
         </div>
         <div className="card">
@@ -89,11 +96,13 @@ export function Trends() {
           <AvailabilityNote items={heartRateItems} />
         </div>
         <div className="card">
-          <h2 className="card-title">Avg speed by ride (km/h)</h2>
+          <h2 className="card-title">
+            Avg speed by ride ({displayUnits === 'imperial' ? 'mph' : 'km/h'})
+          </h2>
           <BarChart
             items={speedItems}
             color="var(--vg-ch-speed)"
-            format={(v) => `${v.toFixed(1)} km/h`}
+            format={(v) => `${v.toFixed(1)} ${displayUnits === 'imperial' ? 'mph' : 'km/h'}`}
           />
           <AvailabilityNote items={speedItems} />
         </div>
@@ -134,18 +143,21 @@ export function Trends() {
             </tr>
           </thead>
           <tbody>
-            {[...data.weekly].reverse().map((w) => (
-              <tr key={w.weekStartUtc}>
-                <td>{new Date(w.weekStartUtc).toISOString().slice(0, 10)}</td>
-                <td>{w.rideCount}</td>
-                <td>
-                  {fmtKm(w.distanceM)} <span className="muted">km</span>
-                </td>
-                <td>
-                  {(w.durationS / 3600).toFixed(1)} <span className="muted">h</span>
-                </td>
-              </tr>
-            ))}
+            {[...data.weekly].reverse().map((w) => {
+              const distance = formatDistance(w.distanceM, displayUnits);
+              return (
+                <tr key={w.weekStartUtc}>
+                  <td>{new Date(w.weekStartUtc).toISOString().slice(0, 10)}</td>
+                  <td>{w.rideCount}</td>
+                  <td>
+                    {distance.value} <span className="muted">{distance.unit}</span>
+                  </td>
+                  <td>
+                    {(w.durationS / 3600).toFixed(1)} <span className="muted">h</span>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

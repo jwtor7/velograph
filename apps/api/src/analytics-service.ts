@@ -17,6 +17,8 @@ export const SETTINGS_KEY = 'analytics';
 export interface AppSettings extends AnalyticsSettings {
   /** IANA timezone for offset-less imports and local date/time display. */
   timeZone: string;
+  /** Presentation only; canonical storage and analytics remain SI. */
+  displayUnits: 'metric' | 'imperial';
 }
 
 const APP_SETTING_KEYS = [
@@ -25,6 +27,7 @@ const APP_SETTING_KEYS = [
   'minCoverageForEfficiency',
   'elevationHysteresisM',
   'timeZone',
+  'displayUnits',
 ] as const;
 
 export class InvalidAppSettingsError extends Error {
@@ -68,7 +71,9 @@ export function parseAppSettings(value: unknown): AppSettings {
   }
   const timeZone = value['timeZone'];
   if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) return failAppSettings();
-  return { ...analytics, timeZone };
+  const displayUnits = value['displayUnits'];
+  if (displayUnits !== 'metric' && displayUnits !== 'imperial') return failAppSettings();
+  return { ...analytics, timeZone, displayUnits };
 }
 
 export function mergeAppSettings(current: AppSettings, patch: unknown): AppSettings {
@@ -81,7 +86,11 @@ export function mergeAppSettings(current: AppSettings, patch: unknown): AppSetti
 
 export function loadSettings(db: Database): AppSettings {
   const stored = new Repository(db).getSetting<unknown>(SETTINGS_KEY);
-  const defaults = { ...DEFAULT_ANALYTICS_SETTINGS, timeZone: systemTimeZone() };
+  const defaults = {
+    ...DEFAULT_ANALYTICS_SETTINGS,
+    timeZone: systemTimeZone(),
+    displayUnits: 'metric' as const,
+  };
   if (stored === undefined) return parseAppSettings(defaults);
   if (!isRecord(stored)) return failAppSettings();
   return parseAppSettings({ ...defaults, ...stored });

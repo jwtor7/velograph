@@ -3,6 +3,7 @@
  * Velograph CLI (IMP-002; issue #38 delete/backup/restore/repair parity):
  *   node apps/cli/src/index.ts import <path...> [--data-dir <dir>]
  *   node apps/cli/src/index.ts delete <workoutId> [--data-dir <dir>]
+ *   node apps/cli/src/index.ts delete-all --confirm-delete-all [--data-dir <dir>]
  *   node apps/cli/src/index.ts backup <destPath> [--data-dir <dir>]
  *   node apps/cli/src/index.ts restore <backupPath> --confirm-replace [--data-dir <dir>]
  *   node apps/cli/src/index.ts repair <workoutId> [--data-dir <dir>]
@@ -41,6 +42,7 @@ const USAGE = [
   'Usage:',
   '  velograph-import import <file|dir|zip>... [--data-dir <dir>]',
   '  velograph-import delete <workoutId> [--data-dir <dir>]',
+  '  velograph-import delete-all --confirm-delete-all [--data-dir <dir>]',
   '  velograph-import backup <destPath> [--data-dir <dir>]',
   '  velograph-import restore <backupPath> --confirm-replace [--data-dir <dir>]',
   '  velograph-import repair <workoutId> [--data-dir <dir>]',
@@ -214,6 +216,22 @@ function runDeleteCmd(args: string[]): number {
   }
 }
 
+function runDeleteAllCmd(args: string[]): number {
+  if (args.length !== 1 || args[0] !== '--confirm-delete-all') {
+    console.error('Delete-all requires --confirm-delete-all');
+    return 2;
+  }
+  const dataDir = resolveDataDir();
+  const db = openDatabase(databasePath(dataDir));
+  try {
+    new Repository(db).deleteAllData();
+    console.log('Deleted all local data');
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 function runRepairCmd(args: string[]): number {
   const id = Number(args[0]);
   if (!args[0] || !Number.isInteger(id)) {
@@ -323,6 +341,8 @@ function commandFailureMessage(command: string | undefined): string {
       return 'Import failed: import_failed';
     case 'delete':
       return 'Delete failed: delete_failed';
+    case 'delete-all':
+      return 'Delete-all failed: delete_all_failed';
     case 'repair':
       return 'Repair failed: repair_failed';
     case 'backup':
@@ -351,6 +371,8 @@ export async function main(argv: string[]): Promise<number> {
         return runImportCmd(rest);
       case 'delete':
         return runDeleteCmd(rest);
+      case 'delete-all':
+        return runDeleteAllCmd(rest);
       case 'repair':
         return runRepairCmd(rest);
       case 'backup':

@@ -8,7 +8,12 @@ import { FORMULA_VERSION } from '@velograph/analytics';
 import { runImport } from '@velograph/importers';
 import { sha256Hex, stableStringify } from '@velograph/shared';
 import { loadSettings } from './analytics-service.ts';
-import { createApiServer } from './server.ts';
+import {
+  createApiServer,
+  requestLogMethod,
+  requestLogRoute,
+  type ApiRequestLogRecord,
+} from './server.ts';
 
 const SYNTHETIC_ROOT = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -25,6 +30,7 @@ let db: Database;
 let server: Server;
 let base: string;
 let port: number;
+const requestLogs: ApiRequestLogRecord[] = [];
 
 beforeAll(async () => {
   db = openDatabase(':memory:');
@@ -34,7 +40,11 @@ beforeAll(async () => {
     .sort()
     .map((name) => ({ name, data: readFileSync(join(FIXTURES, name)) }));
   runImport(db, files, { now: Date.UTC(2031, 4, 1) });
-  server = createApiServer({ db, now: () => Date.UTC(2031, 4, 2) });
+  server = createApiServer({
+    db,
+    now: () => Date.UTC(2031, 4, 2),
+    log: (record) => requestLogs.push(record),
+  });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const addr = server.address();
   port = typeof addr === 'object' && addr ? addr.port : 0;
@@ -54,6 +64,12 @@ describe('loopback API', () => {
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
     expect(await res.json()).toMatchObject({ ok: true });
+    expect(requestLogs).toContainEqual({
+      event: 'http_request',
+      method: 'GET',
+      route: '/api/health',
+      status: 200,
+    });
   });
 
   it('lists workouts with analytics summaries (RIDE-001)', async () => {
@@ -334,5 +350,28 @@ describe('loopback API', () => {
 
   it('404s unknown API routes', async () => {
     expect((await fetch(`${base}/api/nope`)).status).toBe(404);
+  });
+});
+
+describe('value-free request log routing', () => {
+  it('allow-lists supported HTTP methods and collapses extension verbs', () => {
+    expect(['GET', 'HEAD', 'POST', 'PUT', 'DELETE'].map(requestLogMethod)).toEqual([
+      'GET',
+      'HEAD',
+      'POST',
+      'PUT',
+      'DELETE',
+    ]);
+    expect(requestLogMethod('PRIVATE')).toBe('UNKNOWN');
+    expect(requestLogMethod('CONNECT')).toBe('UNKNOWN');
+    expect(requestLogMethod(undefined)).toBe('UNKNOWN');
+  });
+
+  it('templates identifiers, tile coordinates, queries, unknown APIs, and web assets', () => {
+    expect(requestLogRoute('/api/workouts/987?private=query')).toBe('/api/workouts/:workoutId');
+    expect(requestLogRoute('/api/workouts/987/repair')).toBe('/api/workouts/:workoutId/repair');
+    expect(requestLogRoute('/api/basemap/tiles/12/345/678')).toBe('/api/basemap/tiles/:z/:x/:y');
+    expect(requestLogRoute('/api/private-value')).toBe('/api/unknown');
+    expect(requestLogRoute('/private-file-name.txt')).toBe('/web-asset');
   });
 });

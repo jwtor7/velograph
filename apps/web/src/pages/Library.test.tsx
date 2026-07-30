@@ -37,6 +37,7 @@ describe('Library timezone labels', () => {
     vi.spyOn(api, 'settings').mockResolvedValue({
       settings: {
         timeZone,
+        displayUnits: 'metric',
         hrZoneBounds: null,
         movingSpeedThresholdMs: 1,
         minCoverageForEfficiency: 0.7,
@@ -61,5 +62,48 @@ describe('Library timezone labels', () => {
     const dialog = screen.getByRole('alertdialog', { name: 'Delete this ride?' });
     expect(dialog.textContent).toContain(configuredDate);
     expect(dialog.textContent).not.toContain(utcDate);
+  });
+
+  it('renders library measurements and filter labels in configured imperial units', async () => {
+    const startUtc = Date.UTC(2033, 0, 2, 2, 30);
+    vi.spyOn(api, 'workouts').mockResolvedValue({
+      workouts: [
+        {
+          id: 8,
+          type: 'outdoor_cycling',
+          startUtc,
+          endUtc: startUtc + 3_600_000,
+          durationS: 3_600,
+          qualityState: 'ok',
+          distanceM: 15_000,
+          avgSpeedMs: 5,
+          avgHr: 130,
+          elevationGainM: 80,
+          hasRoute: true,
+        },
+      ],
+    });
+    vi.spyOn(api, 'settings').mockResolvedValue({
+      settings: {
+        timeZone: 'Etc/UTC',
+        displayUnits: 'imperial',
+        hrZoneBounds: null,
+        movingSpeedThresholdMs: 1,
+        minCoverageForEfficiency: 0.7,
+        elevationHysteresisM: 1,
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <Library />
+      </MemoryRouter>,
+    );
+
+    const table = await screen.findByRole('region', { name: 'Ride library table' });
+    expect(table.textContent).toContain('9.3 mi');
+    expect(table.textContent).toContain('11.2 mph');
+    expect(table.textContent).toContain('262 ft');
+    expect(screen.getByText('Min distance (mi)')).toBeTruthy();
   });
 });

@@ -1,4 +1,5 @@
 import type { TrendsResponse } from './api.ts';
+import { speedChartValue, type DisplayUnits } from './display-units.ts';
 
 export type RideTrendMetric = 'avgHr' | 'avgSpeedKmh' | 'efficiency';
 
@@ -14,13 +15,14 @@ export interface NullableBarItem {
 export function buildRideTrendItems(
   rides: TrendsResponse['rides'],
   metric: RideTrendMetric,
+  displayUnits: DisplayUnits = 'metric',
 ): NullableBarItem[] {
   return rides.map((ride) => {
     let value: number | null;
     if (metric === 'avgHr') {
       value = ride.avgHr;
     } else if (metric === 'avgSpeedKmh') {
-      value = ride.avgSpeedMs == null ? null : ride.avgSpeedMs * 3.6;
+      value = ride.avgSpeedMs == null ? null : speedChartValue(ride.avgSpeedMs, displayUnits);
     } else {
       value = ride.efficiency;
     }

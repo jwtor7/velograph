@@ -1,5 +1,72 @@
 import { describe, expect, it } from 'vitest';
-import { summarizeBrowserErrors, summarizeRequestOrigins } from './offline-map-browser-smoke.mjs';
+import {
+  canvasTraceHasPolyline,
+  cursorSnapshotIsSynchronized,
+  summarizeBrowserErrors,
+  summarizeRequestOrigins,
+} from './offline-map-browser-smoke.mjs';
+
+const synchronizedCursorObservation = Object.freeze({
+  minimum: 1_000,
+  maximum: 5_000,
+  value: 2_000,
+  cursorX1: 140,
+  cursorX2: 140,
+  viewBoxX: 0,
+  viewBoxWidth: 560,
+});
+
+describe('offline map browser smoke geometry and cursor contracts', () => {
+  it('requires draw-time evidence of a polyline segment, not marker arcs alone', () => {
+    expect(
+      canvasTraceHasPolyline({
+        polylineStrokeCount: 0,
+        maxPolylineSegmentCount: 0,
+        cursorStrokeCount: 4,
+      }),
+    ).toBe(false);
+    expect(
+      canvasTraceHasPolyline({
+        polylineStrokeCount: 1,
+        maxPolylineSegmentCount: 9,
+        cursorStrokeCount: 0,
+      }),
+    ).toBe(true);
+  });
+
+  it('accepts exactly three sliders whose values and vertical cursor lines agree', () => {
+    expect(
+      cursorSnapshotIsSynchronized([
+        { ...synchronizedCursorObservation },
+        { ...synchronizedCursorObservation },
+        { ...synchronizedCursorObservation },
+      ]),
+    ).toBe(true);
+  });
+
+  it('rejects missing sliders, stale values, and non-vertical cursor lines', () => {
+    expect(
+      cursorSnapshotIsSynchronized([
+        { ...synchronizedCursorObservation },
+        { ...synchronizedCursorObservation },
+      ]),
+    ).toBe(false);
+    expect(
+      cursorSnapshotIsSynchronized([
+        { ...synchronizedCursorObservation },
+        { ...synchronizedCursorObservation },
+        { ...synchronizedCursorObservation, value: 3_000, cursorX1: 280, cursorX2: 280 },
+      ]),
+    ).toBe(false);
+    expect(
+      cursorSnapshotIsSynchronized([
+        { ...synchronizedCursorObservation },
+        { ...synchronizedCursorObservation },
+        { ...synchronizedCursorObservation, cursorX2: 141 },
+      ]),
+    ).toBe(false);
+  });
+});
 
 describe('offline map browser smoke request summarization', () => {
   it('accepts only loopback HTTP requests and identifies local basemap tiles', () => {

@@ -123,11 +123,17 @@ describe('secure GPX parser (ROUTE-001/004/005)', () => {
     ).not.toThrow();
   });
 
-  it('drops out-of-range coordinates instead of importing them', () => {
-    const gpx = wrap(`<trkseg>${pt(-48.5, -123.5)}${pt(95, -123.5)}</trkseg>`);
-    const res = parseGpx(gpx);
-    expect(res.segments[0]!.points).toHaveLength(1);
-    expect(res.droppedPoints).toBe(1);
+  it('rejects the complete file when any required coordinate is invalid or missing', () => {
+    for (const invalidPoint of [
+      pt(95, -123.5),
+      '<trkpt lat="" lon="-123.5"/>',
+      '<trkpt lat="-48.5"/>',
+    ]) {
+      const gpx = wrap(`<trkseg>${pt(-48.5, -123.5)}${invalidPoint}</trkseg>`);
+      expect(() => parseGpx(gpx)).toThrowError(
+        expect.objectContaining({ code: 'numeric_value_invalid' }),
+      );
+    }
   });
 
   it('preserves a genuinely missing time as explicit null', () => {

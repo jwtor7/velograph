@@ -21,11 +21,100 @@ const sandbox = await mkdtemp(join(tmpdir(), 'velograph-cli-package-'));
 const packageDirectory = join(sandbox, 'package');
 const installDirectory = join(sandbox, 'install');
 const dataDirectory = join(sandbox, 'data');
+const folderDataDirectory = join(sandbox, 'folder-data');
+const zipDataDirectory = join(sandbox, 'zip-data');
+const haeFolderDirectory = join(sandbox, 'synthetic-hae-folder');
+const haeZipPath = join(sandbox, 'synthetic-hae-export.zip');
 const fixturePath = join(sandbox, 'Outdoor Cycling-Heart Rate-20310102_080000.csv');
 const quarantinePath = join(sandbox, 'Outdoor Cycling-Heart Rate-20390101_010101.csv');
 const oversizedPath = join(sandbox, 'Outdoor Cycling-Heart Rate-20390101_020202.csv');
 const backupPath = join(sandbox, 'synthetic-backup.sqlite3');
 const canonicalMigrations = join(repositoryRoot, 'packages', 'db', 'migrations');
+const workspaceRequire = createRequire(join(repositoryRoot, 'apps', 'cli', 'package.json'));
+const cleanRoutePoints = Array.from({ length: 4 }, (_, index) => ({
+  timestamp: `2033-06-04T09:1${index}:00Z`,
+  lat: -48.8 + index * 0.0003,
+  lon: -123.8 - index * 0.0003,
+  elevation: 14.2 + index * 0.4,
+  speed: 6.1 + index * 0.1,
+  course: 101 + index * 2,
+}));
+const EXPECTED_USAGE = [
+  'Usage:',
+  '  velograph-import import <file|dir|zip>... [--data-dir <dir>]',
+  '  velograph-import delete <workoutId> [--data-dir <dir>]',
+  '  velograph-import delete-all --confirm-delete-all [--data-dir <dir>]',
+  '  velograph-import backup <destPath> [--data-dir <dir>]',
+  '  velograph-import restore <backupPath> --confirm-replace [--data-dir <dir>]',
+  '  velograph-import repair <workoutId> [--data-dir <dir>]',
+  '',
+].join('\n');
+
+const haeFiles = new Map([
+  [
+    'Outdoor Cycling-Heart Rate-20330604_091000.csv',
+    [
+      'Date/Time,Min (bpm),Max (bpm),Avg (bpm),Context,Source',
+      '2033-06-04T09:10:00Z,137,146,142,workout,Synthetic Clean Install Device',
+      '2033-06-04T09:11:00Z,140,150,145,workout,Synthetic Clean Install Device',
+      '2033-06-04T09:12:00Z,143,153,148,workout,Synthetic Clean Install Device',
+    ].join('\n'),
+  ],
+  [
+    'Outdoor Cycling-Cycling Cadence-20330604_091000.csv',
+    [
+      'Date/Time,Cadence (rpm),Source',
+      '2033-06-04T09:10:00Z,83,Synthetic Clean Install Device',
+      '2033-06-04T09:11:00Z,87,Synthetic Clean Install Device',
+      '2033-06-04T09:12:00Z,85,Synthetic Clean Install Device',
+    ].join('\n'),
+  ],
+  [
+    'Outdoor Cycling-Cycling Distance-20330604_091000.csv',
+    [
+      'Date/Time,Distance (km),Source',
+      '2033-06-04T09:10:00Z,0.731,Synthetic Clean Install Device',
+      '2033-06-04T09:11:00Z,0.764,Synthetic Clean Install Device',
+      '2033-06-04T09:12:00Z,0.752,Synthetic Clean Install Device',
+    ].join('\n'),
+  ],
+  [
+    'Outdoor Cycling-Active Energy-20330604_091000.csv',
+    [
+      'Date/Time,Active Energy (kJ),Source',
+      '2033-06-04T09:10:00Z,32.4,Synthetic Clean Install Device',
+      '2033-06-04T09:11:00Z,34.8,Synthetic Clean Install Device',
+      '2033-06-04T09:12:00Z,33.7,Synthetic Clean Install Device',
+    ].join('\n'),
+  ],
+  [
+    'Outdoor Cycling-Route-20330604_091000.csv',
+    ['Timestamp,Latitude,Longitude,Altitude (m),Speed (m/s),Course (deg)']
+      .concat(
+        cleanRoutePoints.map(
+          (point) =>
+            `${point.timestamp},${point.lat.toFixed(6)},${point.lon.toFixed(6)},` +
+            `${point.elevation.toFixed(1)},${point.speed.toFixed(1)},${point.course.toFixed(1)}`,
+        ),
+      )
+      .join('\n'),
+  ],
+  [
+    'Outdoor Cycling-Route-20330604_091000.gpx',
+    [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<gpx version="1.1" creator="velograph-synthetic-clean-install" xmlns="http://www.topografix.com/GPX/1/1">',
+      '  <trk><name>Synthetic clean install route</name><trkseg>',
+      ...cleanRoutePoints.map(
+        (point) =>
+          `    <trkpt lat="${point.lat.toFixed(6)}" lon="${point.lon.toFixed(6)}">` +
+          `<ele>${point.elevation.toFixed(1)}</ele><time>${point.timestamp}</time></trkpt>`,
+      ),
+      '  </trkseg></trk>',
+      '</gpx>',
+    ].join('\n'),
+  ],
+]);
 
 function environment(extra = {}) {
   return {
@@ -54,11 +143,33 @@ function run(command, args, cwd, extraEnvironment = {}) {
   return result;
 }
 
+function runPnpm(args, cwd) {
+  const npmExecPath = process.env.npm_execpath;
+  if (typeof npmExecPath === 'string' && /(?:^|[/\\])pnpm(?:\.c?js)?$/.test(npmExecPath)) {
+    return run(process.execPath, [npmExecPath, ...args], cwd);
+  }
+  return run(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', args, cwd);
+}
+
 function assertValueFree(output, forbidden) {
   for (const value of forbidden) {
     if (value && output.includes(value)) {
       throw new Error('installed CLI output exposed forbidden synthetic/private token');
     }
+  }
+}
+
+function assertExactCommandResult(
+  result,
+  { status = 0, stdout = '', stderr = '', message = 'installed CLI returned unexpected output' },
+) {
+  if (
+    result.error ||
+    result.status !== status ||
+    result.stdout !== stdout ||
+    result.stderr !== stderr
+  ) {
+    throw new Error(message);
   }
 }
 
@@ -98,6 +209,80 @@ async function installedDependencyVersion(installedPackageDirectory, name) {
   throw new Error('installed CLI runtime dependency is missing');
 }
 
+function normalizedRideCounts(database) {
+  const count = (table) => database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count;
+  return {
+    workouts: count('workouts'),
+    sourceFiles: count('source_files'),
+    workoutSourceFiles: count('workout_source_files'),
+    metricSeries: count('metric_series'),
+    metricSamples: count('metric_samples'),
+    routes: count('routes'),
+    routePoints: count('route_points'),
+  };
+}
+
+function verifyCompleteRide(database) {
+  const counts = normalizedRideCounts(database);
+  if (
+    counts.workouts !== 1 ||
+    counts.sourceFiles !== 6 ||
+    counts.workoutSourceFiles !== 6 ||
+    counts.metricSeries !== 4 ||
+    counts.metricSamples !== 12 ||
+    counts.routes !== 1 ||
+    counts.routePoints !== 4
+  ) {
+    throw new Error('clean-installed CLI did not create one complete normalized ride');
+  }
+  const series = database
+    .prepare(
+      `SELECT metric_type, unit, sample_count
+       FROM metric_series ORDER BY metric_type`,
+    )
+    .all();
+  if (
+    JSON.stringify(series) !==
+    JSON.stringify([
+      { metric_type: 'cadence', unit: 'rpm', sample_count: 3 },
+      { metric_type: 'distance', unit: 'm', sample_count: 3 },
+      { metric_type: 'energy', unit: 'J', sample_count: 3 },
+      { metric_type: 'heart_rate', unit: 'bpm', sample_count: 3 },
+    ])
+  ) {
+    throw new Error('clean-installed CLI did not preserve every canonical metric series');
+  }
+  const route = database.prepare('SELECT source_format, point_count FROM routes ORDER BY id').get();
+  if (route?.source_format !== 'gpx' || route.point_count !== 4) {
+    throw new Error('clean-installed CLI did not preserve the preferred complete GPX route');
+  }
+  return counts;
+}
+
+function assertExactImportSummary(
+  result,
+  { imported, duplicates, skipped = 0, quarantined = 0, workouts, detailLines = [] },
+) {
+  const lines = [
+    'Batch [1-9]\\d* committed',
+    `  imported files:     ${imported}`,
+    `  duplicates skipped: ${duplicates}`,
+    `  out-of-scope skipped: ${skipped}`,
+    `  quarantined:        ${quarantined}`,
+    `  workouts created:   ${workouts}`,
+    ...detailLines.map((line) => line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  ];
+  const expectedOutput = new RegExp(`^${lines.join('\\n')}\\n$`);
+  if (
+    result.error ||
+    result.status !== 0 ||
+    result.stderr !== '' ||
+    !expectedOutput.test(result.stdout)
+  ) {
+    throw new Error('clean-installed CLI returned an unexpected aggregate import summary');
+  }
+}
+
 try {
   await writeFile(
     fixturePath,
@@ -111,10 +296,25 @@ try {
   await writeFile(quarantinePath, 'invented malformed private source\n');
   await writeFile(oversizedPath, '');
   await truncate(oversizedPath, 64 * 1024 * 1024 + 1);
-  await Promise.all([mkdir(packageDirectory), mkdir(installDirectory)]);
+  await Promise.all([mkdir(packageDirectory), mkdir(installDirectory), mkdir(haeFolderDirectory)]);
+  await Promise.all(
+    [...haeFiles].map(([name, content]) => writeFile(join(haeFolderDirectory, name), content)),
+  );
+  const { zipSync } = workspaceRequire('fflate');
+  await writeFile(
+    haeZipPath,
+    zipSync(
+      Object.fromEntries(
+        [...haeFiles].map(([name, content]) => [
+          `Synthetic Health Auto Export/${name}`,
+          Buffer.from(content),
+        ]),
+      ),
+      { level: 9 },
+    ),
+  );
 
-  run(
-    'pnpm',
+  runPnpm(
     ['--filter', '@velograph/cli', 'pack', '--pack-destination', packageDirectory],
     repositoryRoot,
   );
@@ -183,13 +383,11 @@ try {
   ];
 
   const imported = runCli(['import', fixturePath, '--data-dir', dataDirectory]);
-  if (
-    imported.status !== 0 ||
-    !/imported files:\s+1/.test(imported.stdout) ||
-    !/workouts created:\s+1/.test(imported.stdout)
-  ) {
-    throw new Error('installed CLI did not import the synthetic fixture');
-  }
+  assertExactImportSummary(imported, {
+    imported: 1,
+    duplicates: 0,
+    workouts: 1,
+  });
   assertValueFree(`${imported.stdout}${imported.stderr}`, privateTokens);
 
   const installedRequire = createRequire(join(installDirectory, 'package.json'));
@@ -208,14 +406,62 @@ try {
     throw new Error('installed CLI did not store only the portable source basename');
   }
 
-  const quarantined = runCli(['import', quarantinePath, '--data-dir', dataDirectory]);
-  if (
-    quarantined.status !== 0 ||
-    !/quarantined:\s+1/.test(quarantined.stdout) ||
-    !/quarantined \[[a-z_]+\]: 1/.test(quarantined.stdout)
-  ) {
-    throw new Error('installed CLI did not report a value-free quarantine summary');
+  const cleanInstallTokens = [
+    sandbox,
+    haeFolderDirectory,
+    haeZipPath,
+    ...haeFiles.keys(),
+    '2033-06-04T09:10:00Z',
+    'Synthetic Clean Install Device',
+    cleanRoutePoints[0].lat.toFixed(6),
+    cleanRoutePoints[0].lon.toFixed(6),
+    '0.731',
+    '32.4',
+    '142',
+  ];
+  for (const [kind, sourcePath, cleanDataDirectory] of [
+    ['folder', haeFolderDirectory, folderDataDirectory],
+    ['ZIP', haeZipPath, zipDataDirectory],
+  ]) {
+    const firstCleanImport = runCli(['import', sourcePath, '--data-dir', cleanDataDirectory]);
+    assertExactImportSummary(firstCleanImport, { imported: 6, duplicates: 0, workouts: 1 });
+    assertValueFree(`${firstCleanImport.stdout}${firstCleanImport.stderr}`, cleanInstallTokens);
+
+    let cleanDatabase = new DatabaseConstructor(join(cleanDataDirectory, 'velograph.sqlite3'), {
+      readonly: true,
+    });
+    const beforeDuplicate = verifyCompleteRide(cleanDatabase);
+    cleanDatabase.close();
+
+    const duplicateCleanImport = runCli(['import', sourcePath, '--data-dir', cleanDataDirectory]);
+    assertExactImportSummary(duplicateCleanImport, {
+      imported: 0,
+      duplicates: 6,
+      workouts: 0,
+    });
+    assertValueFree(
+      `${duplicateCleanImport.stdout}${duplicateCleanImport.stderr}`,
+      cleanInstallTokens,
+    );
+
+    cleanDatabase = new DatabaseConstructor(join(cleanDataDirectory, 'velograph.sqlite3'), {
+      readonly: true,
+    });
+    const afterDuplicate = verifyCompleteRide(cleanDatabase);
+    cleanDatabase.close();
+    if (JSON.stringify(beforeDuplicate) !== JSON.stringify(afterDuplicate)) {
+      throw new Error(`clean-installed CLI ${kind} re-import was not idempotent`);
+    }
   }
+
+  const quarantined = runCli(['import', quarantinePath, '--data-dir', dataDirectory]);
+  assertExactImportSummary(quarantined, {
+    imported: 0,
+    duplicates: 0,
+    quarantined: 1,
+    workouts: 0,
+    detailLines: ['  quarantined [unrecognized_headers]: 1'],
+  });
   assertValueFree(`${quarantined.stdout}${quarantined.stderr}`, [
     sandbox,
     quarantinePath,
@@ -225,9 +471,10 @@ try {
 
   const oversized = runCli(['import', oversizedPath, '--data-dir', dataDirectory]);
   if (
+    oversized.error ||
     oversized.status !== 1 ||
     oversized.stdout !== '' ||
-    oversized.stderr.trim() !== 'Import failed: import_failed'
+    oversized.stderr !== 'Import failed: import_failed\n'
   ) {
     throw new Error('installed CLI did not reject an oversized direct file');
   }
@@ -255,19 +502,30 @@ try {
   }
 
   const repaired = runCli(['repair', String(workoutId), '--data-dir', dataDirectory]);
-  if (repaired.status !== 0 || !repaired.stdout.includes(`Repaired workout ${workoutId}`)) {
-    throw new Error('installed CLI did not repair the synthetic workout');
-  }
+  assertExactCommandResult(repaired, {
+    stdout: `Repaired workout ${workoutId} (formula analytics-v2)\n`,
+    message: 'installed CLI did not repair the synthetic workout',
+  });
   assertValueFree(`${repaired.stdout}${repaired.stderr}`, privateTokens);
 
   const backedUp = runCli(['backup', backupPath, '--data-dir', dataDirectory]);
-  if (backedUp.status !== 0 || !backedUp.stdout.includes('Backup written')) {
+  if (
+    backedUp.error ||
+    backedUp.status !== 0 ||
+    backedUp.stderr !== '' ||
+    !/^Backup written \([1-9]\d* page\(s\), format 1, schema 0004_backup_manifest\.sql\)\n$/.test(
+      backedUp.stdout,
+    )
+  ) {
     throw new Error('installed CLI did not create the synthetic backup');
   }
   assertValueFree(`${backedUp.stdout}${backedUp.stderr}`, [...privateTokens, backupPath]);
 
   const deleted = runCli(['delete', String(workoutId), '--data-dir', dataDirectory]);
-  if (deleted.status !== 0) throw new Error('installed CLI did not delete the synthetic workout');
+  assertExactCommandResult(deleted, {
+    stdout: `Deleted workout ${workoutId} (removed 1 exclusive source file record(s))\n`,
+    message: 'installed CLI did not delete the synthetic workout',
+  });
   database = inspectDatabase();
   if (database.prepare('SELECT count(*) AS count FROM workouts').get().count !== 0) {
     throw new Error('installed CLI delete did not remove the synthetic workout');
@@ -275,12 +533,11 @@ try {
   database.close();
 
   const unconfirmed = runCli(['restore', backupPath, '--data-dir', dataDirectory]);
-  if (
-    unconfirmed.status !== 2 ||
-    unconfirmed.stderr.trim() !== 'Restore requires --confirm-replace'
-  ) {
-    throw new Error('installed CLI restored without explicit confirmation');
-  }
+  assertExactCommandResult(unconfirmed, {
+    status: 2,
+    stderr: 'Restore requires --confirm-replace\n',
+    message: 'installed CLI restored without explicit confirmation',
+  });
   const restored = runCli([
     'restore',
     backupPath,
@@ -288,9 +545,10 @@ try {
     '--data-dir',
     dataDirectory,
   ]);
-  if (restored.status !== 0 || !restored.stdout.includes('verified')) {
-    throw new Error('installed CLI did not restore the confirmed synthetic backup');
-  }
+  assertExactCommandResult(restored, {
+    stdout: 'Database restored; manifest and checksums verified (0004_backup_manifest.sql)\n',
+    message: 'installed CLI did not restore the confirmed synthetic backup',
+  });
   assertValueFree(`${restored.stdout}${restored.stderr}`, [...privateTokens, backupPath]);
   database = inspectDatabase();
   if (database.prepare('SELECT count(*) AS count FROM workouts').get().count !== 1) {
@@ -312,9 +570,11 @@ try {
     ],
   ]) {
     const invalid = runCli(invalidArgs, { VELO_DATA_DIR: fallbackDirectory });
-    if (invalid.status !== 2 || !invalid.stdout.startsWith('Usage:')) {
-      throw new Error('installed CLI accepted an invalid data-dir option');
-    }
+    assertExactCommandResult(invalid, {
+      status: 2,
+      stdout: EXPECTED_USAGE,
+      message: 'installed CLI accepted an invalid data-dir option',
+    });
     assertValueFree(`${invalid.stdout}${invalid.stderr}`, [
       sandbox,
       fixturePath,
@@ -325,13 +585,46 @@ try {
     throw new Error('installed CLI resolved the default data directory after invalid arguments');
   }
 
+  const unconfirmedDeleteAll = runCli(['delete-all', '--data-dir', dataDirectory]);
+  assertExactCommandResult(unconfirmedDeleteAll, {
+    status: 2,
+    stderr: 'Delete-all requires --confirm-delete-all\n',
+    message: 'installed CLI deleted all data without explicit confirmation',
+  });
+  database = inspectDatabase();
+  if (database.prepare('SELECT count(*) AS count FROM workouts').get().count !== 1) {
+    database.close();
+    throw new Error('installed CLI unconfirmed delete-all mutated workouts');
+  }
+  database.close();
+
+  const confirmedDeleteAll = runCli([
+    'delete-all',
+    '--confirm-delete-all',
+    '--data-dir',
+    dataDirectory,
+  ]);
+  assertExactCommandResult(confirmedDeleteAll, {
+    stdout: 'Deleted all local data\n',
+    message: 'installed CLI did not delete all local data',
+  });
+  database = inspectDatabase();
+  for (const table of ['workouts', 'source_files', 'import_batches', 'user_settings']) {
+    if (database.prepare(`SELECT count(*) AS count FROM ${table}`).get().count !== 0) {
+      database.close();
+      throw new Error('installed CLI delete-all left application rows');
+    }
+  }
+  database.close();
+
   const runtimePath = join(installedPackageDirectory, 'dist', 'cli-runtime.mjs');
   await rename(runtimePath, `${runtimePath}.missing`);
   const failed = runCli(['import', fixturePath, '--data-dir', dataDirectory]);
   if (
+    failed.error ||
     failed.status !== 1 ||
     failed.stdout !== '' ||
-    failed.stderr.trim() !== 'Command failed: unexpected_error'
+    failed.stderr !== 'Command failed: unexpected_error\n'
   ) {
     throw new Error('installed CLI module-load failure was not safely contained');
   }

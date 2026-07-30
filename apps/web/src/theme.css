@@ -17,7 +17,7 @@
   --vg-accent-violet-deep: #6a4ebc;
   --vg-progress-blue: #187cf8;
 
-  --vg-ch-elevation: #653aca;
+  --vg-ch-elevation: #9b5aff;
   --vg-ch-elevation-fill: #4119a4;
   --vg-ch-speed: #01e289;
   --vg-ch-power: #fbb408;
@@ -605,12 +605,20 @@ select {
   overflow: hidden;
   border: 1px solid var(--vg-border);
   border-radius: var(--vg-radius-sm);
-  background: var(--vg-bg);
+  background-color: var(--vg-bg);
+  background-image:
+    linear-gradient(rgba(184, 192, 204, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(184, 192, 204, 0.045) 1px, transparent 1px);
+  background-size: 32px 32px;
   isolation: isolate;
 }
 
 .route-map.leaflet-container {
-  background: var(--vg-bg);
+  background-color: var(--vg-bg);
+  background-image:
+    linear-gradient(rgba(184, 192, 204, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(184, 192, 204, 0.045) 1px, transparent 1px);
+  background-size: 32px 32px;
   color: var(--vg-text-secondary);
   font-family: inherit;
 }

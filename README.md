@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="velograph_cover_art.png" alt="Velograph — turn Apple Health cycling data into clear visuals and AI-powered insights" width="100%">
+  <img src="velograph_cover_art.png" alt="Velograph — private local cycling analytics and route visualization" width="100%">
 </p>
 
 # Velograph
 
-**Turn Apple Health cycling data into clear visuals and AI-powered insights that help you understand every ride.**
+**Turn Apple Health cycling data into clear, private visuals and deterministic insights.**
 
-Velograph is a local-first web app for cyclists in a public source repository. It imports Apple Health cycling exports (via [Health Auto Export](https://www.healthyapps.dev/) CSV/GPX/ZIP), stores them in a local SQLite database, calculates deterministic ride and conditioning metrics, reconstructs your routes entirely offline, and — optionally — generates evidence-linked AI narratives through a locally installed Codex CLI or Ollama.
+Velograph is a local-first web app for cyclists in a public source repository. It imports Apple Health cycling exports (via [Health Auto Export](https://www.healthyapps.dev/) CSV/GPX/ZIP), stores them in a local SQLite database, calculates deterministic ride and conditioning metrics, and reconstructs routes entirely offline. The workspace also contains opt-in, evidence-validated Codex CLI and Ollama insight runtimes; the current API and web app keep AI disabled and do not yet expose provider configuration or generation.
 
 ## Privacy stance
 
@@ -67,6 +67,11 @@ Support/velograph` on macOS, `%APPDATA%\velograph` on Windows, or
 all persistent state — the SQLite database, quarantined import files — lives there, never
 inside this checkout; a `VELO_DATA_DIR` that resolves inside a git checkout is refused at
 startup.
+
+Managed `app:start` logs are owner-only and retain at most one current and one previous
+generation. Each generation defaults to 5 MiB. Set `VELO_LOG_MAX_BYTES` to a whole number
+from 65536 through 104857600 before starting the app to choose a different bounded retention
+size; payloads, filenames, coordinates, and metric values are never intentionally logged.
 
 ```bash
 pnpm cli:build
@@ -241,7 +246,7 @@ packages/
   analytics/  deterministic ride/conditioning metrics (pure, versioned formulas)
   db/         SQLite schema, migrations, data-dir resolution
   importers/  CSV/GPX/ZIP parsing, normalization, workout association
-  insights/   AI provider interface, minimized payload, schema, validation (stub — see docs/ai-privacy.md)
+  insights/   Opt-in AI provider runtimes, minimized payload, schema, and validation
   shared/     types and utilities shared across packages
 fixtures/synthetic/   invented data used by tests and this quickstart
 ```
@@ -258,7 +263,7 @@ fixtures/synthetic/   invented data used by tests and this quickstart
 - [Offline route maps](docs/offline-basemap.md) — interactive route controls and optional local raster MBTiles setup
 - [Analytics formulas](docs/formulas.md) — every metric definition, versioned
 - [Data management](docs/data-management.md) — delete, backup, restore, and repair: cascade behaviour and the delete/re-import idempotency decision
-- [AI insight privacy](docs/ai-privacy.md) — what would leave the machine per provider, and why AI is a stub today
+- [AI insight privacy](docs/ai-privacy.md) — exact provider destinations, minimized payload, and validation boundary
 - [CI supply-chain policy](docs/ci-supply-chain.md) — pinned-SHA GitHub Actions and how to update them
 - [Third-party notices](THIRD_PARTY_NOTICES.md) — bundled dependency licences and notices
 - [Release privacy audit](docs/release-privacy-audit.md) — worktree, history, artifact, and image-layer release checks

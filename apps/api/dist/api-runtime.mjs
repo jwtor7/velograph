@@ -723,6 +723,33 @@ var Repository = class {
     });
   }
   /**
+   * Delete every persisted application row while preserving the SQLite schema
+   * and ordered migration history. The explicit child-to-parent order also
+   * clears nullable/global analytics and insight rows that are not owned by a
+   * workout. This intentionally does not VACUUM or claim physical secure
+   * erasure; see docs/data-management.md.
+   */
+  deleteAllData() {
+    this.transaction(() => {
+      this.db.exec(`
+        DELETE FROM source_file_reprocessing_failures;
+        DELETE FROM workout_source_files;
+        DELETE FROM notes_tags;
+        DELETE FROM insight_runs;
+        DELETE FROM analytics_snapshots;
+        DELETE FROM route_points;
+        DELETE FROM routes;
+        DELETE FROM metric_samples;
+        DELETE FROM metric_series;
+        DELETE FROM workouts;
+        DELETE FROM source_files;
+        DELETE FROM import_batches;
+        DELETE FROM user_settings;
+        DELETE FROM backup_manifests;
+      `);
+    });
+  }
+  /**
    * Recompute a workout's start/end/duration from its current metric_series
    * and route_points rows (repair: re-derive association bounds from stored
    * normalized data rather than trusting a possibly-stale span). Returns
@@ -2386,7 +2413,7 @@ function parseStrictNumber(raw, bounds = {}) {
 }
 
 // packages/importers/src/gpx.ts
-var GPX_PARSER_VERSION = "gpx-v5";
+var GPX_PARSER_VERSION = "gpx-v6";
 var DEFAULT_GPX_LIMITS = {
   maxBytes: 50 * 1024 * 1024,
   maxPoints: 5e5,
@@ -2499,8 +2526,11 @@ function parseGpx(input, limits = DEFAULT_GPX_LIMITS) {
       const lon = attributes.get("lon") ?? null;
       const latNumber = parseStrictNumber(lat, { min: -90, max: 90 });
       const lonNumber = parseStrictNumber(lon, { min: -180, max: 180 });
-      if (latNumber != null) point.lat = latNumber;
-      if (lonNumber != null) point.lon = lonNumber;
+      if (latNumber == null || lonNumber == null) {
+        throw new GpxError("numeric_value_invalid", "required track-point coordinate invalid");
+      }
+      point.lat = latNumber;
+      point.lon = lonNumber;
     } else if (point) {
       const field = pointField(frame);
       if (field) textCapture = { frame, field, text: "" };
@@ -5157,7 +5187,8 @@ var APP_SETTING_KEYS = [
   "movingSpeedThresholdMs",
   "minCoverageForEfficiency",
   "elevationHysteresisM",
-  "timeZone"
+  "timeZone",
+  "displayUnits"
 ];
 var InvalidAppSettingsError = class extends Error {
   code = "invalid_settings";
@@ -5192,7 +5223,9 @@ function parseAppSettings(value) {
   }
   const timeZone = value["timeZone"];
   if (typeof timeZone !== "string" || !isValidTimeZone(timeZone)) return failAppSettings();
-  return { ...analytics, timeZone };
+  const displayUnits = value["displayUnits"];
+  if (displayUnits !== "metric" && displayUnits !== "imperial") return failAppSettings();
+  return { ...analytics, timeZone, displayUnits };
 }
 function mergeAppSettings(current, patch) {
   if (!isRecord2(patch)) return failAppSettings();
@@ -5203,7 +5236,11 @@ function mergeAppSettings(current, patch) {
 }
 function loadSettings(db) {
   const stored = new Repository(db).getSetting(SETTINGS_KEY);
-  const defaults = { ...DEFAULT_ANALYTICS_SETTINGS, timeZone: systemTimeZone() };
+  const defaults = {
+    ...DEFAULT_ANALYTICS_SETTINGS,
+    timeZone: systemTimeZone(),
+    displayUnits: "metric"
+  };
   if (stored === void 0) return parseAppSettings(defaults);
   if (!isRecord2(stored)) return failAppSettings();
   return parseAppSettings({ ...defaults, ...stored });
@@ -5805,6 +5842,10 @@ var PATH_IMPORT_ZIP_LIMITS = {
   maxEntryBytes: DEFAULT_MAX_GROUP_BYTES,
   maxTotalBytes: DEFAULT_MAX_GROUP_BYTES
 };
+var LOGGABLE_HTTP_METHODS = /* @__PURE__ */ new Set(["GET", "HEAD", "POST", "PUT", "DELETE"]);
+function requestLogMethod(method) {
+  return method !== void 0 && LOGGABLE_HTTP_METHODS.has(method) ? method : "UNKNOWN";
+}
 function notifyRequestWaiters(state) {
   if (state.activeRequests <= 1) {
     for (const resolve5 of state.exclusiveWaiters) resolve5();
@@ -5826,6 +5867,7 @@ function waitForRequests(state) {
 function createApiServer(opts) {
   const now = opts.now ?? Date.now;
   const state = {
+    deleteAllInProgress: false,
     importInProgress: false,
     activeRequests: 0,
     databaseAvailable: true,
@@ -5843,6 +5885,20 @@ function createApiServer(opts) {
       state.activeRequests += 1;
       let finished = false;
       let operationPending = false;
+      let requestLogged = false;
+      const logRequest = () => {
+        if (requestLogged || !opts.log) return;
+        requestLogged = true;
+        try {
+          opts.log({
+            event: "http_request",
+            method: requestLogMethod(req.method),
+            route: requestLogRoute(req.url),
+            status: res.writableEnded ? res.statusCode : 499
+          });
+        } catch {
+        }
+      };
       const finishRequest = () => {
         if (finished) return;
         finished = true;
@@ -5852,8 +5908,14 @@ function createApiServer(opts) {
       const finishResponse = () => {
         if (!operationPending) finishRequest();
       };
-      res.once("finish", finishResponse);
-      res.once("close", finishResponse);
+      res.once("finish", () => {
+        logRequest();
+        finishResponse();
+      });
+      res.once("close", () => {
+        logRequest();
+        finishResponse();
+      });
       try {
         const operation = handle(req, res, opts, now, server, state, basemap);
         if (operation) {
@@ -5885,6 +5947,32 @@ function createApiServer(opts) {
     waitForRequests: () => waitForRequests(state),
     closeBasemap
   });
+}
+function requestLogRoute(rawUrl) {
+  const path = (rawUrl ?? "").split("?", 1)[0] ?? "";
+  const exact = /* @__PURE__ */ new Set([
+    "/api/health",
+    "/api/basemap",
+    "/api/workouts",
+    "/api/trends",
+    "/api/settings",
+    "/api/data",
+    "/api/import",
+    "/api/import/inventory",
+    "/api/import/path",
+    "/api/import/path/inventory",
+    "/api/backup",
+    "/api/restore"
+  ]);
+  if (exact.has(path)) return path;
+  if (/^\/api\/workouts\/\d+$/.test(path)) return "/api/workouts/:workoutId";
+  if (/^\/api\/workouts\/\d+\/repair$/.test(path)) {
+    return "/api/workouts/:workoutId/repair";
+  }
+  if (/^\/api\/basemap\/tiles\/\d+\/\d+\/\d+$/.test(path)) {
+    return "/api/basemap/tiles/:z/:x/:y";
+  }
+  return path.startsWith("/api/") ? "/api/unknown" : "/web-asset";
 }
 function expectedPort(server) {
   const addr = server.address();
@@ -5969,6 +6057,10 @@ function handle(req, res, opts, now, server, state, basemap) {
   }
   if (state.restoreInProgress && path !== "/api/health") {
     send(res, 503, { error: "restore_in_progress" });
+    return;
+  }
+  if (state.deleteAllInProgress && path !== "/api/health") {
+    send(res, 503, { error: "delete_all_in_progress" });
     return;
   }
   if (path.startsWith("/api/")) {
@@ -6089,6 +6181,26 @@ function route(req, res, opts, url, method, now, state, basemap) {
       if (!res.headersSent) send(res, 400, { error: "invalid_body" });
     });
     return;
+  }
+  if (method === "DELETE" && path === "/api/data") {
+    state.deleteAllInProgress = true;
+    return readJsonBody(req, 1024).then(async (body) => {
+      if (!isRecord3(body) || !hasExactKeys(body, ["confirmed"]) || body["confirmed"] !== true) {
+        send(res, 409, { error: "delete_all_confirmation_required" });
+        return;
+      }
+      await waitForExclusiveRequest(state);
+      try {
+        new Repository(db).deleteAllData();
+        send(res, 200, { deleted: true });
+      } catch {
+        send(res, 500, { error: "delete_all_failed" });
+      }
+    }).catch(() => {
+      if (!res.headersSent) send(res, 400, { error: "invalid_body" });
+    }).finally(() => {
+      state.deleteAllInProgress = false;
+    });
   }
   if (method === "POST" && path === "/api/import/inventory") {
     const limits = opts.importUploadLimits ?? DEFAULT_IMPORT_UPLOAD_LIMITS;
@@ -6285,6 +6397,10 @@ function route(req, res, opts, url, method, now, state, basemap) {
       }
       if (state.restoreInProgress) {
         send(res, 409, { error: "restore_in_progress" });
+        return;
+      }
+      if (state.deleteAllInProgress) {
+        send(res, 503, { error: "delete_all_in_progress" });
         return;
       }
       state.restoreInProgress = true;
@@ -6831,6 +6947,7 @@ async function main(env = process.env) {
       dbPath,
       basemapPath,
       basemapPathRequired: Boolean(basemapOverride),
+      log: (record) => console.log(JSON.stringify(record)),
       ...staticDir ? { staticDir } : {}
     });
   } catch (error) {
@@ -6901,6 +7018,8 @@ export {
   parseAppSettings,
   readApiRuntimeConfig,
   repairWorkout,
+  requestLogMethod,
+  requestLogRoute,
   resolveWebDist,
   saveSettings
 };

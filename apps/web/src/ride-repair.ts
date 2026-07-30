@@ -24,11 +24,16 @@ export function findPreviousWorkout(
 export async function repairAndReloadRide(
   client: RideRepairClient,
   workoutId: number,
-): Promise<{ detail: WorkoutDetail; previous: WorkoutSummary | null }> {
+): Promise<{
+  detail: WorkoutDetail;
+  previous: WorkoutSummary | null;
+  workouts: WorkoutSummary[];
+}> {
   await client.repairWorkout(workoutId);
   const [detail, library] = await Promise.all([client.workout(workoutId), client.workouts()]);
   return {
     detail,
     previous: findPreviousWorkout(library.workouts, workoutId),
+    workouts: library.workouts,
   };
 }

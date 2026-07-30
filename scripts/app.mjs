@@ -22,6 +22,8 @@ const STOP_POLL_MS = 200;
 const START_TIMEOUT_MS = 20_000;
 const LOG_SINK_READY_TIMEOUT_MS = 5000;
 export const MAX_SERVER_LOG_BYTES = 5 * 1024 * 1024;
+export const MIN_SERVER_LOG_BYTES = 64 * 1024;
+export const MAX_CONFIGURABLE_SERVER_LOG_BYTES = 100 * 1024 * 1024;
 const API_ENTRYPOINT = join(REPO_ROOT, 'apps', 'api', 'dist', 'velograph-api.mjs');
 const LOG_SINK_ENTRYPOINT = join(REPO_ROOT, 'scripts', 'server-log-sink.mjs');
 const PACKAGE_VERSION = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version;
@@ -33,6 +35,21 @@ export function readManagedPort(raw = process.env['VELO_PORT'] ?? String(DEFAULT
   const port = Number(raw);
   if (!Number.isSafeInteger(port) || port > 65_535) throw new Error('invalid_port');
   return port;
+}
+
+export function readManagedLogMaxBytes(
+  raw = process.env['VELO_LOG_MAX_BYTES'] ?? String(MAX_SERVER_LOG_BYTES),
+) {
+  if (!/^[1-9]\d*$/.test(raw)) throw new Error('invalid_log_limit');
+  const maxBytes = Number(raw);
+  if (
+    !Number.isSafeInteger(maxBytes) ||
+    maxBytes < MIN_SERVER_LOG_BYTES ||
+    maxBytes > MAX_CONFIGURABLE_SERVER_LOG_BYTES
+  ) {
+    throw new Error('invalid_log_limit');
+  }
+  return maxBytes;
 }
 
 function logPath(port) {
@@ -324,7 +341,9 @@ async function start(port) {
   }
 
   buildApp();
-  const logSink = await startManagedLogSink(logPath(port));
+  const logSink = await startManagedLogSink(logPath(port), {
+    maxBytes: readManagedLogMaxBytes(),
+  });
   let child;
   try {
     child = spawn(process.execPath, [API_ENTRYPOINT], {

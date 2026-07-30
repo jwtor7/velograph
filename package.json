@@ -14,7 +14,7 @@
     "format:fix": "prettier --write .",
     "lint": "eslint .",
     "typecheck": "pnpm -r --if-present run typecheck",
-    "test": "vitest run",
+    "test": "vitest run --exclude scripts/dev-proxy.test.mjs && vitest run scripts/dev-proxy.test.mjs",
     "dev": "node scripts/dev.mjs",
     "runtime:build": "node apps/cli/scripts/build.mjs && node scripts/build-api-runtime.mjs",
     "runtime:verify-artifacts": "node scripts/verify-runtime-artifacts.mjs",
@@ -33,6 +33,8 @@
     "license:check": "node scripts/third-party-license-gate.mjs --workspace",
     "package:web": "node scripts/package-web.mjs && node scripts/third-party-license-gate.mjs --stage-artifact apps/web/dist",
     "browser:smoke:map": "node scripts/offline-map-browser-smoke.mjs",
+    "performance:benchmark": "pnpm runtime:build && node scripts/performance-benchmark.mjs",
+    "performance:benchmark:ci": "pnpm runtime:build && node scripts/performance-benchmark.mjs --ci-regression",
     "fixtures:generate": "node scripts/generate-fixtures.mjs"
   },
   "devDependencies": {

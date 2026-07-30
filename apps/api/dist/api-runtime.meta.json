@@ -131,7 +131,7 @@
       "format": "esm"
     },
     "packages/db/src/repository.ts": {
-      "bytes": 17457,
+      "bytes": 18429,
       "imports": [],
       "format": "esm"
     },
@@ -259,7 +259,7 @@
       "format": "esm"
     },
     "packages/importers/src/gpx.ts": {
-      "bytes": 22143,
+      "bytes": 22381,
       "imports": [
         {
           "path": "packages/shared/src/index.ts",
@@ -477,7 +477,7 @@
       "format": "esm"
     },
     "apps/api/src/analytics-service.ts": {
-      "bytes": 5345,
+      "bytes": 5671,
       "imports": [
         {
           "path": "packages/db/src/index.ts",
@@ -529,7 +529,7 @@
       "format": "esm"
     },
     "apps/api/src/server.ts": {
-      "bytes": 38127,
+      "bytes": 41375,
       "imports": [
         {
           "path": "node:http",
@@ -596,7 +596,7 @@
       "format": "esm"
     },
     "apps/api/src/main.ts": {
-      "bytes": 6063,
+      "bytes": 6123,
       "imports": [
         {
           "path": "node:fs",
@@ -804,13 +804,15 @@
         "parseAppSettings",
         "readApiRuntimeConfig",
         "repairWorkout",
+        "requestLogMethod",
+        "requestLogRoute",
         "resolveWebDist",
         "saveSettings"
       ],
       "entryPoint": "apps/api/src/index.ts",
       "inputs": {
         "apps/api/src/server.ts": {
-          "bytesInOutput": 29493
+          "bytesInOutput": 32045
         },
         "packages/db/src/database.ts": {
           "bytesInOutput": 741
@@ -843,7 +845,7 @@
           "bytesInOutput": 2862
         },
         "packages/db/src/repository.ts": {
-          "bytesInOutput": 14067
+          "bytesInOutput": 15032
         },
         "packages/db/src/analytics-input.ts": {
           "bytesInOutput": 3601
@@ -864,7 +866,7 @@
           "bytesInOutput": 614
         },
         "packages/importers/src/gpx.ts": {
-          "bytesInOutput": 18740
+          "bytesInOutput": 18850
         },
         "packages/importers/src/zip.ts": {
           "bytesInOutput": 11172
@@ -891,7 +893,7 @@
           "bytesInOutput": 16049
         },
         "apps/api/src/analytics-service.ts": {
-          "bytesInOutput": 3547
+          "bytesInOutput": 3753
         },
         "apps/api/src/basemap.ts": {
           "bytesInOutput": 20467
@@ -900,7 +902,7 @@
           "bytesInOutput": 0
         },
         "apps/api/src/main.ts": {
-          "bytesInOutput": 4756
+          "bytesInOutput": 4816
         },
         "apps/api/src/shutdown-coordinator.ts": {
           "bytesInOutput": 870
@@ -909,7 +911,7 @@
           "bytesInOutput": 1026
         }
       },
-      "bytes": 248097
+      "bytes": 252029
     }
   }
 }

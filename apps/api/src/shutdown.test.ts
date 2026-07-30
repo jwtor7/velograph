@@ -121,6 +121,113 @@ describe('shutdownApiServer', () => {
     }
   });
 
+  it('drains accepted database work and rejects new work before restore cutover', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'velo-restore-barrier-'));
+    const dbPath = join(dir, 'live.sqlite3');
+    const backupPath = join(dir, 'backup.sqlite3');
+    let socket: ReturnType<typeof createConnection> | undefined;
+    try {
+      const db = openDatabase(dbPath);
+      await backupDatabase(db, backupPath);
+
+      let restoreCalls = 0;
+      let signalRestoreStarted!: () => void;
+      const restoreStarted = new Promise<void>((resolve) => {
+        signalRestoreStarted = resolve;
+      });
+      let releaseRestore!: () => void;
+      const restoreGate = new Promise<void>((resolve) => {
+        releaseRestore = resolve;
+      });
+      const server = createApiServer({
+        db,
+        dbPath,
+        restoreDatabaseFn: async (...args) => {
+          restoreCalls++;
+          signalRestoreStarted();
+          await restoreGate;
+          return restoreDatabaseWithReport(...args);
+        },
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      const base = `http://127.0.0.1:${port}`;
+
+      const settingsBody = '{"settings":{"timeZone":"UTC"}}';
+      let signalPriorRequestAccepted!: () => void;
+      const priorRequestAccepted = new Promise<void>((resolve) => {
+        signalPriorRequestAccepted = resolve;
+      });
+      server.once('request', signalPriorRequestAccepted);
+      socket = createConnection(port, '127.0.0.1');
+      await new Promise<void>((resolve, reject) => {
+        socket!.once('connect', resolve);
+        socket!.once('error', reject);
+      });
+      const priorResponse = new Promise<string>((resolve, reject) => {
+        let response = '';
+        socket!.on('data', (chunk) => {
+          response += chunk.toString();
+        });
+        socket!.once('end', () => resolve(response));
+        socket!.once('error', reject);
+      });
+      socket.write(
+        [
+          'PUT /api/settings HTTP/1.1',
+          `Host: 127.0.0.1:${port}`,
+          'Content-Type: application/json',
+          'x-velograph-request: 1',
+          `Content-Length: ${Buffer.byteLength(settingsBody)}`,
+          'Connection: close',
+          '',
+          settingsBody.slice(0, -1),
+        ].join('\r\n'),
+      );
+      await priorRequestAccepted;
+
+      const restoreRequest = fetch(`${base}/api/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-velograph-request': '1' },
+        body: JSON.stringify({ path: backupPath, confirmed: true }),
+      });
+      for (let attempt = 0; attempt < 100 && !server.isRestoreInProgress(); attempt++) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(server.isRestoreInProgress()).toBe(true);
+      expect(restoreCalls).toBe(0);
+
+      const rejectedRead = await fetch(`${base}/api/workouts`);
+      expect(rejectedRead.status).toBe(503);
+      expect(await rejectedRead.json()).toEqual({ error: 'restore_in_progress' });
+      const rejectedWrite = await fetch(`${base}/api/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'x-velograph-request': '1' },
+        body: settingsBody,
+      });
+      expect(rejectedWrite.status).toBe(503);
+      expect(await rejectedWrite.json()).toEqual({ error: 'restore_in_progress' });
+      expect(restoreCalls).toBe(0);
+
+      socket.end(settingsBody.slice(-1));
+      expect(await priorResponse).toMatch(/^HTTP\/1\.1 200 /);
+      await restoreStarted;
+      expect(restoreCalls).toBe(1);
+
+      releaseRestore();
+      const restored = await restoreRequest;
+      expect(restored.status).toBe(200);
+      expect((await restored.json()) as { ok: boolean }).toMatchObject({ ok: true });
+
+      await shutdownApiServer(server);
+      expect(server.getDatabase().open).toBe(false);
+    } finally {
+      socket?.destroy();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('fails health closed when a restore error leaves the database handle closed', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'velo-restore-fail-closed-'));
     const dbPath = join(dir, 'live.sqlite3');

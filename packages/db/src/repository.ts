@@ -483,6 +483,34 @@ export class Repository {
   }
 
   /**
+   * Delete every persisted application row while preserving the SQLite schema
+   * and ordered migration history. The explicit child-to-parent order also
+   * clears nullable/global analytics and insight rows that are not owned by a
+   * workout. This intentionally does not VACUUM or claim physical secure
+   * erasure; see docs/data-management.md.
+   */
+  deleteAllData(): void {
+    this.transaction(() => {
+      this.db.exec(`
+        DELETE FROM source_file_reprocessing_failures;
+        DELETE FROM workout_source_files;
+        DELETE FROM notes_tags;
+        DELETE FROM insight_runs;
+        DELETE FROM analytics_snapshots;
+        DELETE FROM route_points;
+        DELETE FROM routes;
+        DELETE FROM metric_samples;
+        DELETE FROM metric_series;
+        DELETE FROM workouts;
+        DELETE FROM source_files;
+        DELETE FROM import_batches;
+        DELETE FROM user_settings;
+        DELETE FROM backup_manifests;
+      `);
+    });
+  }
+
+  /**
    * Recompute a workout's start/end/duration from its current metric_series
    * and route_points rows (repair: re-derive association bounds from stored
    * normalized data rather than trusting a possibly-stale span). Returns

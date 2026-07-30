@@ -17,6 +17,7 @@ describe('App navigation', () => {
     vi.spyOn(api, 'settings').mockResolvedValue({
       settings: {
         timeZone: 'Etc/UTC',
+        displayUnits: 'metric',
         hrZoneBounds: null,
         movingSpeedThresholdMs: 1,
         minCoverageForEfficiency: 0.7,

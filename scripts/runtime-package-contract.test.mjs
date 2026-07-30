@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertRuntimeDependencyContract } from './runtime-package-contract.mjs';
@@ -9,6 +11,28 @@ const exactDependencies = {
   'better-sqlite3': '12.11.1',
   fflate: '0.8.3',
 };
+
+// This read is intentionally immediate and fail-closed. The root test script
+// runs the dist-mutating dev-proxy suite only after every checked-in artifact
+// contract has passed, so a rebuild can neither race this read nor repair a
+// missing committed artifact before it is detected.
+async function readCoherentProductionJavascript(webRoot) {
+  const evidence = JSON.parse(
+    await readFile(join(webRoot, 'third-party-module-evidence.json'), 'utf8'),
+  );
+  const javascriptEntries = evidence.files.filter((file) => file.file.endsWith('.js'));
+  if (javascriptEntries.length === 0) throw new Error('runtime_web_javascript_missing');
+  return Promise.all(
+    javascriptEntries.map(async (entry) => {
+      const bytes = await readFile(join(webRoot, entry.file));
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      if (bytes.length !== entry.bytes || digest !== entry.sha256) {
+        throw new Error('runtime_web_artifact_incomplete');
+      }
+      return { file: entry.file, javascript: bytes.toString('utf8') };
+    }),
+  );
+}
 
 describe('runtime package dependency contract', () => {
   it('routes every declared API build and prepack through the canonical Node orchestrator', () => {
@@ -21,18 +45,12 @@ describe('runtime package dependency contract', () => {
     expect(apiManifest.scripts.prepack).toBe('node ../../scripts/build-api-runtime.mjs');
   });
 
-  it('checks in only production web JavaScript without local source paths', () => {
+  it('checks in only production web JavaScript without local source paths', async () => {
     const webRoot = join(repositoryRoot, 'apps', 'api', 'dist', 'web');
-    const evidence = JSON.parse(
-      readFileSync(join(webRoot, 'third-party-module-evidence.json'), 'utf8'),
-    );
-    const javascriptFiles = evidence.files
-      .map((file) => file.file)
-      .filter((file) => file.endsWith('.js'));
+    const javascriptFiles = await readCoherentProductionJavascript(webRoot);
 
     expect(javascriptFiles.length).toBeGreaterThan(0);
-    for (const file of javascriptFiles) {
-      const javascript = readFileSync(join(webRoot, file), 'utf8');
+    for (const { javascript } of javascriptFiles) {
       expect(javascript).not.toContain('jsxDEV');
       expect(javascript).not.toContain('Each child in a list should have a unique');
       expect(javascript.replaceAll(String.fromCharCode(92), '/')).not.toContain('/apps/web/src/');

@@ -12,14 +12,15 @@ import { parseStrictNumber } from './numeric.ts';
  *    namespace prefixes, one GPX document element, and no trailing content.
  *  - Hard resource limits: input size, point count, element nesting depth,
  *    and total attributes.
- *  - Coordinates, timestamps, and elevations are range-validated; invalid
- *    points are dropped and counted, never guessed.
+ *  - Required coordinates and present timestamps are range-validated; one
+ *    invalid required value rejects the complete file instead of silently
+ *    producing a partial route. Invalid optional values are omitted.
  *
  * This is a purpose-built parser for the GPX track subset (trk/trkseg/trkpt,
  * ele, time, and speed/course extensions), versioned via GPX_PARSER_VERSION so
  * files can be reprocessed after upgrades (IMP-010).
  */
-export const GPX_PARSER_VERSION = 'gpx-v5';
+export const GPX_PARSER_VERSION = 'gpx-v6';
 
 export interface GpxLimits {
   maxBytes: number;
@@ -38,7 +39,11 @@ export const DEFAULT_GPX_LIMITS: GpxLimits = {
 };
 
 export type GpxErrorCode =
-  'xml_doctype_rejected' | 'gpx_limits_exceeded' | 'malformed_xml' | 'timestamps_invalid';
+  | 'xml_doctype_rejected'
+  | 'gpx_limits_exceeded'
+  | 'malformed_xml'
+  | 'timestamps_invalid'
+  | 'numeric_value_invalid';
 
 export class GpxError extends Error {
   readonly code: GpxErrorCode;
@@ -198,8 +203,11 @@ export function parseGpx(input: string, limits: GpxLimits = DEFAULT_GPX_LIMITS):
       const lon = attributes.get('lon') ?? null;
       const latNumber = parseStrictNumber(lat, { min: -90, max: 90 });
       const lonNumber = parseStrictNumber(lon, { min: -180, max: 180 });
-      if (latNumber != null) point.lat = latNumber;
-      if (lonNumber != null) point.lon = lonNumber;
+      if (latNumber == null || lonNumber == null) {
+        throw new GpxError('numeric_value_invalid', 'required track-point coordinate invalid');
+      }
+      point.lat = latNumber;
+      point.lon = lonNumber;
     } else if (point) {
       const field = pointField(frame);
       if (field) textCapture = { frame, field, text: '' };

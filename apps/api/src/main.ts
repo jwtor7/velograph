@@ -117,6 +117,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
       dbPath,
       basemapPath,
       basemapPathRequired: Boolean(basemapOverride),
+      log: (record) => console.log(JSON.stringify(record)),
       ...(staticDir ? { staticDir } : {}),
     });
   } catch (error) {

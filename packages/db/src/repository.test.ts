@@ -2,6 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { openDatabase } from './database.ts';
 import { Repository } from './repository.ts';
 
+const APPLICATION_DATA_TABLES = [
+  'analytics_snapshots',
+  'backup_manifests',
+  'import_batches',
+  'insight_runs',
+  'metric_samples',
+  'metric_series',
+  'notes_tags',
+  'route_points',
+  'routes',
+  'source_file_reprocessing_failures',
+  'source_files',
+  'user_settings',
+  'workout_source_files',
+  'workouts',
+] as const;
+
 /**
  * Delete tests use the repository directly (rather than runImport) so a
  * source file "shared" across two workouts can be constructed deliberately:
@@ -45,6 +62,121 @@ function seedWorkoutWithFile(
      VALUES (?, 'workout', 'analytics-v1', 'h', 'h', '{}', ?)`,
   ).run(workoutId, opts.start);
   return { workoutId, sourceFileId };
+}
+
+function seedAllApplicationState(repo: Repository): void {
+  const createdAt = Date.UTC(2032, 2, 4, 5, 6, 7);
+  const batchId = repo.createBatch('synthetic-delete-all-v1', createdAt);
+  const sourceFileId = repo.insertSourceFile({
+    batchId,
+    sha256: 'synthetic-delete-all-hash',
+    originalName: 'synthetic-ride.csv',
+    detectedType: 'metric:heart_rate',
+    parserVersion: 'synthetic-v1',
+    status: 'imported',
+    sizeBytes: 10,
+  });
+  const workoutId = repo.createWorkout(
+    'outdoor_cycling',
+    createdAt,
+    createdAt + 60_000,
+    'synthetic-delete-all',
+  );
+  repo.linkSourceFileToWorkout(workoutId, sourceFileId);
+  repo.insertMetricSeries({
+    workoutId,
+    sourceFileId,
+    metric: 'heart_rate',
+    unit: 'bpm',
+    source: null,
+    samples: [
+      { t: createdAt, value: 100 },
+      { t: createdAt + 60_000, value: 110 },
+    ],
+  });
+  repo.insertRoute({
+    workoutId,
+    sourceFileId,
+    format: 'gpx',
+    distanceM: 100,
+    segments: [
+      {
+        points: [
+          { t: createdAt, lat: -48.5, lon: -123.5 },
+          { t: createdAt + 60_000, lat: -48.51, lon: -123.51 },
+        ],
+      },
+    ],
+  });
+  repo.recordSourceFileReprocessingFailure({
+    sourceFileId,
+    batchId,
+    attemptedParserVersion: 'synthetic-v2',
+    errorCode: 'io_error',
+    createdAt: createdAt + 1,
+  });
+  repo.setSetting('analytics', { timeZone: 'Etc/UTC' });
+
+  repo.db
+    .prepare(
+      `INSERT INTO analytics_snapshots
+         (workout_id, scope, formula_version, settings_hash, input_hash, result_json, created_at)
+       VALUES (?, 'workout', 'synthetic-v1', 'settings-hash', 'input-hash', '{}', ?)`,
+    )
+    .run(workoutId, createdAt);
+  repo.db
+    .prepare(
+      `INSERT INTO analytics_snapshots
+         (workout_id, scope, formula_version, settings_hash, input_hash, result_json, created_at)
+       VALUES (NULL, 'global', 'synthetic-v1', 'global-settings', 'global-input', '{}', ?)`,
+    )
+    .run(createdAt);
+  repo.db
+    .prepare(
+      `INSERT INTO insight_runs
+         (workout_id, provider, model_id, prompt_version, schema_version, input_hash,
+          payload_json, output_json, validation_status, created_at)
+       VALUES (?, 'disabled', NULL, 'synthetic-v1', 'synthetic-v1', 'input-hash',
+               '{}', NULL, 'not_run', ?)`,
+    )
+    .run(workoutId, createdAt);
+  repo.db
+    .prepare(
+      `INSERT INTO insight_runs
+         (workout_id, provider, model_id, prompt_version, schema_version, input_hash,
+          payload_json, output_json, validation_status, created_at)
+       VALUES (NULL, 'disabled', NULL, 'synthetic-v1', 'synthetic-v1', 'global-input',
+               '{}', NULL, 'not_run', ?)`,
+    )
+    .run(createdAt);
+  repo.db
+    .prepare(
+      `INSERT INTO notes_tags
+         (workout_id, kind, content, ai_inclusion, created_at)
+       VALUES (?, 'tag', 'synthetic-tag', 0, ?)`,
+    )
+    .run(workoutId, createdAt);
+  repo.db
+    .prepare(
+      `INSERT INTO backup_manifests
+         (id, format_version, app_version, schema_version, created_at,
+          included_categories_json, checksums_json, manifest_checksum)
+       VALUES (1, 1, 'synthetic-app', 'synthetic-schema', ?, '{}', '{}', 'synthetic-checksum')`,
+    )
+    .run(createdAt);
+}
+
+function applicationRowCounts(repo: Repository): Record<string, number> {
+  return Object.fromEntries(
+    APPLICATION_DATA_TABLES.map((table) => [
+      table,
+      (
+        repo.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+          count: number;
+        }
+      ).count,
+    ]),
+  );
 }
 
 describe('Repository.insertRoute', () => {
@@ -226,6 +358,77 @@ describe('Repository.deleteWorkout', () => {
     // not be treated as a duplicate (IMP-003 idempotency must not become a
     // data-loss trap after delete).
     expect(repo.findSourceFileByHash(hash)).toBeUndefined();
+    db.close();
+  });
+});
+
+describe('Repository.deleteAllData', () => {
+  it('atomically clears every application table and preserves schema migrations', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    seedAllApplicationState(repo);
+
+    const discoveredApplicationTables = (
+      db
+        .prepare(
+          `SELECT name FROM sqlite_schema
+           WHERE type = 'table'
+             AND name NOT LIKE 'sqlite_%'
+             AND name <> 'schema_migrations'
+           ORDER BY name`,
+        )
+        .all() as { name: string }[]
+    ).map((row) => row.name);
+    expect(discoveredApplicationTables).toEqual([...APPLICATION_DATA_TABLES].sort());
+    expect(Object.values(applicationRowCounts(repo)).every((count) => count > 0)).toBe(true);
+
+    const migrationsBefore = db
+      .prepare('SELECT name, checksum FROM schema_migrations ORDER BY rowid')
+      .all();
+    const schemaBefore = db
+      .prepare(
+        `SELECT type, name, tbl_name, sql FROM sqlite_schema
+         WHERE name NOT LIKE 'sqlite_%'
+         ORDER BY type, name`,
+      )
+      .all();
+
+    repo.deleteAllData();
+
+    expect(applicationRowCounts(repo)).toEqual(
+      Object.fromEntries(APPLICATION_DATA_TABLES.map((table) => [table, 0])),
+    );
+    expect(repo.getSetting('analytics')).toBeUndefined();
+    expect(db.prepare('SELECT name, checksum FROM schema_migrations ORDER BY rowid').all()).toEqual(
+      migrationsBefore,
+    );
+    expect(
+      db
+        .prepare(
+          `SELECT type, name, tbl_name, sql FROM sqlite_schema
+           WHERE name NOT LIKE 'sqlite_%'
+           ORDER BY type, name`,
+        )
+        .all(),
+    ).toEqual(schemaBefore);
+    db.close();
+  });
+
+  it('rolls every deletion back when a late table delete fails', () => {
+    const db = openDatabase(':memory:');
+    const repo = new Repository(db);
+    seedAllApplicationState(repo);
+    const before = applicationRowCounts(repo);
+    db.exec(`
+      CREATE TRIGGER synthetic_delete_all_failure
+      BEFORE DELETE ON user_settings
+      BEGIN
+        SELECT RAISE(ABORT, 'synthetic_delete_blocked');
+      END;
+    `);
+
+    expect(() => repo.deleteAllData()).toThrow('synthetic_delete_blocked');
+    expect(applicationRowCounts(repo)).toEqual(before);
     db.close();
   });
 });

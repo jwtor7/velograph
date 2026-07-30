@@ -64,7 +64,7 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     ).toEqual({ importer_version: 'importer-v4' });
     expect(
       db.prepare('SELECT DISTINCT parser_version FROM source_files ORDER BY parser_version').all(),
-    ).toEqual([{ parser_version: 'gpx-v5' }, { parser_version: 'hae-csv-v4' }]);
+    ).toEqual([{ parser_version: 'gpx-v6' }, { parser_version: 'hae-csv-v4' }]);
     db.close();
   });
 
@@ -511,7 +511,7 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
     ).toEqual({
       source_file_id: sourceFileId,
       batch_id: result.batchId,
-      attempted_parser_version: 'gpx-v5',
+      attempted_parser_version: 'gpx-v6',
       error_code: 'timestamps_invalid',
       created_at: FIXED_NOW + 1000,
     });
@@ -823,6 +823,31 @@ describe('import engine (IMP-003/005/006/007/008)', () => {
       'timestamps_invalid',
     ]);
     expect(new Repository(db).countRows('metric_samples')).toBe(0);
+    db.close();
+  });
+
+  it('quarantines a whole GPX when one track point has an invalid required coordinate', () => {
+    const db = openDatabase(':memory:');
+    const data = Buffer.from(
+      '<?xml version="1.0" encoding="UTF-8"?>' +
+        '<gpx version="1.1" creator="synthetic" xmlns="http://www.topografix.com/GPX/1/1">' +
+        '<trk><trkseg>' +
+        '<trkpt lat="-48.5" lon="-123.5"><time>2031-06-10T08:00:00Z</time></trkpt>' +
+        '<trkpt lat="" lon="-123.6"><time>2031-06-10T08:01:00Z</time></trkpt>' +
+        '</trkseg></trk></gpx>',
+    );
+
+    const result = runImport(db, [{ name: 'Outdoor Cycling-Route-20310610_080000.gpx', data }], {
+      now: FIXED_NOW,
+    });
+
+    expect(result.quarantinedFiles).toEqual([
+      {
+        name: 'Outdoor Cycling-Route-20310610_080000.gpx',
+        code: 'numeric_value_invalid',
+      },
+    ]);
+    expect(new Repository(db).countRows('route_points')).toBe(0);
     db.close();
   });
 

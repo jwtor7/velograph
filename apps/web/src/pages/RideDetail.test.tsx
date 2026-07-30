@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { api, type RideAnalytics, type WorkoutDetail, type WorkoutSummary } from '../api.ts';
 import { buildLineSpec, fmtDate } from '../chartspec/spec.ts';
+import * as rideExport from '../ride-export.ts';
 import { MemoryRouter, Route, Routes } from '../router.tsx';
 import { RideDetail } from './RideDetail.tsx';
 
@@ -11,9 +12,11 @@ vi.mock('../components/interactive-route-map.tsx', () => ({
   InteractiveRouteMap: ({
     segments,
     cursorT,
+    displayUnits,
   }: {
     segments: WorkoutDetail['route'];
     cursorT: number | null;
+    displayUnits: 'metric' | 'imperial';
   }) => (
     <svg
       role="img"
@@ -24,6 +27,7 @@ vi.mock('../components/interactive-route-map.tsx', () => ({
         ),
       )}
       data-cursor={cursorT ?? ''}
+      data-units={displayUnits}
     />
   ),
 }));
@@ -146,6 +150,7 @@ describe('RideDetail repair state', () => {
     vi.spyOn(api, 'settings').mockResolvedValue({
       settings: {
         timeZone,
+        displayUnits: 'metric',
         hrZoneBounds: null,
         movingSpeedThresholdMs: 1,
         minCoverageForEfficiency: 0.7,
@@ -169,7 +174,43 @@ describe('RideDetail repair state', () => {
       level: 1,
       name: `Ride · ${fmtDate(initialStart, timeZone)}`,
     });
-    await screen.findByText(`Compared with ${fmtDate(initialPrevious.startUtc, timeZone)}`);
+    await screen.findByText(
+      new RegExp(`Compared with ${escapeRegex(fmtDate(initialPrevious.startUtc, timeZone))}`),
+    );
+    expect(screen.getByText(/source data quality ok · formula analytics-v2/)).toBeTruthy();
+    const comparisonSelect = screen.getByRole('combobox', { name: 'Compare ride with' });
+    fireEvent.change(comparisonSelect, { target: { value: 'recent_median' } });
+    expect(
+      screen.getByText(
+        /Recent window of 1 prior rides · median coverage distance 1\/1, speed 1\/1, HR 1\/1/,
+      ),
+    ).toBeTruthy();
+    fireEvent.change(comparisonSelect, { target: { value: 'previous' } });
+
+    const download = vi.spyOn(rideExport, 'downloadRideExport').mockImplementation(() => {});
+    fireEvent.click(screen.getByRole('button', { name: 'Export ride' }));
+    const exportDialog = screen.getByRole('alertdialog', { name: 'Export this ride?' });
+    expect(exportDialog).toBeTruthy();
+    expect(
+      (
+        screen.getByRole('checkbox', {
+          name: 'Redact route start and finish',
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(true);
+    expect(
+      (
+        screen.getByRole('spinbutton', {
+          name: 'Route redaction radius in metres',
+        }) as HTMLInputElement
+      ).value,
+    ).toBe('500');
+    fireEvent.click(screen.getByRole('button', { name: 'Download JSON' }));
+    expect(download).toHaveBeenCalledWith(initialDetail, {
+      redactRouteEndpoints: true,
+      routeRedactionRadiusM: 500,
+    });
+    expect(screen.queryByRole('alertdialog', { name: 'Export this ride?' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete ride' }));
     const deleteDialog = screen.getByRole('alertdialog', { name: 'Delete this ride?' });
@@ -218,7 +259,9 @@ describe('RideDetail repair state', () => {
       }),
     ).toBeNull();
     expect(
-      screen.getByText(`Compared with ${fmtDate(repairedPrevious.startUtc, timeZone)}`),
+      screen.getByText(
+        new RegExp(`Compared with ${escapeRegex(fmtDate(repairedPrevious.startUtc, timeZone))}`),
+      ),
     ).toBeTruthy();
     expect(
       screen.getByText('Distance', { selector: '.kpi-label span' }).closest('.kpi')?.textContent,
@@ -241,4 +284,56 @@ describe('RideDetail repair state', () => {
     expect(repairedRoute.getAttribute('data-route')).not.toBe(initialRouteSignature);
     expect(repairedRoute.getAttribute('data-cursor')).toBe('');
   });
+
+  it('renders canonical distance splits entirely in the selected imperial units', async () => {
+    const start = Date.UTC(2036, 8, 10, 12);
+    const end = start + 30 * 60_000;
+    const imperialDetail = detail(12, start, end, 10_000, 0);
+    imperialDetail.analytics!.splits = [
+      {
+        index: 1,
+        kind: 'km',
+        startOffsetS: 0,
+        durationS: 200,
+        distanceM: 1_000,
+        avgSpeedMs: 5,
+        avgHr: 123,
+      },
+    ];
+    vi.spyOn(api, 'workout').mockResolvedValue(imperialDetail);
+    vi.spyOn(api, 'workouts').mockResolvedValue({
+      workouts: [summary(12, start, end, 10_000)],
+    });
+    vi.spyOn(api, 'settings').mockResolvedValue({
+      settings: {
+        timeZone: 'Etc/UTC',
+        displayUnits: 'imperial',
+        hrZoneBounds: null,
+        movingSpeedThresholdMs: 1,
+        minCoverageForEfficiency: 0.7,
+        elevationHysteresisM: 1,
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/rides/12']}>
+        <Routes>
+          <Route path="/rides/:id" element={<RideDetail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const heading = await screen.findByRole('heading', { name: 'Distance splits' });
+    const card = heading.closest('.card');
+    expect(card?.textContent).toContain('0.6 mi');
+    expect(card?.textContent).toContain('11.2 mph');
+    expect(card?.textContent).not.toContain('Splits (1 km)');
+    expect(
+      screen.getByRole('img', { name: 'interactive offline route map' }).getAttribute('data-units'),
+    ).toBe('imperial');
+  });
 });
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

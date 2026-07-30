@@ -100,6 +100,7 @@ export interface TrendsResponse {
 
 export interface Settings {
   timeZone: string;
+  displayUnits: 'metric' | 'imperial';
   hrZoneBounds: number[] | null;
   movingSpeedThresholdMs: number;
   minCoverageForEfficiency: number;
@@ -202,6 +203,10 @@ export interface DeleteResultBody {
   deleted: boolean;
   workoutId: number;
   removedSourceFiles: number;
+}
+
+export interface DeleteAllResultBody {
+  deleted: boolean;
 }
 
 export interface RepairResultBody {
@@ -310,6 +315,11 @@ export const api = {
     ),
   deleteWorkout: (id: number) =>
     request<DeleteResultBody>(`/api/workouts/${id}`, { method: 'DELETE' }),
+  deleteAllData: () =>
+    request<DeleteAllResultBody>('/api/data', {
+      method: 'DELETE',
+      body: JSON.stringify({ confirmed: true }),
+    }),
   repairWorkout: (id: number) =>
     request<RepairResultBody>(`/api/workouts/${id}/repair`, { method: 'POST' }),
   backup: (path: string) =>

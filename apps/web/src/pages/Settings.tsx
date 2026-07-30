@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type Settings } from '../api.ts';
+import { ApiError, api, type Settings } from '../api.ts';
 import { ConfirmDialog } from '../components/ui.tsx';
 import { validateZoneBoundsDraft } from '../settings-form.ts';
 
@@ -8,6 +8,7 @@ export function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [bounds, setBounds] = useState<string[]>(['', '', '', '', '']);
   const [timeZone, setTimeZone] = useState('');
+  const [displayUnits, setDisplayUnits] = useState<Settings['displayUnits']>('metric');
   const [saved, setSaved] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [zoneError, setZoneError] = useState<string | null>(null);
@@ -18,7 +19,10 @@ export function SettingsPage() {
   const [restoreStatus, setRestoreStatus] = useState<string | null>(null);
   const [backingUp, setBackingUp] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [deletingAll, setDeletingAll] = useState(false);
   const [confirmingRestore, setConfirmingRestore] = useState(false);
+  const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
+  const [deleteAllStatus, setDeleteAllStatus] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -26,6 +30,7 @@ export function SettingsPage() {
       .then((r) => {
         setSettings(r.settings);
         setTimeZone(r.settings.timeZone);
+        setDisplayUnits(r.settings.displayUnits);
         if (r.settings.hrZoneBounds) {
           setBounds(r.settings.hrZoneBounds.map(String));
         }
@@ -49,9 +54,11 @@ export function SettingsPage() {
       const r = await api.saveSettings({
         hrZoneBounds: zoneDraft.value,
         timeZone: timeZone.trim(),
+        displayUnits,
       });
       setSettings(r.settings);
       setTimeZone(r.settings.timeZone);
+      setDisplayUnits(r.settings.displayUnits);
       setBounds(r.settings.hrZoneBounds?.map(String) ?? ['', '', '', '', '']);
       setZoneError(null);
       setSaveError(null);
@@ -98,6 +105,42 @@ export function SettingsPage() {
     }
   };
 
+  const runDeleteAll = async () => {
+    setDeletingAll(true);
+    setDeleteAllStatus(null);
+    let deleted = false;
+    try {
+      await api.deleteAllData();
+      deleted = true;
+      const defaults = await api.settings();
+      setSettings(defaults.settings);
+      setTimeZone(defaults.settings.timeZone);
+      setDisplayUnits(defaults.settings.displayUnits);
+      setBounds(defaults.settings.hrZoneBounds?.map(String) ?? ['', '', '', '', '']);
+      setSaved(false);
+      setZoneError(null);
+      setSaveError(null);
+      setBackupPath('');
+      setRestorePath('');
+      setBackupStatus(null);
+      setRestoreStatus(null);
+      setDeleteAllStatus(
+        'All local database data was deleted. Existing backup files were not changed.',
+      );
+    } catch (error) {
+      setDeleteAllStatus(
+        deleted
+          ? 'All local database data was deleted. Reload to refresh the default settings.'
+          : error instanceof ApiError && error.code === 'delete_all_failed'
+            ? 'Delete-all failed. The transaction was rolled back and the database was left unchanged.'
+            : 'Delete-all outcome could not be confirmed. Reload before making further changes.',
+      );
+    } finally {
+      setDeletingAll(false);
+      setConfirmingDeleteAll(false);
+    }
+  };
+
   if (loadFailed) return <p className="muted">The local API is not reachable.</p>;
   if (!settings) return <p className="muted">Loading…</p>;
 
@@ -131,6 +174,28 @@ export function SettingsPage() {
               setSaveError(null);
             }}
           />
+        </label>
+      </div>
+
+      <div className="card">
+        <h2 className="card-title">Display units</h2>
+        <p className="muted" style={{ marginTop: 0, fontSize: 12 }}>
+          Velograph always stores canonical SI values. This changes presentation only.
+        </p>
+        <label>
+          <span className="field-label">Distance, speed, and elevation</span>
+          <select
+            aria-label="Display units"
+            value={displayUnits}
+            onChange={(event) => {
+              setDisplayUnits(event.target.value as Settings['displayUnits']);
+              setSaved(false);
+              setSaveError(null);
+            }}
+          >
+            <option value="metric">Metric (km, km/h, m)</option>
+            <option value="imperial">Imperial (mi, mph, ft)</option>
+          </select>
         </label>
       </div>
 
@@ -295,6 +360,31 @@ export function SettingsPage() {
               </p>
             )}
           </div>
+
+          <div>
+            <p className="field-label" style={{ margin: 0 }}>
+              Delete all local data
+            </p>
+            <p className="muted" style={{ fontSize: 12, margin: '4px 0 8px' }}>
+              Permanently clear rides, imports, metrics, routes, notes, analytics, insights, and
+              saved settings from this database. Backup files remain separate.
+            </p>
+            <button
+              className="btn danger"
+              onClick={() => setConfirmingDeleteAll(true)}
+              disabled={deletingAll}
+            >
+              {deletingAll ? 'Deleting…' : 'Delete all local data'}
+            </button>
+            <p
+              className="muted"
+              role="status"
+              aria-live="polite"
+              style={{ fontSize: 12, margin: '6px 0 0', minHeight: '1.2em' }}
+            >
+              {deleteAllStatus ?? ''}
+            </p>
+          </div>
         </div>
       </div>
 
@@ -315,6 +405,34 @@ export function SettingsPage() {
               </p>
               <p style={{ margin: '8px 0 0', fontWeight: 600 }}>
                 Anything imported or changed since that backup was taken will be lost.
+              </p>
+            </>
+          }
+        />
+      )}
+
+      {confirmingDeleteAll && (
+        <ConfirmDialog
+          title="Delete all local data?"
+          danger
+          busy={deletingAll}
+          confirmLabel="Delete all data"
+          onCancel={() => setConfirmingDeleteAll(false)}
+          onConfirm={runDeleteAll}
+          body={
+            <>
+              <p style={{ margin: 0 }}>
+                This permanently removes every ride, import record and hash, metric and route point,
+                note and tag, analytics result, insight, and saved setting from the local Velograph
+                database. The empty schema and migration history remain so Velograph can keep
+                running.
+              </p>
+              <p style={{ margin: '8px 0 0' }}>
+                Existing backup files are not deleted and can restore the data later.
+              </p>
+              <p style={{ margin: '8px 0 0', fontWeight: 600 }}>
+                This is a logical database deletion, not a guarantee that the filesystem or storage
+                device cannot recover old bytes.
               </p>
             </>
           }

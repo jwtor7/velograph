@@ -11,6 +11,12 @@ describe('non-clinical guidance (AI-011)', () => {
     expect(containsDiagnosticPhrasing('This pattern may diagnose an underlying issue.')).toBe(true);
     expect(containsDiagnosticPhrasing('You have a heart condition based on this data.')).toBe(true);
     expect(containsDiagnosticPhrasing('You should stop taking your medication.')).toBe(true);
+    expect(
+      containsDiagnosticPhrasing(
+        'This pattern strongly indicates atrial fibrillation; seek emergency care.',
+      ),
+    ).toBe(true);
+    expect(containsDiagnosticPhrasing('This ride guarantees fat loss.')).toBe(true);
   });
 
   it('does not flag ordinary training commentary', () => {

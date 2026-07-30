@@ -15,6 +15,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   isExpectedVelographRuntime,
   isVelographCommand,
+  MAX_CONFIGURABLE_SERVER_LOG_BYTES,
+  MIN_SERVER_LOG_BYTES,
+  readManagedLogMaxBytes,
   readManagedPort,
   startManagedLogSink,
   stopProcess,
@@ -246,6 +249,24 @@ describe('app:stop graceful-shutdown escalation', () => {
     expect(readManagedPort('65535')).toBe(65_535);
     for (const value of ['0', '00', '', ' 5123', '+5123', '5e3', '65536']) {
       expect(() => readManagedPort(value)).toThrow('invalid_port');
+    }
+  });
+
+  it('accepts a bounded configurable log-retention generation size', () => {
+    expect(readManagedLogMaxBytes(String(MIN_SERVER_LOG_BYTES))).toBe(MIN_SERVER_LOG_BYTES);
+    expect(readManagedLogMaxBytes(String(MAX_CONFIGURABLE_SERVER_LOG_BYTES))).toBe(
+      MAX_CONFIGURABLE_SERVER_LOG_BYTES,
+    );
+    for (const value of [
+      '0',
+      '',
+      ' 65536',
+      '+65536',
+      '6.5e4',
+      String(MIN_SERVER_LOG_BYTES - 1),
+      String(MAX_CONFIGURABLE_SERVER_LOG_BYTES + 1),
+    ]) {
+      expect(() => readManagedLogMaxBytes(value)).toThrow('invalid_log_limit');
     }
   });
 

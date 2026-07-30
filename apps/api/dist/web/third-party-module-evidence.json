@@ -11,7 +11,7 @@
     },
     {
       "id": "@velograph/web@0.1.0",
-      "moduleCount": 23
+      "moduleCount": 26
     },
     {
       "id": "leaflet@1.9.4",
@@ -35,18 +35,9 @@
   ],
   "files": [
     {
-      "file": "assets/index-B_L1ikZV.css",
-      "sha256": "7af75a2ecb0c9747ec8561f87b9181a161fb214915df25239ca4e29d3ac3a4bc",
-      "bytes": 37362,
-      "generatedBy": "rollup-asset",
-      "packages": [
-        "@velograph/web@0.1.0"
-      ]
-    },
-    {
-      "file": "assets/index-pYir_0kK.js",
-      "sha256": "0f9b204e1a505399906c8dffaa505470863e19d3b532844db315215ed2e91dd4",
-      "bytes": 417176,
+      "file": "assets/index-CADN-93P.js",
+      "sha256": "01825cd9b5477bffc37d447dcdad30ee52aaa2eb2db46c2ae8d280bdc3ddacd3",
+      "bytes": 429443,
       "generatedBy": "rollup-chunk",
       "packages": [
         "@fontsource/inter@5.3.0",
@@ -56,6 +47,15 @@
         "react-dom@19.2.8",
         "react@19.2.8",
         "scheduler@0.27.0"
+      ]
+    },
+    {
+      "file": "assets/index-CaET0xc1.css",
+      "sha256": "8643f7c045e63fa530b271ea8e4d4e881a033346e75f82ebee24c53d7e3071c6",
+      "bytes": 37712,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@velograph/web@0.1.0"
       ]
     },
     {
@@ -690,7 +690,7 @@
     },
     {
       "file": "index.html",
-      "sha256": "cdeb695e3e3781617b9c0c2a2f726dcd9db2f521d530fee1f4b4e133445907ec",
+      "sha256": "af5d9e38f24a58e3fb4ab778622e498c9cb2a46df30aefbec3cbcc2f7d82b40e",
       "bytes": 442,
       "generatedBy": "vite-html-entry",
       "packages": [

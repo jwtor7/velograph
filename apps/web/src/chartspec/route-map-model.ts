@@ -1,4 +1,5 @@
 import type { RoutePoint } from '../api.ts';
+import type { DisplayUnits } from '../display-units.ts';
 
 export const MAX_RENDER_POINTS = 30_000;
 export const MAX_RENDER_SEGMENTS = MAX_RENDER_POINTS / 2;
@@ -97,7 +98,12 @@ function niceDistance(targetM: number): number {
   return factor * power;
 }
 
-function distanceLabel(meters: number): string {
+function distanceLabel(meters: number, units: DisplayUnits): string {
+  if (units === 'imperial') {
+    const miles = meters / 1_609.344;
+    if (miles < 0.1) return `${Math.round(meters * 3.280_839_895)} ft`;
+    return `${Number.isInteger(miles) ? miles : miles.toFixed(1)} mi`;
+  }
   if (meters < 1_000) return `${Math.round(meters)} m`;
   const kilometers = meters / 1_000;
   return `${Number.isInteger(kilometers) ? kilometers : kilometers.toFixed(1)} km`;
@@ -221,7 +227,10 @@ function buildGradientChunks(renderRuns: LocatedRouteMapPoint[][], totalDistance
  * Builds a bounded, deterministic map model in linear time. Invalid coordinates
  * split runs instead of being bridged; route source segments remain separate.
  */
-export function buildRouteMapModel(segments: { points: RoutePoint[] }[]): RouteMapModel | null {
+export function buildRouteMapModel(
+  segments: { points: RoutePoint[] }[],
+  displayUnits: DisplayUnits = 'metric',
+): RouteMapModel | null {
   const validRuns: RoutePoint[][] = [];
   let currentRun: RoutePoint[] = [];
   let sourcePointCount = 0;
@@ -319,7 +328,7 @@ export function buildRouteMapModel(segments: { points: RoutePoint[] }[]): RouteM
       if (located && distance / totalDistanceM <= 0.92) {
         distanceMarkers.push({
           position: located.position,
-          label: distanceLabel(distance),
+          label: distanceLabel(distance, displayUnits),
         });
       }
     }

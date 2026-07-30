@@ -116,6 +116,63 @@ describe('velograph CLI', () => {
     expect(workoutCount()).toBe(before);
   });
 
+  it('requires explicit confirmation and then deletes all database state', async () => {
+    const files = readdirSync(FIXTURES)
+      .filter((f) => /\.(csv|gpx)$/.test(f))
+      .map((f) => join(FIXTURES, f));
+    expect(await main(['import', ...files, '--data-dir', dataDir])).toBe(0);
+
+    const seeded = openDatabase(databasePath(dataDir));
+    const seededRepo = new Repository(seeded);
+    seededRepo.setSetting('analytics', {
+      timeZone: 'Etc/UTC',
+      hrZoneBounds: [90, 110, 130, 150, 170],
+    });
+    const migrationsBefore = seeded
+      .prepare('SELECT name, checksum FROM schema_migrations ORDER BY rowid')
+      .all();
+    seeded.close();
+    const before = workoutCount();
+
+    expect(await main(['delete-all', '--data-dir', dataDir])).toBe(2);
+    expect(console.error).toHaveBeenLastCalledWith('Delete-all requires --confirm-delete-all');
+    expect(workoutCount()).toBe(before);
+
+    expect(await main(['delete-all', '--confirm-delete-all', '--data-dir', dataDir])).toBe(0);
+    expect(console.log).toHaveBeenLastCalledWith('Deleted all local data');
+
+    const cleared = openDatabase(databasePath(dataDir));
+    try {
+      for (const table of [
+        'workouts',
+        'workout_source_files',
+        'source_files',
+        'import_batches',
+        'metric_series',
+        'metric_samples',
+        'routes',
+        'route_points',
+        'analytics_snapshots',
+        'insight_runs',
+        'notes_tags',
+        'source_file_reprocessing_failures',
+        'user_settings',
+        'backup_manifests',
+      ]) {
+        expect(
+          (cleared.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number })
+            .count,
+          table,
+        ).toBe(0);
+      }
+      expect(
+        cleared.prepare('SELECT name, checksum FROM schema_migrations ORDER BY rowid').all(),
+      ).toEqual(migrationsBefore);
+    } finally {
+      cleared.close();
+    }
+  });
+
   it('routes folder imports through bounded recursive planning without following outside links', async () => {
     const source = mkdtempSync(join(tmpdir(), 'velo-cli-folder-'));
     const outside = mkdtempSync(join(tmpdir(), 'velo-cli-outside-'));
@@ -340,6 +397,26 @@ describe('velograph CLI', () => {
     expect(result.status).toBe(1);
     expect(result.stdout).toBe('');
     expect(result.stderr.trim()).toBe('Backup failed: backup_failed');
+    expect(result.stderr).not.toContain(dataDir);
+    expect(result.stderr).not.toContain(process.cwd());
+    expect(result.stderr).not.toContain('SqliteError');
+    expect(result.stderr).not.toContain(' at ');
+  });
+
+  it('keeps delete-all startup failures value-free behind the spawned CLI boundary', () => {
+    writeFileSync(databasePath(dataDir), 'synthetic invalid sqlite');
+    const result = spawnSync(
+      process.execPath,
+      [CLI_ENTRYPOINT, 'delete-all', '--confirm-delete-all', '--data-dir', dataDir],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, VELO_DATA_DIR: '' },
+      },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr.trim()).toBe('Delete-all failed: delete_all_failed');
     expect(result.stderr).not.toContain(dataDir);
     expect(result.stderr).not.toContain(process.cwd());
     expect(result.stderr).not.toContain('SqliteError');

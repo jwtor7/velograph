@@ -4,12 +4,15 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MIN_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 120_000;
+const POLL_INTERVAL_MS = 25;
 const STATE_KEY = '__velographOfflineMapBrowserSmoke';
+const CANVAS_TRACE_KEY = '__velographOfflineMapCanvasTrace';
 const BASEMAP_TILE_PATH = /^\/api\/basemap\/tiles\/\d+\/\d+\/\d+\/?$/;
 
 const delay = (milliseconds) =>
@@ -25,6 +28,62 @@ class SafeSmokeError extends Error {
 
 function safeError(code) {
   return new SafeSmokeError(code);
+}
+
+export function canvasTraceHasPolyline(trace) {
+  return Boolean(
+    trace &&
+    typeof trace === 'object' &&
+    Number.isInteger(trace.polylineStrokeCount) &&
+    trace.polylineStrokeCount > 0 &&
+    Number.isInteger(trace.maxPolylineSegmentCount) &&
+    trace.maxPolylineSegmentCount > 0,
+  );
+}
+
+export function cursorSnapshotIsSynchronized(snapshot) {
+  if (!Array.isArray(snapshot) || snapshot.length !== 3) return false;
+
+  const observations = snapshot.map((entry) => {
+    if (!entry || typeof entry !== 'object') return null;
+    const values = [
+      entry.minimum,
+      entry.maximum,
+      entry.value,
+      entry.cursorX1,
+      entry.cursorX2,
+      entry.viewBoxX,
+      entry.viewBoxWidth,
+    ];
+    if (
+      !values.every(Number.isFinite) ||
+      entry.maximum <= entry.minimum ||
+      entry.viewBoxWidth <= 0
+    ) {
+      return null;
+    }
+    if (entry.value < entry.minimum || entry.value > entry.maximum) return null;
+
+    const normalizedValue = (entry.value - entry.minimum) / (entry.maximum - entry.minimum);
+    const normalizedCursor = (entry.cursorX1 - entry.viewBoxX) / entry.viewBoxWidth;
+    if (
+      Math.abs(entry.cursorX1 - entry.cursorX2) > 1e-6 ||
+      Math.abs(normalizedValue - normalizedCursor) > 1e-6
+    ) {
+      return null;
+    }
+    return { ...entry, normalizedCursor };
+  });
+  if (observations.some((entry) => entry === null)) return false;
+
+  const first = observations[0];
+  return observations.every(
+    (entry) =>
+      entry.minimum === first.minimum &&
+      entry.maximum === first.maximum &&
+      entry.value === first.value &&
+      Math.abs(entry.normalizedCursor - first.normalizedCursor) <= 1e-6,
+  );
 }
 
 function normalizedHostname(hostname) {
@@ -426,7 +485,7 @@ async function waitForBoolean(client, sessionId, expression, timeoutMs) {
   const deadline = Date.now() + Math.max(0, timeoutMs);
   do {
     if ((await evaluate(client, sessionId, expression)) === true) return true;
-    await delay(75);
+    await delay(POLL_INTERVAL_MS);
   } while (Date.now() < deadline);
   return false;
 }
@@ -435,10 +494,99 @@ function remainingTime(deadline) {
   return Math.max(250, deadline - Date.now());
 }
 
+function installCanvasTraceExpression() {
+  return `(() => {
+    const contextPrototype = globalThis.CanvasRenderingContext2D?.prototype;
+    if (!contextPrototype) return false;
+    if (contextPrototype['${CANVAS_TRACE_KEY}']) return true;
+
+    const pathStates = new WeakMap();
+    const beginPath = contextPrototype.beginPath;
+    const moveTo = contextPrototype.moveTo;
+    const lineTo = contextPrototype.lineTo;
+    const arc = contextPrototype.arc;
+    const stroke = contextPrototype.stroke;
+    const pathState = (context) => {
+      let state = pathStates.get(context);
+      if (!state) {
+        state = { lineSegmentCount: 0, arcs: [] };
+        pathStates.set(context, state);
+      }
+      return state;
+    };
+    const traceFor = (canvas) => {
+      let trace = canvas['${CANVAS_TRACE_KEY}'];
+      if (!trace) {
+        trace = {
+          polylineStrokeCount: 0,
+          maxPolylineSegmentCount: 0,
+          cursorStrokeCount: 0,
+          lastCursorCenter: null,
+        };
+        Object.defineProperty(canvas, '${CANVAS_TRACE_KEY}', {
+          configurable: true,
+          enumerable: false,
+          value: trace,
+          writable: false,
+        });
+      }
+      return trace;
+    };
+
+    contextPrototype.beginPath = function (...argumentsList) {
+      pathStates.set(this, { lineSegmentCount: 0, arcs: [] });
+      return Reflect.apply(beginPath, this, argumentsList);
+    };
+    contextPrototype.moveTo = function (...argumentsList) {
+      pathState(this);
+      return Reflect.apply(moveTo, this, argumentsList);
+    };
+    contextPrototype.lineTo = function (...argumentsList) {
+      const state = pathState(this);
+      state.lineSegmentCount += 1;
+      return Reflect.apply(lineTo, this, argumentsList);
+    };
+    contextPrototype.arc = function (x, y, radius, ...argumentsList) {
+      const state = pathState(this);
+      if ([x, y, radius].every(Number.isFinite)) state.arcs.push({ x, y, radius });
+      return Reflect.apply(arc, this, [x, y, radius, ...argumentsList]);
+    };
+    contextPrototype.stroke = function (...argumentsList) {
+      const canvas = this.canvas;
+      const state = pathState(this);
+      if (canvas?.closest?.('.leaflet-overlay-pane')) {
+        const trace = traceFor(canvas);
+        if (state.lineSegmentCount > 0) {
+          trace.polylineStrokeCount += 1;
+          trace.maxPolylineSegmentCount = Math.max(
+            trace.maxPolylineSegmentCount,
+            state.lineSegmentCount,
+          );
+        }
+        const cursorArc = state.arcs.find(({ radius }) => Math.abs(radius - 8) <= 0.05);
+        if (cursorArc) {
+          trace.cursorStrokeCount += 1;
+          trace.lastCursorCenter = [cursorArc.x, cursorArc.y];
+        }
+      }
+      return Reflect.apply(stroke, this, argumentsList);
+    };
+    Object.defineProperty(contextPrototype, '${CANVAS_TRACE_KEY}', {
+      configurable: true,
+      enumerable: false,
+      value: true,
+      writable: false,
+    });
+    return true;
+  })()`;
+}
+
 function mapDomSnapshotExpression() {
   return `(() => {
     const map = document.querySelector('.route-map.leaflet-container');
     const overlayCanvas = map?.querySelector('.leaflet-overlay-pane canvas');
+    const canvasTraceHasPolyline = ${canvasTraceHasPolyline.toString()};
+    const canvasTrace = overlayCanvas?.['${CANVAS_TRACE_KEY}'];
     let overlayHasInk = false;
     try {
       const context = overlayCanvas?.getContext('2d', { willReadFrequently: true });
@@ -458,6 +606,21 @@ function mapDomSnapshotExpression() {
       ? [...document.querySelectorAll('.route-map-toolbar .route-map-button')]
           .filter((button) => button.getAttribute('aria-controls') === map.id).length
       : 0;
+    const routeLabels = map
+      ? [...map.querySelectorAll('.leaflet-tooltip-pane .route-map-label')]
+      : [];
+    const endpointMarkerCount = routeLabels.filter((label) =>
+      label.classList.contains('route-map-label-endpoint'),
+    ).length;
+    const directionMarkerCount = routeLabels.filter((label) =>
+      label.classList.contains('route-map-label-direction'),
+    ).length;
+    const distanceMarkerCount = routeLabels.filter(
+      (label) =>
+        !label.classList.contains('route-map-label-endpoint') &&
+        !label.classList.contains('route-map-label-direction'),
+    ).length;
+    const status = document.querySelector('.route-map-status');
     return {
       leafletUi: Boolean(
         map &&
@@ -469,13 +632,55 @@ function mapDomSnapshotExpression() {
       ),
       controls: linkedControls >= 3,
       scale: Boolean(map?.querySelector('.leaflet-control-scale-line')),
-      markers:
-        Boolean(map) &&
-        map.querySelectorAll('.route-map-label-endpoint').length >= 2 &&
-        map.querySelectorAll('.leaflet-tooltip-pane .route-map-label').length >= 2,
-      routeGeometry: Boolean(overlayCanvas && overlayCanvas.width > 0 && overlayCanvas.height > 0 && overlayHasInk),
+      markers: Boolean(map) && endpointMarkerCount >= 2 && routeLabels.length >= 2,
+      endpointMarkerCount,
+      directionMarkerCount,
+      distanceMarkerCount,
+      routeGeometry: Boolean(
+        overlayCanvas &&
+        overlayCanvas.width > 0 &&
+        overlayCanvas.height > 0 &&
+        overlayHasInk &&
+        canvasTraceHasPolyline(canvasTrace)
+      ),
+      basemapNotConfigured: Boolean(
+        status?.classList.contains('route-map-status-not_configured') &&
+        status.textContent?.trim() === 'No local basemap configured · showing route-only view'
+      ),
       localTileLoaded: Boolean(map?.querySelector('.leaflet-tile-pane img.leaflet-tile-loaded')),
     };
+  })()`;
+}
+
+function settledRideExpression() {
+  return `(() => {
+    const canvasTraceHasPolyline = ${canvasTraceHasPolyline.toString()};
+    if (document.readyState !== 'complete') return false;
+    if (document.body?.textContent?.includes('Loading…')) return false;
+    const map = document.querySelector('.route-map.leaflet-container');
+    const canvas = map?.querySelector('.leaflet-overlay-pane canvas');
+    const status = document.querySelector('.route-map-status');
+    if (
+      !map ||
+      !Number.isInteger(map._leaflet_id) ||
+      !map.querySelector('.leaflet-map-pane') ||
+      !canvas ||
+      canvas.width <= 0 ||
+      canvas.height <= 0 ||
+      !status
+    ) {
+      return false;
+    }
+    // The pre-navigation draw trace stops the performance timer at the actual
+    // route stroke. A full pixel read remains a separate post-timing assertion
+    // in mapDomSnapshotExpression so observation overhead cannot inflate p95.
+    return Boolean(
+      canvasTraceHasPolyline(canvas['${CANVAS_TRACE_KEY}']) &&
+      document.querySelectorAll('.chart-grid svg').length >= 4 &&
+      document.querySelector('svg[aria-label="elevation profile"]') &&
+      document.querySelectorAll('.chart-grid [role="slider"][aria-keyshortcuts]').length === 3 &&
+      document.querySelectorAll('.kpi-grid .kpi').length >= 7
+    );
   })()`;
 }
 
@@ -484,6 +689,7 @@ function installSmokeStateExpression() {
     const map = document.querySelector('.route-map.leaflet-container');
     const mapPane = map?.querySelector('.leaflet-map-pane');
     if (!map || !mapPane) return false;
+    const cursorSnapshotIsSynchronized = ${cursorSnapshotIsSynchronized.toString()};
     const overlayHash = () => {
       const canvas = map.querySelector('.leaflet-overlay-pane canvas');
       const context = canvas?.getContext('2d', { willReadFrequently: true });
@@ -496,12 +702,52 @@ function installSmokeStateExpression() {
       }
       return hash >>> 0;
     };
+    const readCursorSnapshot = () =>
+      [...document.querySelectorAll('.chart-grid [role="slider"][aria-keyshortcuts]')].map(
+        (slider) => {
+          const cursorLines = [...slider.querySelectorAll('line')].filter(
+            (line) => line.getAttribute('stroke-dasharray') === '3 3',
+          );
+          const cursorLine = cursorLines.length === 1 ? cursorLines[0] : null;
+          const viewBox = slider.viewBox?.baseVal;
+          return {
+            minimum: Number(slider.getAttribute('aria-valuemin')),
+            maximum: Number(slider.getAttribute('aria-valuemax')),
+            value: Number(slider.getAttribute('aria-valuenow')),
+            cursorX1: Number(cursorLine?.getAttribute('x1')),
+            cursorX2: Number(cursorLine?.getAttribute('x2')),
+            viewBoxX: Number(viewBox?.x),
+            viewBoxWidth: Number(viewBox?.width),
+          };
+        },
+      );
+    const readMapCursorTrace = () => {
+      const canvas = map.querySelector('.leaflet-overlay-pane canvas');
+      const trace = canvas?.['${CANVAS_TRACE_KEY}'];
+      const center =
+        Array.isArray(trace?.lastCursorCenter) &&
+        trace.lastCursorCenter.length === 2 &&
+        trace.lastCursorCenter.every(Number.isFinite)
+          ? [...trace.lastCursorCenter]
+          : null;
+      return {
+        count: Number.isInteger(trace?.cursorStrokeCount) ? trace.cursorStrokeCount : 0,
+        center,
+      };
+    };
     const state = {
       mapTransform: mapPane.style.transform || getComputedStyle(mapPane).transform,
       overlayHash,
+      readCursorSnapshot,
+      readMapCursorTrace,
+      cursorSnapshotIsSynchronized,
       preCursorHash: null,
+      preMapCursorCount: null,
       firstCursorHash: null,
-      firstChartValue: null,
+      firstMapCursorCount: null,
+      firstMapCursorCenter: null,
+      firstCursorValue: null,
+      firstCursorPosition: null,
     };
     Object.defineProperty(window, '${STATE_KEY}', {
       configurable: true,
@@ -527,9 +773,11 @@ function mapPanChangedExpression() {
 function focusChartCursorExpression() {
   return `(() => {
     const state = window['${STATE_KEY}'];
-    const slider = document.querySelector('[role="slider"][aria-keyshortcuts]');
-    if (!state || !slider) return false;
+    const sliders = [...document.querySelectorAll('.chart-grid [role="slider"][aria-keyshortcuts]')];
+    if (!state || sliders.length !== 3) return false;
+    const slider = sliders[0];
     state.preCursorHash = state.overlayHash();
+    state.preMapCursorCount = state.readMapCursorTrace().count;
     slider.focus({ preventScroll: true });
     return document.activeElement === slider;
   })()`;
@@ -538,14 +786,25 @@ function focusChartCursorExpression() {
 function firstCursorSynchronizedExpression() {
   return `(() => {
     const state = window['${STATE_KEY}'];
-    const slider = document.querySelector('[role="slider"][aria-keyshortcuts]');
-    if (!state || !slider || state.preCursorHash == null) return false;
-    const chartValue = slider.getAttribute('aria-valuenow');
-    const chartCursor = slider.querySelector('line[stroke-dasharray="3 3"]');
+    if (!state || state.preCursorHash == null || state.preMapCursorCount == null) return false;
+    const snapshot = state.readCursorSnapshot();
+    const mapCursor = state.readMapCursorTrace();
     const mapHash = state.overlayHash();
-    if (!chartValue || !chartCursor || mapHash == null || mapHash === state.preCursorHash) return false;
-    state.firstChartValue = chartValue;
+    if (
+      !state.cursorSnapshotIsSynchronized(snapshot) ||
+      mapHash == null ||
+      mapHash === state.preCursorHash ||
+      mapCursor.count <= state.preMapCursorCount ||
+      !mapCursor.center
+    ) {
+      return false;
+    }
+    const first = snapshot[0];
+    state.firstCursorValue = first.value;
+    state.firstCursorPosition = (first.cursorX1 - first.viewBoxX) / first.viewBoxWidth;
     state.firstCursorHash = mapHash;
+    state.firstMapCursorCount = mapCursor.count;
+    state.firstMapCursorCenter = mapCursor.center;
     return true;
   })()`;
 }
@@ -553,15 +812,33 @@ function firstCursorSynchronizedExpression() {
 function movedCursorSynchronizedExpression() {
   return `(() => {
     const state = window['${STATE_KEY}'];
-    const slider = document.querySelector('[role="slider"][aria-keyshortcuts]');
-    if (!state || !slider || !state.firstChartValue || state.firstCursorHash == null) return false;
-    const chartValue = slider.getAttribute('aria-valuenow');
+    if (
+      !state ||
+      state.firstCursorValue == null ||
+      state.firstCursorPosition == null ||
+      state.firstCursorHash == null ||
+      state.firstMapCursorCount == null ||
+      !state.firstMapCursorCenter
+    ) {
+      return false;
+    }
+    const snapshot = state.readCursorSnapshot();
+    if (!state.cursorSnapshotIsSynchronized(snapshot)) return false;
+    const first = snapshot[0];
+    const cursorPosition = (first.cursorX1 - first.viewBoxX) / first.viewBoxWidth;
+    const mapCursor = state.readMapCursorTrace();
     const mapHash = state.overlayHash();
     return Boolean(
-      chartValue &&
-      chartValue !== state.firstChartValue &&
+      first.value !== state.firstCursorValue &&
+      Math.abs(cursorPosition - state.firstCursorPosition) > 1e-6 &&
       mapHash != null &&
-      mapHash !== state.firstCursorHash
+      mapHash !== state.firstCursorHash &&
+      mapCursor.count > state.firstMapCursorCount &&
+      mapCursor.center &&
+      Math.hypot(
+        mapCursor.center[0] - state.firstMapCursorCenter[0],
+        mapCursor.center[1] - state.firstMapCursorCenter[1],
+      ) > 0.1
     );
   })()`;
 }
@@ -659,6 +936,11 @@ async function runBrowserSmoke(runtimeOptions) {
       client.send('Log.enable', {}, sessionId),
       client.send('Inspector.enable', {}, sessionId),
     ]);
+    await client.send(
+      'Page.addScriptToEvaluateOnNewDocument',
+      { source: installCanvasTraceExpression() },
+      sessionId,
+    );
     await client.send('Network.setCacheDisabled', { cacheDisabled: true }, sessionId);
     await client.send(
       'Emulation.setDeviceMetricsOverride',
@@ -670,23 +952,36 @@ async function runBrowserSmoke(runtimeOptions) {
       },
       sessionId,
     );
+    const navigationStarted = performance.now();
     await client.send('Page.navigate', { url: runtimeOptions.rideUrl }, sessionId);
 
     const mapRendered = await waitForBoolean(
       client,
       sessionId,
-      `Boolean(
-        document.querySelector('.route-map.leaflet-container .leaflet-overlay-pane canvas') &&
-        document.querySelector('[role="slider"][aria-keyshortcuts]')
-      )`,
+      settledRideExpression(),
       Math.min(12_000, remainingTime(deadline)),
     );
-    await waitForBoolean(
-      client,
-      sessionId,
-      `Boolean(document.querySelector('.leaflet-tile-pane img.leaflet-tile-loaded'))`,
-      Math.min(8_000, remainingTime(deadline)),
-    );
+    const settledRenderMs = performance.now() - navigationStarted;
+    if (runtimeOptions.requireLocalBasemap) {
+      await waitForBoolean(
+        client,
+        sessionId,
+        `Boolean(document.querySelector('.leaflet-tile-pane img.leaflet-tile-loaded'))`,
+        Math.min(8_000, remainingTime(deadline)),
+      );
+    } else {
+      await waitForBoolean(
+        client,
+        sessionId,
+        `Boolean(
+          document.querySelector(
+            '.route-map-status.route-map-status-not_configured'
+          )?.textContent?.trim() ===
+            'No local basemap configured · showing route-only view'
+        )`,
+        Math.min(8_000, remainingTime(deadline)),
+      );
+    }
 
     const mapDom =
       (await evaluate(client, sessionId, mapDomSnapshotExpression())) ?? Object.create(null);
@@ -742,8 +1037,21 @@ async function runBrowserSmoke(runtimeOptions) {
       ['browser-target-stable', targetCrashed === false],
       ['network-requests-observed', requestSummary.requestCount > 0],
       ['network-loopback-only', requestSummaryIsLoopbackOnly(requestSummary)],
-      ['local-basemap-tile-requested', requestSummary.localBasemapTileRequestCount > 0],
-      ['local-basemap-tile-loaded', mapDom.localTileLoaded === true],
+      ...(runtimeOptions.requireLocalBasemap
+        ? [
+            ['local-basemap-tile-requested', requestSummary.localBasemapTileRequestCount > 0],
+            ['local-basemap-tile-loaded', mapDom.localTileLoaded === true],
+          ]
+        : [
+            ['route-only-basemap-not-configured', mapDom.basemapNotConfigured === true],
+            [
+              'route-only-basemap-tile-not-requested',
+              requestSummary.localBasemapTileRequestCount === 0,
+            ],
+            ['route-only-endpoint-markers', mapDom.endpointMarkerCount === 2],
+            ['route-only-direction-marker', mapDom.directionMarkerCount >= 1],
+            ['route-only-distance-marker', mapDom.distanceMarkerCount >= 1],
+          ]),
     ];
     const failedAssertionCodes = assertions.filter(([, passed]) => !passed).map(([code]) => code);
 
@@ -759,6 +1067,7 @@ async function runBrowserSmoke(runtimeOptions) {
     return Object.freeze({
       passed: failedAssertionCodes.length === 0,
       failedAssertionCodes: Object.freeze(failedAssertionCodes),
+      settledRenderMs,
     });
   } finally {
     removeEventListener();
@@ -766,6 +1075,19 @@ async function runBrowserSmoke(runtimeOptions) {
     await stopChromium(chromium);
     await rm(userDataDirectory, { force: true, recursive: true });
   }
+}
+
+export async function runOfflineMapBrowserSmoke(options) {
+  const runtimeOptions = validatedRuntimeOptions({
+    chromeExecutable: options.chromeExecutable,
+    baseUrl: options.baseUrl,
+    rideId: String(options.rideId),
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  });
+  return runBrowserSmoke({
+    ...runtimeOptions,
+    requireLocalBasemap: options.requireLocalBasemap ?? true,
+  });
 }
 
 async function main() {
@@ -779,7 +1101,10 @@ async function main() {
     if (!Number.isInteger(nodeMajor) || nodeMajor < 22) {
       throw safeError('node_22_or_newer_required');
     }
-    const result = await runBrowserSmoke(validatedRuntimeOptions(parsedOptions));
+    const result = await runOfflineMapBrowserSmoke({
+      ...parsedOptions,
+      requireLocalBasemap: true,
+    });
     if (result.passed) {
       process.stdout.write('offline-map-browser-smoke: PASS\n');
       return;

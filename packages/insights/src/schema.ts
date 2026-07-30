@@ -155,9 +155,7 @@ export function validateInsightOutputShape(value: unknown): SchemaValidationResu
       errors.push(`section_${i}_unexpected_property`);
     }
     if (section['id'] !== expected.id) errors.push(`section_${i}_id_mismatch`);
-    if (typeof section['title'] !== 'string' || section['title'].length === 0) {
-      errors.push(`section_${i}_missing_title`);
-    }
+    if (section['title'] !== expected.title) errors.push(`section_${i}_title_mismatch`);
     const findings = section['findings'];
     if (!Array.isArray(findings)) {
       errors.push(`section_${i}_findings_not_array`);
