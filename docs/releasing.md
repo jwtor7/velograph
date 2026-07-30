@@ -46,22 +46,41 @@ standalone; nothing in this repository anticipates that today.
 1. **Confirm `CHANGELOG.md` is current.** Every merged PR since the last release should have
    left an entry under `## [Unreleased]` (enforced by CI — see below). Re-read the section
    against `git log <last-tag>..HEAD` and fill in anything missing.
-2. **Choose the new version** using the scheme above.
-3. **Open a release PR** that, in one commit:
-   - Renames `## [Unreleased]` to `## [x.y.z] - YYYY-MM-DD` (UTC date) and adds a fresh empty
+2. **Verify project and third-party licensing.**
+   - Confirm the root `LICENSE` matches the canonical `AGPL-3.0-only` text and every
+     workspace manifest declares `AGPL-3.0-only`.
+   - Run `pnpm license:check` and review `THIRD_PARTY_NOTICES.md` against the release
+     dependency/SBOM diff. Resolve every unknown, incompatible, or missing licence or notice.
+   - Run the runtime build and package verifiers. Confirm every API, CLI, web, and container
+     artifact carries the byte-identical Velograph `LICENSE` separately from third-party
+     notices and preserves machine-readable Corresponding Source for that exact version as
+     required by the AGPL. A moving branch is not exact-version source.
+   - Confirm `COPYRIGHT.md` and `CONTRIBUTING.md` are current and every significant outside
+     contribution included in the release has the required CLA recorded privately. Never
+     publish signed agreements or contributor PII.
+3. **Choose the new version** using the scheme above.
+4. **Open a release PR** that, in one commit:
+   - Runs `date '+%Y-%m-%d %H:%M:%S %Z (%z)'` and renames `## [Unreleased]` to
+     `## [x.y.z] - YYYY-MM-DD` using that machine-local date, then adds a fresh empty
      `## [Unreleased]` section above it.
    - Updates the compare-link reference definitions at the bottom of `CHANGELOG.md`.
    - Bumps `version` in the root `package.json` and in every workspace package's
      `package.json` to the same `x.y.z` (lockstep).
-4. **Merge the release PR** (squash, per the normal git flow in `CLAUDE.md`/`AGENTS.md`).
-5. **Tag the merge commit** on `main`:
+   - Runs `pnpm runtime:build`, `pnpm runtime:verify-artifacts`,
+     `pnpm api:verify-package`, and `pnpm cli:verify-package`. The package verifiers must pass
+     from clean temporary installs on every Node version in the CI runtime matrix.
+5. **Merge the release PR** (squash, per the normal git flow in `CLAUDE.md`/`AGENTS.md`).
+6. **Verify the local merge timestamp** with
+   `git log -1 --pretty=format:'%cd' --date=local`. If its date does not match the documented
+   release date, fix the release documentation before pushing.
+7. **Tag the merge commit** on `main`:
 
    ```sh
    git tag -a vX.Y.Z -m "vX.Y.Z"
    git push origin vX.Y.Z
    ```
 
-6. **Publish a GitHub Release** from the tag, with the `CHANGELOG.md` section for that
+8. **Publish a GitHub Release** from the tag, with the `CHANGELOG.md` section for that
    version pasted into the release notes.
 
 ## CHANGELOG discipline (enforced by CI)

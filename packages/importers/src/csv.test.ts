@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CsvStreamParser, parseCsv } from './csv.ts';
+import { assertCsvByteLength, CsvStreamParser, DEFAULT_CSV_LIMITS, parseCsv } from './csv.ts';
 
 describe('streaming CSV parser contract', () => {
   it('parses simple rows', () => {
@@ -44,5 +44,35 @@ describe('streaming CSV parser contract', () => {
 
   it('throws on unterminated quotes', () => {
     expect(() => parseCsv('a,"unterminated\n1,2')).toThrow();
+  });
+
+  it('fails closed on byte, row, column, and field limits', () => {
+    expect(() => assertCsvByteLength(11, 10)).toThrowError(
+      expect.objectContaining({ code: 'csv_limits_exceeded' }),
+    );
+    expect(() =>
+      parseCsv('ab', {
+        ...DEFAULT_CSV_LIMITS,
+        maxBytes: 1,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'csv_limits_exceeded' }));
+    expect(() =>
+      parseCsv('h\n1\n2', {
+        ...DEFAULT_CSV_LIMITS,
+        maxRows: 2,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'csv_limits_exceeded' }));
+    expect(() =>
+      parseCsv('a,b,c', {
+        ...DEFAULT_CSV_LIMITS,
+        maxColumns: 2,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'csv_limits_exceeded' }));
+    expect(() =>
+      parseCsv('header\n12345', {
+        ...DEFAULT_CSV_LIMITS,
+        maxFieldChars: 4,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'csv_limits_exceeded' }));
   });
 });

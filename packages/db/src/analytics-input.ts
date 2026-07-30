@@ -12,6 +12,18 @@ export interface WorkoutData {
   route: RouteSegment[];
 }
 
+export type AnalyticsSnapshotSaveResult = 'inserted' | 'existing';
+
+/** Stable, value-free integrity failure for deterministic provenance drift. */
+export class AnalyticsSnapshotConflictError extends Error {
+  readonly code = 'analytics_snapshot_conflict';
+
+  constructor() {
+    super('analytics_snapshot_conflict');
+    this.name = 'AnalyticsSnapshotConflictError';
+  }
+}
+
 export function loadWorkoutData(db: Database, workoutId: number): WorkoutData | null {
   const w = db
     .prepare('SELECT id, type, start_utc, end_utc FROM workouts WHERE id = ?')
@@ -49,16 +61,15 @@ export function loadWorkoutData(db: Database, workoutId: number): WorkoutData | 
   }
 
   const route: RouteSegment[] = [];
-  const routeRow = db
-    .prepare('SELECT id FROM routes WHERE workout_id = ? ORDER BY id LIMIT 1')
-    .get(workoutId) as { id: number } | undefined;
-  if (routeRow) {
-    const points = db
-      .prepare(
-        `SELECT segment, t_utc, lat, lon, ele_m, speed_ms, course_deg
-         FROM route_points WHERE route_id = ? ORDER BY segment, seq`,
-      )
-      .all(routeRow.id) as {
+  const routeRows = db
+    .prepare('SELECT id FROM routes WHERE workout_id = ? ORDER BY id')
+    .all(workoutId) as { id: number }[];
+  const loadRoutePoints = db.prepare(
+    `SELECT segment, t_utc, lat, lon, ele_m, speed_ms, course_deg
+     FROM route_points WHERE route_id = ? ORDER BY segment, seq, id`,
+  );
+  for (const routeRow of routeRows) {
+    const points = loadRoutePoints.all(routeRow.id) as {
       segment: number;
       t_utc: number | null;
       lat: number;
@@ -67,13 +78,17 @@ export function loadWorkoutData(db: Database, workoutId: number): WorkoutData | 
       speed_ms: number | null;
       course_deg: number | null;
     }[];
-    let currentSeg = -1;
+    let currentSeg: number | undefined;
     for (const p of points) {
       if (p.segment !== currentSeg) {
         route.push({ points: [] });
         currentSeg = p.segment;
       }
-      const point: RouteSegment['points'][number] = { t: p.t_utc ?? 0, lat: p.lat, lon: p.lon };
+      const point: RouteSegment['points'][number] = {
+        t: p.t_utc,
+        lat: p.lat,
+        lon: p.lon,
+      };
       if (p.ele_m != null) point.ele = p.ele_m;
       if (p.speed_ms != null) point.speed = p.speed_ms;
       if (p.course_deg != null) point.course = p.course_deg;
@@ -99,21 +114,39 @@ export function saveAnalyticsSnapshot(
     resultJson: string;
     createdAt: number;
   },
-): void {
-  db.prepare(
-    `INSERT INTO analytics_snapshots
-       (workout_id, scope, formula_version, settings_hash, input_hash, result_json, created_at)
-     VALUES (?, 'workout', ?, ?, ?, ?, ?)
-     ON CONFLICT (workout_id, scope, formula_version, settings_hash, input_hash)
-     DO UPDATE SET result_json = excluded.result_json`,
-  ).run(
-    row.workoutId,
-    row.formulaVersion,
-    row.settingsHash,
-    row.inputHash,
-    row.resultJson,
-    row.createdAt,
-  );
+): AnalyticsSnapshotSaveResult {
+  return db.transaction(() => {
+    const inserted = db
+      .prepare(
+        `INSERT INTO analytics_snapshots
+           (workout_id, scope, formula_version, settings_hash, input_hash, result_json, created_at)
+         VALUES (?, 'workout', ?, ?, ?, ?, ?)
+         ON CONFLICT (workout_id, scope, formula_version, settings_hash, input_hash)
+         DO NOTHING`,
+      )
+      .run(
+        row.workoutId,
+        row.formulaVersion,
+        row.settingsHash,
+        row.inputHash,
+        row.resultJson,
+        row.createdAt,
+      );
+    if (inserted.changes === 1) return 'inserted';
+
+    const existing = db
+      .prepare(
+        `SELECT result_json FROM analytics_snapshots
+         WHERE workout_id = ? AND scope = 'workout' AND formula_version = ?
+           AND settings_hash = ? AND input_hash = ?`,
+      )
+      .get(row.workoutId, row.formulaVersion, row.settingsHash, row.inputHash) as
+      { result_json: string } | undefined;
+    if (!existing || existing.result_json !== row.resultJson) {
+      throw new AnalyticsSnapshotConflictError();
+    }
+    return 'existing';
+  })();
 }
 
 export function getAnalyticsSnapshot(

@@ -5,6 +5,28 @@ import { extractZip, DEFAULT_ZIP_LIMITS } from './zip.ts';
 const mkZip = (entries: Record<string, string>) =>
   zipSync(Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, strToU8(v)])));
 
+function signatureOffset(data: Uint8Array, signature: number): number {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  for (let offset = 0; offset <= data.length - 4; offset++) {
+    if (view.getUint32(offset, true) === signature) return offset;
+  }
+  throw new Error('signature not found');
+}
+
+function forgeFirstDeclaredSize(
+  source: Uint8Array,
+  centralSize: number,
+  localSize: number,
+): Uint8Array {
+  const data = source.slice();
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const central = signatureOffset(data, 0x02014b50);
+  const local = view.getUint32(central + 42, true);
+  view.setUint32(central + 24, centralSize, true);
+  view.setUint32(local + 22, localSize, true);
+  return data;
+}
+
 describe('guarded ZIP extraction', () => {
   it('extracts flat entries', () => {
     const z = mkZip({ 'a.csv': 'x', 'sub/b.gpx': 'y' });
@@ -49,6 +71,84 @@ describe('guarded ZIP extraction', () => {
     );
     expect(() => extractZip(z, { ...DEFAULT_ZIP_LIMITS, maxTotalBytes: 50_000 })).toThrowError(
       expect.objectContaining({ code: 'zip_limits_exceeded' }),
+    );
+  });
+
+  it('preflights aggregate declared size before inflating any entry', () => {
+    const z = mkZip({ 'first.csv': 'A'.repeat(60_000), 'second.csv': 'B'.repeat(60_000) });
+    const started: string[] = [];
+    expect(() =>
+      extractZip(
+        z,
+        { ...DEFAULT_ZIP_LIMITS, maxEntryBytes: 100_000, maxTotalBytes: 100_000 },
+        { onEntryStart: (name) => started.push(name) },
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'zip_limits_exceeded' }));
+    expect(started).toEqual([]);
+  });
+
+  it('skips hidden and resource entries before size checks and inflation', () => {
+    const z = mkZip({
+      '__MACOSX/resource.csv': 'A'.repeat(50_000),
+      '.hidden.csv': 'B'.repeat(50_000),
+      'visible.csv': 'ok',
+    });
+    const started: string[] = [];
+    const out = extractZip(
+      z,
+      { ...DEFAULT_ZIP_LIMITS, maxEntryBytes: 10, maxTotalBytes: 10 },
+      { onEntryStart: (name) => started.push(name) },
+    );
+    expect(started).toEqual(['visible.csv']);
+    expect(out.map((entry) => entry.name)).toEqual(['visible.csv']);
+  });
+
+  it('rejects central/local declared-size disagreement during preflight', () => {
+    const original = mkZip({ 'ride.csv': 'synthetic' });
+    const forged = forgeFirstDeclaredSize(original, 1, 2);
+    expect(() => extractZip(forged)).toThrowError(
+      expect.objectContaining({ code: 'zip_entry_rejected' }),
+    );
+  });
+
+  it('caps highly compressible forged output before materializing it or starting a later entry', () => {
+    const maxOutputBytes = 50_000;
+    const bomb = new Uint8Array(10_000_000).fill(65);
+    const original = zipSync({
+      'bomb.csv': bomb,
+      'later.csv': strToU8('must-not-start'),
+    });
+    expect(original.length).toBeLessThan(maxOutputBytes);
+    const forged = forgeFirstDeclaredSize(original, 1, 1);
+
+    for (const limits of [
+      { maxEntryBytes: maxOutputBytes, maxTotalBytes: 1_000_000 },
+      { maxEntryBytes: 1_000_000, maxTotalBytes: maxOutputBytes },
+    ]) {
+      const started: string[] = [];
+      let observed = 0;
+      expect(() =>
+        extractZip(
+          forged,
+          { ...DEFAULT_ZIP_LIMITS, ...limits },
+          {
+            onEntryStart: (name) => started.push(name),
+            onChunk: (_name, bytes) => {
+              observed += bytes;
+            },
+          },
+        ),
+      ).toThrowError(expect.objectContaining({ code: 'zip_limits_exceeded' }));
+      expect(started).toEqual(['bomb.csv']);
+      expect(observed).toBe(0);
+    }
+  });
+
+  it('rejects a forged declared size that differs from final streamed output', () => {
+    const original = mkZip({ 'ride.csv': 'synthetic-output' });
+    const forged = forgeFirstDeclaredSize(original, 1, 1);
+    expect(() => extractZip(forged)).toThrowError(
+      expect.objectContaining({ code: 'zip_entry_rejected' }),
     );
   });
 

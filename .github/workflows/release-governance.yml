@@ -1,0 +1,158 @@
+name: Release governance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-history:
+    name: Worktree and Git-history privacy audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify runtime dependency licences and canonical notices
+        run: pnpm license:check
+      - name: Audit tracked worktree
+        run: node scripts/privacy-audit-release.mjs --working-tree
+      - name: Audit every reachable Git blob
+        run: node scripts/privacy-audit-release.mjs --history
+
+  container:
+    name: Container privacy audit and multi-architecture SBOM build
+    needs: privacy-history
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Build native image for layer audit
+        run: docker build --tag velograph:privacy-audit .
+      - name: Audit every native image layer
+        run: node scripts/privacy-audit-release.mjs --image velograph:privacy-audit
+      - name: Smoke-test the native container lifecycle through proxy ingress
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_name="velograph-runtime-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          container_id=""
+
+          cleanup() {
+            result=$?
+            trap - EXIT
+            if [[ -n "$container_id" ]] && [[ "$result" -ne 0 ]]; then
+              docker logs "$container_id" 2>&1 || true
+            fi
+            docker rm --force "$container_name" >/dev/null 2>&1 || true
+            exit "$result"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          container_id="$(
+            docker run --detach \
+              --name "$container_name" \
+              --read-only \
+              --env VELO_DATA_DIR=/var/lib/velograph \
+              --env VELO_PROXY_HOST=0.0.0.0 \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777 \
+              --tmpfs /var/lib/velograph:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700 \
+              --publish 127.0.0.1::5123 \
+              --health-interval 1s \
+              --health-timeout 2s \
+              --health-start-period 1s \
+              --health-retries 10 \
+              velograph:privacy-audit
+          )"
+
+          published_address="$(docker port "$container_id" 5123/tcp)"
+          if [[ ! "$published_address" =~ ^127\.0\.0\.1:([0-9]+)$ ]]; then
+            echo "Unexpected published proxy address: $published_address" >&2
+            exit 1
+          fi
+          published_port="${BASH_REMATCH[1]}"
+          proxy_origin="http://127.0.0.1:${published_port}"
+
+          proxy_ready=false
+          docker_healthy=false
+          for _ in {1..120}; do
+            container_state="$(
+              docker inspect \
+                --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+                "$container_id"
+            )"
+            case "$container_state" in
+              'running healthy')
+                docker_healthy=true
+                ;;
+              'running starting') ;;
+              *)
+                echo "Container entered unexpected state: $container_state" >&2
+                exit 1
+                ;;
+            esac
+
+            if curl --connect-timeout 2 --max-time 3 --fail --silent --show-error \
+              "${proxy_origin}/api/health" >/dev/null \
+              && curl --connect-timeout 2 --max-time 3 --fail --silent --show-error \
+                "${proxy_origin}/" >/dev/null; then
+              proxy_ready=true
+            fi
+            if [[ "$proxy_ready" == true ]] && [[ "$docker_healthy" == true ]]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "$proxy_ready" != true ]] || [[ "$docker_healthy" != true ]]; then
+            echo "Container did not become healthy through published proxy ingress." >&2
+            exit 1
+          fi
+
+          docker stop --time 25 "$container_id" >/dev/null
+          exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id")"
+          if [[ "$exit_code" != 0 ]]; then
+            echo "Container exited uncleanly after docker stop: $exit_code" >&2
+            exit 1
+          fi
+      - name: Set up QEMU for linux/arm64 verification
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.0.0
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.0.0
+      - name: Build linux/amd64 and linux/arm64 with SBOM and provenance
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.0.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          outputs: type=oci,dest=/tmp/velograph-multiarch.oci.tar
+          sbom: true
+          provenance: mode=max
+      - name: Audit exact multi-architecture OCI output and attestations
+        run: node scripts/privacy-audit-release.mjs --oci-image /tmp/velograph-multiarch.oci.tar
+      - name: Record exact OCI archive and image-index digests
+        run: |
+          sha256sum /tmp/velograph-multiarch.oci.tar > /tmp/velograph-multiarch.oci.tar.sha256
+          tar -xOf /tmp/velograph-multiarch.oci.tar index.json > /tmp/velograph-multiarch.index.json
+      - name: Retain audited OCI output and digest evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: velograph-multiarch-oci-${{ github.sha }}
+          path: |
+            /tmp/velograph-multiarch.oci.tar
+            /tmp/velograph-multiarch.oci.tar.sha256
+            /tmp/velograph-multiarch.index.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

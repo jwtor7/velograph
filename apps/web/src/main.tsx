@@ -6,8 +6,8 @@ import '@fontsource/inter/800-italic.css';
 import './theme.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
 import { App } from './App.tsx';
+import { BrowserRouter } from './router.tsx';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -22,6 +22,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Production dependency vulnerability audit (blocking)
+        run: pnpm audit --prod --audit-level high
+      - name: Third-party runtime licence and notices gate (blocking)
+        run: pnpm license:check
       - name: Privacy / data-leak scan (blocking)
         run: node scripts/privacy-scan.mjs --all
       - name: Format check
@@ -30,8 +34,55 @@ jobs:
         run: pnpm lint
       - name: Typecheck
         run: pnpm typecheck
+      - name: Package and verify production web artifact
+        run: pnpm package:web
       - name: Unit tests
         run: pnpm test
+
+  runtime-packages:
+    name: Runtime packages (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Vite 7 requires Node 20.19 or newer. Node 26 is the upper
+        # supported major and catches assumptions hidden by the primary runtime.
+        # Exact Node 22 also owns the release-performance evidence.
+        node: ['20.19.0', '22.22.3', '26.x']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - name: Clean frozen-lockfile install
+        run: pnpm install --frozen-lockfile
+      - name: Third-party runtime licence and canonical notices gate
+        run: pnpm license:check
+      - name: Build API, CLI, migrations, and packaged web assets
+        run: pnpm runtime:build
+      - name: Verify generated artifacts and scan every generated file
+        run: pnpm runtime:verify-artifacts
+      - name: Verify clean-installed CLI package
+        run: pnpm cli:verify-package
+      - name: Verify clean-installed API package
+        run: pnpm api:verify-package
+      - name: Synthetic production-browser and API regression gate
+        if: matrix.node == '22.22.3'
+        env:
+          VELO_BROWSER_SMOKE_CHROME: google-chrome
+        run: pnpm performance:benchmark:ci
+      - name: Built runtime artifacts are current
+        run: |
+          git diff --exit-code -- \
+            apps/api/dist apps/api/migrations \
+            apps/cli/dist apps/cli/migrations
+          test -z "$(git ls-files --others --exclude-standard -- \
+            apps/api/dist apps/api/migrations \
+            apps/cli/dist apps/cli/migrations)"
 
   secret-scan:
     name: Secret scan (gitleaks)

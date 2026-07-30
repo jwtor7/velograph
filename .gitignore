@@ -36,6 +36,7 @@ healthautoexport*
 
 # --- SQLite in every form ----------------------------------------------------
 *.sqlite*
+*.mbtiles
 *.db
 *.db-journal
 *.db-wal
@@ -108,6 +109,10 @@ compose.override.yaml
 # Lockfiles (pnpm-lock.yaml) are deliberately committed — never ignore them.
 node_modules/
 dist/
+!apps/api/dist/
+!apps/api/dist/**
+!apps/cli/dist/
+!apps/cli/dist/**
 build/
 coverage/
 *.tsbuildinfo

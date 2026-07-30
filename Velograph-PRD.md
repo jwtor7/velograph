@@ -37,9 +37,9 @@ Observed input families that v1 must support:
 |---|---|
 | Heart rate and heart-rate recovery CSV | Date/time; minimum, maximum, and average beats per minute; context; source |
 | Cycling cadence CSV | Date/time; cadence; source |
-| Cycling distance CSV | Date/time; distance in kilometres; source |
-| Active and resting energy CSV | Date/time; energy in kilojoules; source |
-| Route CSV | Timestamp; latitude; longitude; altitude; vertical and horizontal accuracy; speed; course |
+| Cycling distance CSV | Date/time; distance with explicit `km` or `m` header; source |
+| Active and resting energy CSV | Date/time; energy with explicit `kJ`, `J`, or `kcal` header; source |
+| Route CSV | Timestamp; latitude; longitude; altitude/accuracy in `m` or `ft`; speed in `m/s` or `km/h`; course in `deg` |
 | GPX route | Track, segment, track point, time, elevation, and optional speed/course/accuracy extensions |
 | Optional supporting metrics | Steps, walking/running distance, flights climbed, and future Health Auto Export metrics |
 
@@ -116,8 +116,10 @@ A privacy-conscious cyclist who records rides with Apple Health, exports them th
 ### 7.2 Import rides
 
 1. The user drags in a folder/ZIP, selects multiple files, or uses the local CLI importer.
-2. Velograph inventories files without changing the source.
-3. It shows recognized, unsupported, duplicate, ambiguous, and invalid files.
+2. Velograph evaluates each file without changing the source or database, using the same parser,
+   content-hash duplicate check, and database-backed association rules as confirmed import.
+3. It shows exact recognized, duplicate, ambiguous, invalid, unsupported, unmodelled-metric, and
+   non-cycling outcomes.
 4. The user confirms the import.
 5. Velograph hashes and parses the files, associates them with workouts, validates data, writes one transaction, and calculates analytics.
 6. The result summarizes imported, updated, skipped, and quarantined records without exposing sensitive values in logs.
@@ -152,14 +154,14 @@ Priority labels: **P0** is required for the first usable release; **P1** is requ
 
 | ID | Priority | Requirement |
 |---|---:|---|
-| IMP-001 | P0 | Import selected CSV/GPX files, a folder selection, or a ZIP through the web UI. |
+| IMP-001 | P0 | Import selected CSV/GPX files, a folder selection, or a ZIP through the web UI. Before confirmation, both selected-file and folder-path flows must run the confirmed import's parser, duplicate check, and database association rules in a bounded, cancellable, rollback-only preflight and show exact per-file outcomes. |
 | IMP-002 | P0 | Provide a CLI import command for direct local paths and automation. |
 | IMP-003 | P0 | Compute SHA-256 per source file and make repeat imports idempotent. |
 | IMP-004 | P0 | Parse supported headers through versioned adapters with normalized canonical field names and units. |
 | IMP-005 | P0 | Associate files using workout type, filename timestamp, internal sample times, and tolerance checks. Never rely on filename alone. |
 | IMP-006 | P0 | Prefer GPX for route geometry, use route CSV as a fallback, and preserve provenance. |
 | IMP-007 | P0 | Commit each confirmed import atomically; a parser failure must not leave a partially imported workout. |
-| IMP-008 | P0 | Quarantine unsupported or malformed files with a safe, actionable error that contains no sample values. |
+| IMP-008 | P0 | Quarantine malformed or unsupported in-scope files with a safe, actionable error that contains no sample values. Treat well-formed unmodelled cycling metrics and non-cycling workouts as aggregate normal skips without persisting their hashes or filenames. |
 | IMP-009 | P0 | Preserve raw files only when the user enables “retain source files.” Default: store hashes, metadata, and normalized data, not duplicate raw files. |
 | IMP-010 | P1 | Let users reprocess existing imports after a parser or analytics-engine upgrade. |
 | IMP-011 | P1 | Support export and deletion of one ride, one import batch, or all local data. |
@@ -309,6 +311,7 @@ SQLite is the v1 database. Foreign keys are enabled and schema changes use order
 |---|---|
 | `import_batches` | One import transaction, status, counts, timestamps, and importer version |
 | `source_files` | Hash, sanitized original name, detected type, parser version, retention state, and error code |
+| `workout_source_files` | Durable workout ownership for every successfully associated source, including superseded or fallback-only route files |
 | `workouts` | Stable workout ID, type, start/end, timezone, duration, provenance, and quality state |
 | `metric_series` | Metric type, canonical unit, source, start/end, sample count, and coverage |
 | `metric_samples` | Series ID, timestamp, normalized numeric fields, context, and validity flags |
@@ -422,7 +425,7 @@ Git history is not an acceptable deletion mechanism. Sensitive data found after 
 |---|---|
 | Offline behavior | Import, browse, calculate, compare, map, chart, export, back up, and restore with external networking blocked |
 | Performance | Import a synthetic 100-workout corpus with one million metric/route samples in under 3 minutes on a documented reference laptop |
-| UI responsiveness | Open an already imported ride in under 1 second at p95 on the reference corpus; long imports run as cancellable jobs |
+| UI responsiveness | Open an already imported ride in under 1 second at p95 on the reference corpus; long web imports expose cancellation and propagate abort/disconnect signals into the atomic importer |
 | Reliability | Re-importing identical files creates no duplicate workouts or samples |
 | Reproducibility | Recalculation with identical input/settings/versions produces byte-equivalent analytics JSON |
 | Accessibility | Keyboard navigation, visible focus, semantic labels, colour-independent status cues, and WCAG 2.2 AA contrast |
@@ -472,6 +475,8 @@ Failed validation displays no polished narrative as if it were trustworthy. The 
 - Privacy impact
 - Data-handling changes
 - Dependency and licence impact
+- Contribution-licensing status; significant outside contributions require a signed CLA on
+  file before merge
 - Explicit attestation that no real health/location/credential data is present
 
 ### 16.3 Required merge gates
@@ -487,6 +492,9 @@ Failed validation displays no polished narrative as if it were trustworthy. The 
 - Privacy/data-leak scan
 - Secret scan
 - Dependency and licence policy
+- Maintainer verification that any significant outside contribution has a signed CLA on
+  file; until an execution-ready CLA process exists, such contributions are ineligible for
+  merge
 - Build for supported architectures
 - At least one independent review
 
@@ -498,7 +506,7 @@ The repository must contain an `AGENTS.md` describing architecture boundaries, s
 
 ### Phase 0 — Privacy and repository foundation
 
-- Licence decision and repository publication checklist
+- `AGPL-3.0-only` licence publication, ownership notice, and repository publication checklist
 - Protected branch and PR template
 - `AGENTS.md`
 - Ignore rules, synthetic fixture generator, privacy scanner, CI skeleton
@@ -580,11 +588,16 @@ Success is measured locally and voluntarily; Velograph does not phone home.
 - A backup can be moved between two clean supported installations without path edits.
 - New contributors can implement a scoped issue through the documented PR workflow without access to private data.
 
-## 20. Product decisions still required
+## 20. Product decisions
 
-These decisions do not block Phase 0 or the deterministic core, but must be resolved before public v1:
+These decisions do not block Phase 0 or the deterministic core, but the open items must be
+resolved before public v1:
 
-1. Open-source licence: Apache-2.0 is recommended for broad reuse and an explicit patent grant; AGPL-3.0 is the alternative if hosted modifications must remain open.
+1. **Resolved 2026-07-30 — open-source licence:** Velograph uses
+   `AGPL-3.0-only`. Junior Williams Consulting Inc. retains ownership of the original core
+   code. Before accepting significant outside contributions, the company will adopt a CLA
+   that lets contributors retain their copyright while granting the company the right to
+   relicense their contributions.
 2. Whether Windows is a v1 supported runtime or a post-v1 target.
 3. The default moving-speed threshold and route accuracy/outlier limits.
 4. Whether locally entered goals and subjective recovery notes are included in v1 or deferred.

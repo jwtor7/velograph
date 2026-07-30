@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { parseGpx, DEFAULT_GPX_LIMITS } from './gpx.ts';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { assertGpxByteLength, parseGpx, DEFAULT_GPX_LIMITS } from './gpx.ts';
+
+const HARDENING_FIXTURES = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..',
+  'fixtures',
+  'synthetic',
+  'import-hardening',
+);
+
+const readGpxFixture = (name: string) => readFileSync(join(HARDENING_FIXTURES, name), 'utf8');
 
 const wrap = (body: string) =>
   `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="t" xmlns="http://www.topografix.com/GPX/1/1"><trk>${body}</trk></gpx>`;
@@ -26,8 +41,27 @@ describe('secure GPX parser (ROUTE-001/004/005)', () => {
   it('is namespace-tolerant', () => {
     const gpx = wrap(
       '<trkseg><trkpt lat="-48.5" lon="-123.5"><g:ele>5</g:ele></trkpt></trkseg>',
-    ).replace('<ele>', '<g:ele>');
+    ).replace(
+      'xmlns="http://www.topografix.com/GPX/1/1"',
+      'xmlns="http://www.topografix.com/GPX/1/1" xmlns:g="http://www.topografix.com/GPX/1/1"',
+    );
     expect(parseGpx(gpx).segments[0]!.points[0]!.ele).toBe(5);
+  });
+
+  it('matches exact qualified close names even when prefixes share a namespace', () => {
+    const gpx =
+      '<a:gpx xmlns:a="http://www.topografix.com/GPX/1/1" xmlns:b="http://www.topografix.com/GPX/1/1">' +
+      '<a:trk><a:trkseg><a:trkpt lat="-48.5" lon="-123.5"></b:trkpt></a:trkseg></a:trk></a:gpx>';
+    expect(() => parseGpx(gpx)).toThrowError(expect.objectContaining({ code: 'malformed_xml' }));
+  });
+
+  it('rejects undeclared prefixes and non-GPX root namespaces', () => {
+    expect(() => parseGpx('<g:gpx/>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+    expect(() => parseGpx('<g:gpx xmlns:g="urn:synthetic:not-gpx"/>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
   });
 
   it('rejects DOCTYPE / external entity declarations', () => {
@@ -51,6 +85,13 @@ describe('secure GPX parser (ROUTE-001/004/005)', () => {
     );
   });
 
+  it('enforces the raw-byte boundary before decoding without a large fixture', () => {
+    expect(() => assertGpxByteLength(10, 10)).not.toThrow();
+    expect(() => assertGpxByteLength(11, 10)).toThrowError(
+      expect.objectContaining({ code: 'gpx_limits_exceeded' }),
+    );
+  });
+
   it('enforces the nesting-depth limit', () => {
     const deep = '<a>'.repeat(40) + '</a>'.repeat(40);
     expect(() => parseGpx(`<gpx>${deep}</gpx>`)).toThrowError(
@@ -58,15 +99,66 @@ describe('secure GPX parser (ROUTE-001/004/005)', () => {
     );
   });
 
-  it('drops out-of-range coordinates instead of importing them', () => {
-    const gpx = wrap(`<trkseg>${pt(-48.5, -123.5)}${pt(95, -123.5)}</trkseg>`);
-    const res = parseGpx(gpx);
-    expect(res.segments[0]!.points).toHaveLength(1);
-    expect(res.droppedPoints).toBe(1);
+  it('enforces a document-wide attribute budget', () => {
+    const attributes = Array.from({ length: 12 }, (_, index) => ` a${index}="${index}"`).join('');
+    expect(() =>
+      parseGpx(`<gpx${attributes}/>`, { ...DEFAULT_GPX_LIMITS, maxAttributes: 10 }),
+    ).toThrowError(expect.objectContaining({ code: 'gpx_limits_exceeded' }));
   });
 
-  it('rejects malformed XML', () => {
+  it('keeps the default attribute budget coherent with the point contract', () => {
+    expect(DEFAULT_GPX_LIMITS.maxAttributes).toBeGreaterThanOrEqual(
+      DEFAULT_GPX_LIMITS.maxPoints * 2,
+    );
+    const twoPoints =
+      '<gpx><trk><trkseg>' +
+      '<trkpt lat="-48" lon="-123"/><trkpt lat="-48.1" lon="-123.1"/>' +
+      '</trkseg></trk></gpx>';
+    expect(() =>
+      parseGpx(twoPoints, {
+        ...DEFAULT_GPX_LIMITS,
+        maxPoints: 2,
+        maxAttributes: 4,
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects the complete file when any required coordinate is invalid or missing', () => {
+    for (const invalidPoint of [
+      pt(95, -123.5),
+      '<trkpt lat="" lon="-123.5"/>',
+      '<trkpt lat="-48.5"/>',
+    ]) {
+      const gpx = wrap(`<trkseg>${pt(-48.5, -123.5)}${invalidPoint}</trkseg>`);
+      expect(() => parseGpx(gpx)).toThrowError(
+        expect.objectContaining({ code: 'numeric_value_invalid' }),
+      );
+    }
+  });
+
+  it('preserves a genuinely missing time as explicit null', () => {
+    const gpx = readGpxFixture('Outdoor Cycling-Route-20310607_080000.gpx');
+    expect(parseGpx(gpx).segments[0]!.points[0]).toMatchObject({ t: null });
+  });
+
+  it('rejects a present but malformed track-point time', () => {
+    const gpx = readGpxFixture('Outdoor Cycling-Route-20310608_080000-invalid-time.gpx');
+    expect(() => parseGpx(gpx)).toThrowError(
+      expect.objectContaining({ code: 'timestamps_invalid' }),
+    );
+  });
+
+  it('rejects mismatched, prematurely closed, and unclosed XML', () => {
+    expect(() => parseGpx('<gpx><trk><same-depth></different></trk></gpx>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
     expect(() => parseGpx('<gpx><trk><trkseg></gpx>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+    expect(() => parseGpx('<gpx></gpx></extra>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+    expect(() => parseGpx('<gpx><trk>')).toThrowError(
       expect.objectContaining({ code: 'malformed_xml' }),
     );
     expect(() => parseGpx('not xml at all')).toThrowError(
@@ -74,10 +166,44 @@ describe('secure GPX parser (ROUTE-001/004/005)', () => {
     );
   });
 
-  it('never resolves entities beyond the predefined five', () => {
+  it('rejects closing-tag attributes, multiple roots, and trailing content', () => {
+    expect(() => parseGpx('<gpx></gpx bogus>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+    expect(() => parseGpx('<gpx/><gpx/>')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+    expect(() => parseGpx('<gpx/>synthetic trailing content')).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+  });
+
+  it('accepts only a well-formed XML 1.0 UTF-8 declaration', () => {
+    expect(() =>
+      parseGpx('<?xml version="1.0" encoding="utf-8" standalone="yes"?><gpx/>'),
+    ).not.toThrow();
+    for (const declaration of [
+      '<?xml nope?>',
+      '<?xml version="2.0"?>',
+      '<?xml encoding="UTF-8" version="1.0"?>',
+      '<?xml version="1.0" standalone="maybe"?>',
+      '<?xml version="1.0" encoding="ISO-8859-1"?>',
+    ]) {
+      expect(() => parseGpx(`${declaration}<gpx/>`)).toThrowError(
+        expect.objectContaining({ code: 'malformed_xml' }),
+      );
+    }
+  });
+
+  it('rejects undeclared entities while accepting predefined and numeric references', () => {
     const gpx = wrap(
       '<trkseg><trkpt lat="-48.5" lon="-123.5"><time>2031-04-02T07:30:00Z</time></trkpt></trkseg>',
     );
-    expect(() => parseGpx(gpx.replace('creator="t"', 'creator="&custom;"'))).not.toThrow();
+    expect(() => parseGpx(gpx.replace('creator="t"', 'creator="&custom;"'))).toThrowError(
+      expect.objectContaining({ code: 'malformed_xml' }),
+    );
+    expect(() =>
+      parseGpx(gpx.replace('creator="t"', 'creator="synthetic &amp; &#x58;1"')),
+    ).not.toThrow();
   });
 });

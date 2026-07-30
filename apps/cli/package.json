@@ -2,22 +2,34 @@
   "name": "@velograph/cli",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "description": "Velograph local import CLI",
   "bin": {
-    "velograph-import": "./src/index.ts"
+    "velograph-import": "./dist/velograph-import.mjs"
+  },
+  "files": [
+    "dist",
+    "migrations"
+  ],
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0 <27"
   },
   "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@velograph/api": "workspace:*",
-    "@velograph/db": "workspace:*",
-    "@velograph/importers": "workspace:*",
-    "@velograph/shared": "workspace:*"
+    "better-sqlite3": "12.11.1",
+    "fflate": "0.8.3"
   },
   "devDependencies": {
     "@types/node": "^24.1.0",
+    "@velograph/api": "workspace:*",
+    "@velograph/db": "workspace:*",
+    "@velograph/importers": "workspace:*",
+    "@velograph/shared": "workspace:*",
     "typescript": "^5.9.2"
   }
 }

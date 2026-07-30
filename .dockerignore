@@ -1,0 +1,71 @@
+# Build context is a public release boundary. Keep local state, fixtures, and
+# developer-only material out of every image layer (PRD §12.2 and §18.13).
+.git
+.github
+.githooks
+.claude
+node_modules
+dist
+coverage
+docs
+fixtures
+
+# Data exports, databases, backups, reports, logs, and credentials must never
+# be copied into an image. The application receives its persistent state only
+# through the runtime volume documented in docker-compose.yml.
+*.csv
+*.gpx
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.dump
+data
+.data
+velograph-data
+.velograph
+backups
+backup
+reports
+exports
+out
+*.backup
+*.bak
+*.log
+logs
+log
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.keystore
+.netrc
+.codex
+.ollama
+
+# Tool output and editor state are neither needed nor safe to ship.
+.DS_Store
+.idea
+.vscode
+tmp
+.tmp
+scratch
+playwright-report
+test-results
+blob-report

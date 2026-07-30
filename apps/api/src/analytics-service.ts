@@ -4,6 +4,8 @@ import {
   computeRideAnalytics,
   DEFAULT_ANALYTICS_SETTINGS,
   FORMULA_VERSION,
+  InvalidAnalyticsSettingsError,
+  parseAnalyticsSettings,
   type AnalyticsSettings,
   type RideAnalytics,
 } from '@velograph/analytics';
@@ -15,21 +17,89 @@ export const SETTINGS_KEY = 'analytics';
 export interface AppSettings extends AnalyticsSettings {
   /** IANA timezone for offset-less imports and local date/time display. */
   timeZone: string;
+  /** Presentation only; canonical storage and analytics remain SI. */
+  displayUnits: 'metric' | 'imperial';
+}
+
+const APP_SETTING_KEYS = [
+  'hrZoneBounds',
+  'movingSpeedThresholdMs',
+  'minCoverageForEfficiency',
+  'elevationHysteresisM',
+  'timeZone',
+  'displayUnits',
+] as const;
+
+export class InvalidAppSettingsError extends Error {
+  readonly code = 'invalid_settings';
+
+  constructor() {
+    super('invalid_settings');
+    this.name = 'InvalidAppSettingsError';
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function failAppSettings(): never {
+  throw new InvalidAppSettingsError();
+}
+
+/** Exact, value-free runtime parser shared by stored-setting loads and writes. */
+export function parseAppSettings(value: unknown): AppSettings {
+  if (!isRecord(value)) return failAppSettings();
+  const keys = Object.keys(value);
+  if (
+    keys.length !== APP_SETTING_KEYS.length ||
+    keys.some((key) => !APP_SETTING_KEYS.includes(key as never))
+  ) {
+    return failAppSettings();
+  }
+  let analytics: AnalyticsSettings;
+  try {
+    analytics = parseAnalyticsSettings({
+      hrZoneBounds: value['hrZoneBounds'],
+      movingSpeedThresholdMs: value['movingSpeedThresholdMs'],
+      minCoverageForEfficiency: value['minCoverageForEfficiency'],
+      elevationHysteresisM: value['elevationHysteresisM'],
+    });
+  } catch (error) {
+    if (error instanceof InvalidAnalyticsSettingsError) return failAppSettings();
+    throw error;
+  }
+  const timeZone = value['timeZone'];
+  if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) return failAppSettings();
+  const displayUnits = value['displayUnits'];
+  if (displayUnits !== 'metric' && displayUnits !== 'imperial') return failAppSettings();
+  return { ...analytics, timeZone, displayUnits };
+}
+
+export function mergeAppSettings(current: AppSettings, patch: unknown): AppSettings {
+  if (!isRecord(patch)) return failAppSettings();
+  if (Object.keys(patch).some((key) => !APP_SETTING_KEYS.includes(key as never))) {
+    return failAppSettings();
+  }
+  return parseAppSettings({ ...current, ...patch });
 }
 
 export function loadSettings(db: Database): AppSettings {
-  const stored = new Repository(db).getSetting<Partial<AppSettings>>(SETTINGS_KEY);
-  const requestedZone = stored?.timeZone;
-  const timeZone =
-    typeof requestedZone === 'string' && isValidTimeZone(requestedZone)
-      ? requestedZone
-      : systemTimeZone();
-  return { ...DEFAULT_ANALYTICS_SETTINGS, ...(stored ?? {}), timeZone };
+  const stored = new Repository(db).getSetting<unknown>(SETTINGS_KEY);
+  const defaults = {
+    ...DEFAULT_ANALYTICS_SETTINGS,
+    timeZone: systemTimeZone(),
+    displayUnits: 'metric' as const,
+  };
+  if (stored === undefined) return parseAppSettings(defaults);
+  if (!isRecord(stored)) return failAppSettings();
+  return parseAppSettings({ ...defaults, ...stored });
 }
 
-export function saveSettings(db: Database, settings: AppSettings): void {
-  if (!isValidTimeZone(settings.timeZone)) throw new Error('invalid_time_zone');
-  new Repository(db).setSetting(SETTINGS_KEY, settings);
+export function saveSettings(db: Database, settings: unknown): AppSettings {
+  const parsed = parseAppSettings(settings);
+  new Repository(db).setSetting(SETTINGS_KEY, parsed);
+  return parsed;
 }
 
 /**
@@ -65,16 +135,15 @@ export function getOrComputeAnalytics(
  * Repair a workout (issue #38): re-derive its span from the normalized data
  * it already owns (metric_series/route_points — re-running full association
  * from raw source bytes isn't possible once a file is hash-only, PRD IMP
- * retention default), drop analytics snapshots left over from a previous
- * `FORMULA_VERSION`, and force a fresh snapshot under the current formula
- * version. Returns null when the workout does not exist.
+ * retention default), and force a fresh snapshot under the current formula
+ * version. Prior formula snapshots remain immutable provenance records.
+ * Returns null when the workout does not exist.
  */
 export function repairWorkout(db: Database, workoutId: number, now: number): RideAnalytics | null {
   const repo = new Repository(db);
   return repo.transaction(() => {
     if (!repo.getWorkout(workoutId)) return null;
     repo.recomputeWorkoutSpan(workoutId);
-    repo.deleteStaleAnalyticsSnapshots(workoutId, FORMULA_VERSION);
 
     const input = loadWorkoutData(db, workoutId);
     if (!input) return null;

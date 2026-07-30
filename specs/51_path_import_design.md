@@ -1,0 +1,138 @@
+# Issue #51: Bounded path import and reliable foreground lifecycle
+
+## Requirements
+
+- While a user previews an export directory, when Velograph walks the tree, the system shall
+  collect only bounded metadata through incremental directory iteration and shall not read source
+  contents.
+- While a user confirms that preview, when Velograph imports the directory, the system shall
+  reproduce the exact private preview manifest, require its opaque digest, read one deterministic
+  workout-association group at a time, and commit the complete confirmed import as one database
+  transaction (IMP-001, IMP-007).
+- While any traversal or group limit truncates a preview, the UI and API shall refuse
+  confirmation; partial previews are never import plans.
+- While traversal encounters a regular file, or a symlink alias to an in-tree regular file, outside
+  the supported CSV/GPX/ZIP allow-list, the preview and confirmation result shall report it as
+  `unsupported_file_type` rather than silently omit it. Containment and target type take precedence
+  over extension classification.
+- While an import plan is being consumed, when the root or a planned file changes identity,
+  canonical location, type, or size, the system shall fail closed with a value-free error before
+  importing bytes from the changed entry. A planned entry that disappears, becomes dangling, or
+  gains an invalid path component shall return `409 file_changed`; genuine access failures remain
+  `file_unreadable`.
+- While confirmation cannot recreate a previously previewed root because it was deleted or replaced
+  by a non-directory, the API shall return `409 path_changed` so the UI clears the stale preview.
+- While traversal discovers and then opens a nested directory, the system shall bind that directory
+  to its canonical target and device/inode identity before and after enumeration. A replacement
+  shall fail the entire plan with value-free `path_changed`, without returning names from the
+  replacement.
+- While a folder preview request is pending, if the user edits the path field, the eventual response
+  or failure for the earlier path shall not replace the current path's preview or error state.
+- While `pnpm app:dev` is running, when the operating-system browser launcher cannot be spawned,
+  the system shall print the loopback URL and keep owning the API child until normal shutdown.
+- While either workflow reports an error, the system shall not log file contents, coordinates,
+  source strings, or local paths.
+
+## Architecture
+
+### Frontend
+
+- The preview response carries an opaque confirmation digest. The client returns it unchanged on
+  confirmation and never renders or interprets it.
+- A truncated preview shows a stable limit message and disables confirmation. A `path_changed`
+  response clears the stale preview and asks the user to preview again.
+- Preview requests capture the submitted path and compare it with the live editable value after the
+  asynchronous request settles; stale successes and stale failures are ignored.
+- Preview ordering remains stable so the user sees the same ride/file order that confirmation
+  consumes.
+
+### Backend
+
+- `walkImportFolder` consumes `opendir` handles incrementally and produces a metadata-only
+  manifest with canonical root and entry identities. Explicit visited-entry, opened-directory,
+  recursion-depth, importable-file, and aggregate-byte limits count unsupported entries too.
+- Every enumerated directory captures its canonical target and device/inode identity before open,
+  revalidates them immediately before open and after enumeration, and turns any mismatch into the
+  same value-free `path_changed` failure used for stale plans.
+- A shared grouping function orders association groups by workout type/timestamp key, then orders
+  files by relative path. ZIPs and unrecognized files each form deterministic standalone groups.
+- Preview hashes the complete private manifest, grouping result, skips, limits, and root identity.
+  Confirmation repeats the walk, compares the digest, and refuses a mismatch or any truncation
+  before source reads or database writes.
+- Unsupported regular files and in-tree symlink aliases remain part of the private manifest and are
+  returned as `unsupported_file_type` skip records. External aliases remain
+  `symlink_outside_tree`. Confirmation-time missing or non-directory roots normalize to the same
+  `path_changed` conflict used for other stale manifests.
+- A lazy group-loader iterator revalidates the canonical root and opens each planned file by
+  descriptor. It checks descriptor identity and size before and after an exact-size bounded read,
+  and normalizes missing, dangling, or type-invalid planned entries to `file_changed` so the client
+  clears its stale preview.
+- `runImportGroups` consumes that iterator inside one existing SQLite transaction. The previous
+  `runImport` API delegates to one group, preserving loose-file and CLI behavior.
+- ZIP extraction parses the central directory and matching local headers before inflation,
+  enforcing entry names/counts and declared per-entry/aggregate sizes. Hidden/resource entries are
+  excluded before inflation. Included entries are decoded with a maximum output length configured
+  before inflation starts, bounded by the remaining per-entry and aggregate allowance, with
+  declared/actual mismatches rejected.
+- `openBrowser` attaches an `error` listener to the spawned launcher before detaching it. Browser
+  launch remains best-effort and cannot terminate the foreground owner.
+
+### Security
+
+- Authentication/authorization: not applicable to this single-user loopback app. Existing strict
+  Host/Origin checks and the custom CSRF header remain server-side requirements.
+- Input: path body cap, checkout guard, traversal/file/byte caps, extension allow-list,
+  canonical-root containment, preview-digest binding, directory/root/file identity checks,
+  regular-file checks, and two-phase ZIP validation all fail closed.
+- Output: API responses remain allow-listed metadata and stable error codes. No source bytes or
+  absolute planned-file paths or identity values are returned; the digest is opaque.
+- Rate limiting: incremental traversal bounds, ZIP preflight/output limits, and request-body limits
+  are the applicable resource controls; the endpoint is loopback-only and has no network exposure.
+- Logging: no filesystem path or source value is added to logs. Launcher fallback prints only the
+  fixed loopback URL supplied by the lifecycle command.
+- SQL: no new SQL is introduced; the importer continues through the parameterized repository
+  layer and one atomic transaction.
+- XSS/encoding: filenames remain data in JSON and React text rendering, protected by the existing
+  CSP. Stable errors are fixed application strings rather than filesystem values.
+
+## Implementation plan
+
+- [x] Capture acceptance criteria and complete the per-feature security checkpoint.
+- [x] Add deterministic metadata grouping and lazy, identity-checked group reads.
+- [x] Bind confirmation to the exact bounded preview manifest and reject truncated previews.
+- [x] Replace recursive directory materialization with bounded incremental iteration.
+- [x] Revalidate every enumerated directory around `opendir` and add a deterministic nested-swap
+      regression.
+- [x] Ignore stale asynchronous preview results after the editable folder path changes.
+- [x] Replace eager ZIP inflation with preflight plus a decoder-enforced maximum output length.
+- [x] Add grouped importer consumption while preserving one atomic batch.
+- [x] Switch the path endpoint to the lazy grouped pipeline.
+- [x] Handle asynchronous browser-launch failure before `unref`.
+- [x] Add synthetic ordering, laziness, memory-bound, TOCTOU, atomicity, and lifecycle tests.
+- [x] Update the changelog and run focused plus repository-wide quality/privacy gates.
+
+## Security checkpoint
+
+- [x] Auth/authz model unchanged and explicitly scoped to loopback + CSRF.
+- [x] Path and filesystem input validated at both request and read boundaries.
+- [x] API output excludes contents and newly captured identity metadata.
+- [x] Resource exhaustion is bounded by visited entries, directories, depth, importable files,
+      total planned bytes, declared and actual ZIP output, and one association group resident at a
+      time.
+- [x] No credentials, personal data, raw exports, local paths, or sample values enter fixtures,
+      errors, logs, docs, or tests.
+- [x] Existing parameterized database access, security headers, CSP, and response encoding remain
+      in force.
+
+## Verification
+
+- `pnpm test`: 33 test files and 239 tests pass, including synthetic traversal bounds,
+  deterministic nested-directory swap rejection, stale asynchronous preview suppression,
+  exact-manifest confirmation, mutation/addition/replacement rejection with no writes, ZIP
+  preflight/decoder limits, complete metric/route coverage, transaction rollback, and
+  browser-launch lifecycle cases.
+- `pnpm typecheck`, `pnpm lint`, `pnpm format`, and the web production build: pass.
+- `node scripts/privacy-scan.mjs --all`, `--staged`, and changed-file `--files` scans: pass.
+- Frontend/accessibility: confirmation remains keyboard-operable; disabled and text states make a
+  truncated preview non-confirmable, and no sensitive manifest field is rendered.
+- Deployment/migration: no dependency, schema, migration, port, or environment change.

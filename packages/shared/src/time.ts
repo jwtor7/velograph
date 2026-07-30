@@ -81,14 +81,41 @@ function localPartsAt(instant: number, timeZone: string): Omit<WallTimeParts, 'm
 }
 
 function wallTimeAsUtc(parts: WallTimeParts): number {
-  return Date.UTC(
-    parts.year,
-    parts.month - 1,
-    parts.day,
-    parts.hour,
-    parts.minute,
-    parts.second,
-    parts.millisecond,
+  const date = new Date(0);
+  date.setUTCFullYear(parts.year, parts.month - 1, parts.day);
+  date.setUTCHours(parts.hour, parts.minute, parts.second, parts.millisecond);
+  return date.getTime();
+}
+
+function isValidWallTime(parts: WallTimeParts): boolean {
+  if (
+    parts.year < 0 ||
+    parts.year > 9999 ||
+    parts.month < 1 ||
+    parts.month > 12 ||
+    parts.day < 1 ||
+    parts.hour < 0 ||
+    parts.hour > 23 ||
+    parts.minute < 0 ||
+    parts.minute > 59 ||
+    parts.second < 0 ||
+    parts.second > 59 ||
+    parts.millisecond < 0 ||
+    parts.millisecond > 999
+  ) {
+    return false;
+  }
+  const instant = wallTimeAsUtc(parts);
+  if (!Number.isFinite(instant)) return false;
+  const roundTrip = new Date(instant);
+  return (
+    roundTrip.getUTCFullYear() === parts.year &&
+    roundTrip.getUTCMonth() + 1 === parts.month &&
+    roundTrip.getUTCDate() === parts.day &&
+    roundTrip.getUTCHours() === parts.hour &&
+    roundTrip.getUTCMinutes() === parts.minute &&
+    roundTrip.getUTCSeconds() === parts.second &&
+    roundTrip.getUTCMilliseconds() === parts.millisecond
   );
 }
 
@@ -135,7 +162,12 @@ export function parseInstant(raw: string, options: ParseInstantOptions = {}): nu
     if (off !== 'Z') {
       const sign = off.startsWith('-') ? -1 : 1;
       const digits = off.slice(1).replace(':', '');
-      offsetMin = sign * (Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2, 4)));
+      const offsetHour = Number(digits.slice(0, 2));
+      const offsetMinute = Number(digits.slice(2, 4));
+      if (offsetHour > 14 || offsetMinute > 59 || (offsetHour === 14 && offsetMinute !== 0)) {
+        return null;
+      }
+      offsetMin = sign * (offsetHour * 60 + offsetMinute);
     }
   }
   const [, y, mo, d, h, mi, sec, frac] = m;
@@ -148,6 +180,7 @@ export function parseInstant(raw: string, options: ParseInstantOptions = {}): nu
     second: Number(sec),
     millisecond: frac ? Number(frac.padEnd(3, '0')) : 0,
   };
+  if (!isValidWallTime(parts)) return null;
   if (!hasExplicitOffset && options.defaultTimeZone) {
     return zonedWallTimeToUtc(parts, options.defaultTimeZone);
   }

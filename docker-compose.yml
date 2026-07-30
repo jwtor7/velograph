@@ -1,0 +1,33 @@
+services:
+  velograph:
+    build:
+      context: .
+    image: velograph:local
+    # Docker's host-side binding is loopback-only. Do not change this to a
+    # wildcard address: the application has no authentication for LAN use.
+    ports:
+      - '127.0.0.1:5123:5123'
+    environment:
+      VELO_DATA_DIR: /var/lib/velograph
+      VELO_HOST: 127.0.0.1
+      VELO_INTERNAL_PORT: 5124
+      # Container-network ingress is explicit here because the corresponding
+      # host publication above is pinned to loopback.
+      VELO_PROXY_HOST: 0.0.0.0
+      VELO_PROXY_PORT: 5123
+    volumes:
+      - velograph-data:/var/lib/velograph
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 25s
+    restart: unless-stopped
+
+volumes:
+  # Docker-managed and local to this machine. It is intentionally not a path
+  # beneath the checkout, and it is not included in an image or CI context.
+  velograph-data:

@@ -64,15 +64,15 @@ Chart fills are the channel color at ~12–18% alpha fading to 0 toward the base
 
 ### Route trace (sampled)
 
-Route polylines are drawn as a progress gradient start→finish: `#2CE466` → `#3D61F9`, on a neutral dark grid (no map tiles). Start marker green, finish marker white ring on dark.
+Route polylines are drawn as a progress gradient start→finish: `#2CE466` → `#3D61F9`, in a true interactive geographic viewport. Start is green and finish is a white ring on dark. The route-only state uses the existing dark canvas without inventing geographic context; when a validated local raster MBTiles package is configured, its tiles sit beneath the same route geometry. Map controls use text labels, the existing compact button treatment, visible focus, and 44 px touch targets on narrow screens.
 
 ### Text
 
-| Token                 | Hex       | Source                                                                                               |
-| --------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
-| `--vg-text`           | `#FFFFFF` | sampled headline                                                                                     |
-| `--vg-text-secondary` | `#B8C0CC` | _derived_                                                                                            |
-| `--vg-text-muted`     | `#6B7688` | _derived_ (labels sampled composited at `#3C434D` are below AA; lifted for WCAG 2.2 AA on `#09101B`) |
+| Token                 | Hex       | Source                                                                                        |
+| --------------------- | --------- | --------------------------------------------------------------------------------------------- |
+| `--vg-text`           | `#FFFFFF` | sampled headline                                                                              |
+| `--vg-text-secondary` | `#B8C0CC` | _derived_                                                                                     |
+| `--vg-text-muted`     | `#758197` | _derived_ (4.85:1 on `#09101B`, 4.67:1 on raised `#0D1520`; sampled label grays are below AA) |
 
 Accessibility note: sampled label grays from the art fail AA contrast at small sizes; the derived text tokens are the shippable values. Channel colors are supplemented by icons/labels (color-independent status cues, PRD §14).
 
@@ -97,10 +97,12 @@ Accessibility note: sampled label grays from the art fail AA contrast at small s
 
 - **Sidebar**: `--vg-bg-sidebar`, icon + label rows, active row gets a `--vg-surface-raised` pill with white text; inactive rows muted.
 - **KPI tile**: icon in channel color, tiny muted label, large tabular numeral + small unit.
-- **Pill badge**: transparent fill, 1 px `--vg-brand-green` border, brand-green text (as in "Open Source · Local-First · Runs in Your Browser").
+- **Pill badge**: transparent fill, 1 px `--vg-brand-green` border, brand-green text (as in "Public Source · Local-First · Runs in Your Browser").
 - **Chart tile**: title left, current value right in channel color; sparkline/area chart beneath; muted axis ticks.
 - **Zone strip**: six columns, zone label + time + percent, thin rounded progress bar in the zone color.
-- **Route panel**: dark canvas, subtle grid, gradient polyline, start/finish markers, no tiles.
+- **Route panel**: interactive geographic viewport, gradient polyline, start/finish/distance/
+  direction markers, scale, compact controls, and an optional validated local basemap beneath the
+  route.
 
 ## 5. Rules
 
@@ -109,3 +111,4 @@ Accessibility note: sampled label grays from the art fail AA contrast at small s
 3. Channel colors are semantic and immutable; never use them decoratively.
 4. All fonts, icons, and styles are bundled — zero remote requests at render (PRD §9.3).
 5. Meet WCAG 2.2 AA: use derived text tokens, visible focus rings (`--vg-brand-teal` 2 px), and non-color status cues.
+6. Confirmation dialogs move focus to Cancel, trap focus, close on Escape when idle, and restore focus to their trigger. Interactive time-series charts expose a keyboard slider cursor with fine, page, and boundary controls.

@@ -3,65 +3,150 @@
  * Velograph CLI (IMP-002; issue #38 delete/backup/restore/repair parity):
  *   node apps/cli/src/index.ts import <path...> [--data-dir <dir>]
  *   node apps/cli/src/index.ts delete <workoutId> [--data-dir <dir>]
+ *   node apps/cli/src/index.ts delete-all --confirm-delete-all [--data-dir <dir>]
  *   node apps/cli/src/index.ts backup <destPath> [--data-dir <dir>]
- *   node apps/cli/src/index.ts restore <backupPath> [--data-dir <dir>]
+ *   node apps/cli/src/index.ts restore <backupPath> --confirm-replace [--data-dir <dir>]
  *   node apps/cli/src/index.ts repair <workoutId> [--data-dir <dir>]
  *
- * Accepts CSV/GPX files, directories (scanned one level, non-recursive), and
- * ZIP archives. Prints counts and error codes only — never sample values or
- * filesystem paths beyond what the user themselves passed on the command line.
+ * Accepts CSV/GPX files, recursively planned directories, and ZIP archives.
+ * Prints counts and error codes only — never sample values or filesystem paths.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { closeSync, fstatSync, lstatSync, openSync, readSync, type Stats } from 'node:fs';
+import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
+  BackupValidationError,
   backupDatabase,
   databasePath,
   openDatabase,
   Repository,
   resolveDataDir,
-  restoreDatabase,
+  RestoreDatabaseError,
+  RestoreValidationError,
+  restoreDatabaseWithReport,
+  type Database,
 } from '@velograph/db';
 import { repairWorkout } from '@velograph/api';
-import { runImport, type ImportFile } from '@velograph/importers';
+import {
+  DEFAULT_MAX_FILES,
+  DEFAULT_MAX_GROUP_BYTES,
+  DEFAULT_MAX_TOTAL_BYTES,
+  planFolderImport,
+  readFolderFileGroups,
+  runImportGroups,
+  type ImportFileGroupLoader,
+} from '@velograph/importers';
 import { systemTimeZone } from '@velograph/shared';
 
 const USAGE = [
   'Usage:',
   '  velograph-import import <file|dir|zip>... [--data-dir <dir>]',
   '  velograph-import delete <workoutId> [--data-dir <dir>]',
+  '  velograph-import delete-all --confirm-delete-all [--data-dir <dir>]',
   '  velograph-import backup <destPath> [--data-dir <dir>]',
-  '  velograph-import restore <backupPath> [--data-dir <dir>]',
+  '  velograph-import restore <backupPath> --confirm-replace [--data-dir <dir>]',
   '  velograph-import repair <workoutId> [--data-dir <dir>]',
 ].join('\n');
 
-function collectFiles(paths: string[]): ImportFile[] {
-  const files: ImportFile[] = [];
-  for (const p of paths) {
-    const st = statSync(p);
-    if (st.isDirectory()) {
-      for (const entry of readdirSync(p).sort()) {
-        const full = join(p, entry);
-        if (!statSync(full).isFile()) continue;
-        if (/\.(csv|gpx|zip)$/i.test(entry)) {
-          files.push({ name: entry, data: readFileSync(full) });
-        }
-      }
-    } else {
-      files.push({ name: p.split('/').pop() ?? p, data: readFileSync(p) });
-    }
-  }
-  return files;
+export function portableBasename(path: string): string {
+  return basename(path.replaceAll('\\', '/'));
 }
 
-/** Pull `--data-dir <dir>` out of args, if present, returning the rest. */
-function extractDataDirOverride(args: string[]): { rest: string[]; dataDir: string | undefined } {
+function sameFileIdentity(expected: Stats, actual: Stats): boolean {
+  return (
+    expected.dev === actual.dev &&
+    expected.ino === actual.ino &&
+    expected.size === actual.size &&
+    expected.mtimeMs === actual.mtimeMs &&
+    expected.ctimeMs === actual.ctimeMs
+  );
+}
+
+function directFileLoader(path: string, expected: Stats): ImportFileGroupLoader {
+  const name = portableBasename(path);
+  return () => {
+    let fd: number | undefined;
+    try {
+      const pathStats = lstatSync(path);
+      if (!pathStats.isFile() || !sameFileIdentity(expected, pathStats)) {
+        throw new Error('import_file_changed');
+      }
+      fd = openSync(path, 'r');
+      const before = fstatSync(fd);
+      if (!before.isFile() || !sameFileIdentity(expected, before)) {
+        throw new Error('import_file_changed');
+      }
+      const data = Buffer.alloc(expected.size);
+      let offset = 0;
+      while (offset < data.byteLength) {
+        const bytesRead = readSync(fd, data, offset, data.byteLength - offset, null);
+        if (bytesRead === 0) throw new Error('import_file_changed');
+        offset += bytesRead;
+      }
+      const overflowProbe = Buffer.allocUnsafe(1);
+      if (readSync(fd, overflowProbe, 0, 1, null) !== 0) {
+        throw new Error('import_file_changed');
+      }
+      const after = fstatSync(fd);
+      if (!sameFileIdentity(before, after) || data.byteLength !== expected.size) {
+        throw new Error('import_file_changed');
+      }
+      return [{ name, data }];
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
+  };
+}
+
+function collectImportGroups(paths: string[]): ImportFileGroupLoader[] {
+  const groups: ImportFileGroupLoader[] = [];
+  let totalFiles = 0;
+  let totalBytes = 0;
+
+  for (const path of paths) {
+    const stats = lstatSync(path);
+    if (stats.isSymbolicLink()) throw new Error('import_symbolic_path');
+
+    if (stats.isDirectory()) {
+      const plan = planFolderImport(path);
+      if (plan.truncated) throw new Error('import_folder_limits_exceeded');
+      totalFiles += plan.totalFiles;
+      totalBytes += plan.totalBytes;
+      groups.push(...readFolderFileGroups(plan));
+    } else if (stats.isFile() && /\.(csv|gpx|zip)$/i.test(path)) {
+      if (stats.size > DEFAULT_MAX_GROUP_BYTES) throw new Error('import_file_too_large');
+      totalFiles++;
+      totalBytes += stats.size;
+      groups.push(directFileLoader(path, stats));
+    }
+
+    if (totalFiles > DEFAULT_MAX_FILES || totalBytes > DEFAULT_MAX_TOTAL_BYTES) {
+      throw new Error('import_folder_limits_exceeded');
+    }
+  }
+
+  return groups;
+}
+
+type DataDirOverride =
+  { valid: true; rest: string[]; dataDir: string | undefined } | { valid: false };
+
+/**
+ * Pull one optional `--data-dir <dir>` out of args. Missing, blank, flag-like,
+ * or repeated values are rejected before resolveDataDir can choose a default.
+ */
+function extractDataDirOverride(args: string[]): DataDirOverride {
   const rest = [...args];
-  const idx = rest.indexOf('--data-dir');
-  if (idx === -1) return { rest, dataDir: undefined };
+  const indexes = rest.flatMap((arg, index) => (arg === '--data-dir' ? [index] : []));
+  if (indexes.length === 0) return { valid: true, rest, dataDir: undefined };
+  if (indexes.length !== 1) return { valid: false };
+  const idx = indexes[0]!;
   const dataDir = rest[idx + 1];
+  if (dataDir === undefined || dataDir.trim() === '' || dataDir.startsWith('--')) {
+    return { valid: false };
+  }
   rest.splice(idx, 2);
-  return { rest, dataDir };
+  return { valid: true, rest, dataDir };
 }
 
 function runImportCmd(args: string[]): number {
@@ -72,23 +157,35 @@ function runImportCmd(args: string[]): number {
   const dataDir = resolveDataDir();
   const db = openDatabase(databasePath(dataDir));
   try {
-    const files = collectFiles(args);
-    if (files.length === 0) {
+    const groups = collectImportGroups(args);
+    if (groups.length === 0) {
       console.error('No importable files found (.csv, .gpx, .zip)');
       return 2;
     }
-    const result = runImport(db, files, { timeZone: systemTimeZone() });
+    const result = runImportGroups(db, groups, { timeZone: systemTimeZone() });
     console.log(
       [
         `Batch ${result.batchId} committed`,
         `  imported files:     ${result.imported}`,
         `  duplicates skipped: ${result.skippedDuplicates}`,
+        `  out-of-scope skipped: ${result.skipped}`,
         `  quarantined:        ${result.quarantined}`,
         `  workouts created:   ${result.workoutsCreated}`,
       ].join('\n'),
     );
-    for (const q of result.quarantinedFiles) {
-      console.log(`  quarantined: ${q.name} [${q.code}]`);
+    const quarantinedByCode = new Map<string, number>();
+    for (const quarantine of result.quarantinedFiles) {
+      quarantinedByCode.set(quarantine.code, (quarantinedByCode.get(quarantine.code) ?? 0) + 1);
+    }
+    for (const [code, count] of [...quarantinedByCode].sort(([left], [right]) =>
+      left.localeCompare(right),
+    )) {
+      console.log(`  quarantined [${code}]: ${count}`);
+    }
+    for (const [code, count] of Object.entries(result.skippedByCode).sort(([left], [right]) =>
+      left.localeCompare(right),
+    )) {
+      if (count > 0) console.log(`  skipped [${code}]: ${count}`);
     }
     return 0;
   } finally {
@@ -119,6 +216,22 @@ function runDeleteCmd(args: string[]): number {
   }
 }
 
+function runDeleteAllCmd(args: string[]): number {
+  if (args.length !== 1 || args[0] !== '--confirm-delete-all') {
+    console.error('Delete-all requires --confirm-delete-all');
+    return 2;
+  }
+  const dataDir = resolveDataDir();
+  const db = openDatabase(databasePath(dataDir));
+  try {
+    new Repository(db).deleteAllData();
+    console.log('Deleted all local data');
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
 function runRepairCmd(args: string[]): number {
   const id = Number(args[0]);
   if (!args[0] || !Number.isInteger(id)) {
@@ -140,71 +253,152 @@ function runRepairCmd(args: string[]): number {
   }
 }
 
+function closeDatabaseWithoutThrow(db: Database | undefined): boolean {
+  if (!db?.open) return true;
+  try {
+    db.close();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function runBackupCmd(args: string[]): Promise<number> {
   const dest = args[0];
   if (!dest) {
     console.log(USAGE);
     return 2;
   }
-  const dataDir = resolveDataDir();
-  const db = openDatabase(databasePath(dataDir));
+  let db: Database | undefined;
   try {
+    const dataDir = resolveDataDir();
+    db = openDatabase(databasePath(dataDir));
     const result = await backupDatabase(db, dest);
-    console.log(`Backup written (${result.totalPages} page(s))`);
+    if (!closeDatabaseWithoutThrow(db)) {
+      console.error('Backup failed: backup_failed');
+      return 1;
+    }
+    console.log(
+      `Backup written (${result.totalPages} page(s), format ${result.manifest.formatVersion}, schema ${result.manifest.schemaVersion})`,
+    );
     return 0;
   } catch (err) {
-    console.error(`Backup failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    closeDatabaseWithoutThrow(db);
+    const code = err instanceof BackupValidationError ? err.code : 'backup_failed';
+    console.error(`Backup failed: ${code}`);
     return 1;
-  } finally {
-    db.close();
   }
 }
 
 async function runRestoreCmd(args: string[]): Promise<number> {
-  const source = args[0];
-  if (!source) {
+  const confirmed = args.includes('--confirm-replace');
+  const positional = args.filter((arg) => arg !== '--confirm-replace');
+  const source = positional[0];
+  if (!source || positional.length !== 1) {
     console.log(USAGE);
     return 2;
   }
-  const dataDir = resolveDataDir();
-  const dbPath = databasePath(dataDir);
-  const db = openDatabase(dbPath);
+  if (!confirmed) {
+    console.error('Restore requires --confirm-replace');
+    return 2;
+  }
+  let db: Database | undefined;
   try {
-    const restored = await restoreDatabase(db, dbPath, source);
-    restored.close();
-    console.log('Database restored from backup');
+    const dataDir = resolveDataDir();
+    const dbPath = databasePath(dataDir);
+    db = openDatabase(dbPath);
+    const result = await restoreDatabaseWithReport(db, dbPath, source);
+    if (!closeDatabaseWithoutThrow(result.database)) {
+      console.error('Restore failed: restore_failed');
+      return 1;
+    }
+    console.log(
+      result.report.legacyBackup
+        ? `Database restored from legacy backup and migrated to ${result.report.schemaVersion}`
+        : `Database restored; manifest and checksums verified (${result.report.schemaVersion})`,
+    );
     return 0;
   } catch (err) {
-    console.error(`Restore failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    if (err instanceof RestoreDatabaseError && err.recoveredDatabase?.open) {
+      closeDatabaseWithoutThrow(err.recoveredDatabase);
+    } else {
+      closeDatabaseWithoutThrow(db);
+    }
+    const code =
+      err instanceof RestoreDatabaseError
+        ? err.code
+        : err instanceof RestoreValidationError
+          ? err.code
+          : 'restore_failed';
+    console.error(`Restore failed: ${code}`);
     return 1;
+  }
+}
+
+function commandFailureMessage(command: string | undefined): string {
+  switch (command) {
+    case 'import':
+      return 'Import failed: import_failed';
+    case 'delete':
+      return 'Delete failed: delete_failed';
+    case 'delete-all':
+      return 'Delete-all failed: delete_all_failed';
+    case 'repair':
+      return 'Repair failed: repair_failed';
+    case 'backup':
+      return 'Backup failed: backup_failed';
+    case 'restore':
+      return 'Restore failed: restore_failed';
+    default:
+      return 'Command failed: command_failed';
   }
 }
 
 export async function main(argv: string[]): Promise<number> {
   const args = [...argv];
   const cmd = args.shift();
-  const { rest, dataDir } = extractDataDirOverride(args);
-  if (dataDir) process.env['VELO_DATA_DIR'] = dataDir;
-
-  switch (cmd) {
-    case 'import':
-      return runImportCmd(rest);
-    case 'delete':
-      return runDeleteCmd(rest);
-    case 'repair':
-      return runRepairCmd(rest);
-    case 'backup':
-      return runBackupCmd(rest);
-    case 'restore':
-      return runRestoreCmd(rest);
-    default:
+  try {
+    const parsed = extractDataDirOverride(args);
+    if (!parsed.valid) {
       console.log(USAGE);
       return 2;
+    }
+    const { rest, dataDir } = parsed;
+    if (dataDir !== undefined) process.env['VELO_DATA_DIR'] = dataDir;
+
+    switch (cmd) {
+      case 'import':
+        return runImportCmd(rest);
+      case 'delete':
+        return runDeleteCmd(rest);
+      case 'delete-all':
+        return runDeleteAllCmd(rest);
+      case 'repair':
+        return runRepairCmd(rest);
+      case 'backup':
+        return runBackupCmd(rest);
+      case 'restore':
+        return runRestoreCmd(rest);
+      default:
+        console.log(USAGE);
+        return 2;
+    }
+  } catch {
+    console.error(commandFailureMessage(cmd));
+    return 1;
   }
 }
 
 // Only run as a side effect when invoked directly (`node index.ts ...`), not
 // when imported — e.g. by tests exercising `main()` in-process.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main(process.argv.slice(2)).then((code) => process.exit(code));
+  void main(process.argv.slice(2)).then(
+    (code) => {
+      process.exitCode = code;
+    },
+    () => {
+      console.error('Command failed: command_failed');
+      process.exitCode = 1;
+    },
+  );
 }

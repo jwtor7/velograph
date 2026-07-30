@@ -22,7 +22,7 @@ export interface MetricSample {
 }
 
 export interface RoutePoint {
-  t: number;
+  t: number | null;
   lat: number;
   lon: number;
   ele?: number;
@@ -100,20 +100,103 @@ export interface TrendsResponse {
 
 export interface Settings {
   timeZone: string;
+  displayUnits: 'metric' | 'imperial';
   hrZoneBounds: number[] | null;
   movingSpeedThresholdMs: number;
   minCoverageForEfficiency: number;
   elevationHysteresisM: number;
 }
 
+export type BasemapResponse =
+  | { state: 'not_configured' | 'invalid' }
+  | {
+      state: 'ready';
+      format: 'raster-mbtiles';
+      name: string;
+      attribution: string;
+      minZoom: number;
+      maxZoom: number;
+      bounds?: readonly [number, number, number, number];
+    };
+
+export interface FolderRideGroup {
+  rideKey: string;
+  workoutType: string;
+  stampHint: string;
+  files: { relativePath: string; name: string; sizeBytes: number; label: string; format: string }[];
+}
+
+export interface FolderUngroupedItem {
+  relativePath: string;
+  name: string;
+  sizeBytes: number;
+  classification: 'zip_archive' | 'unrecognized_filename';
+}
+
+export interface FolderSkipItem {
+  relativePath: string;
+  reason: string;
+}
+
+export interface FolderPreviewBody {
+  rides: FolderRideGroup[];
+  ungrouped: FolderUngroupedItem[];
+  skipped: FolderSkipItem[];
+  visitedEntries: number;
+  visitedDirectories: number;
+  totalFiles: number;
+  totalBytes: number;
+  truncated: boolean;
+  confirmationToken: string;
+  preflightComplete: boolean;
+  preflight: (Omit<ImportInventoryItem, 'id'> & { relativePath: string })[];
+}
+
 export interface ImportResultBody {
   batchId: number;
   imported: number;
   skippedDuplicates: number;
+  skipped: number;
+  skippedByCode: {
+    unmodelled_metric: number;
+    non_cycling_workout: number;
+  };
   quarantined: number;
   workoutsCreated: number;
   workoutsUpdated: number;
   quarantinedFiles: { name: string; code: string }[];
+}
+
+export interface UploadFileBody {
+  id: string;
+  name: string;
+  dataBase64: string;
+}
+
+export type ImportInventoryClassification =
+  | 'recognized'
+  | 'duplicate'
+  | 'ambiguous'
+  | 'invalid'
+  | 'unsupported'
+  | 'unmodelled_metric'
+  | 'non_cycling_workout'
+  | 'mixed';
+
+export interface ImportInventoryOutcome {
+  classification: Exclude<ImportInventoryClassification, 'mixed'>;
+  code: string | null;
+  detectedType: string | null;
+  count: number;
+}
+
+export interface ImportInventoryItem {
+  id: string;
+  name: string;
+  sizeBytes: number;
+  classification: ImportInventoryClassification;
+  detectedType: string | null;
+  outcomes: ImportInventoryOutcome[];
 }
 
 export interface DeleteResultBody {
@@ -122,9 +205,52 @@ export interface DeleteResultBody {
   removedSourceFiles: number;
 }
 
+export interface DeleteAllResultBody {
+  deleted: boolean;
+}
+
 export interface RepairResultBody {
   repaired: boolean;
   analytics: RideAnalytics;
+}
+
+export interface BackupManifestSummary {
+  formatVersion: number;
+  appVersion: string;
+  schemaVersion: string;
+  includedCategories: {
+    analytics: boolean;
+    credentials: boolean;
+    normalizedData: boolean;
+    notesAndTags: boolean;
+    rawSourceFiles: boolean;
+    settings: boolean;
+    sourceMetadata: boolean;
+  };
+}
+
+export interface BackupIntegrityReport {
+  backupFormatVersion: number | null;
+  backupAppVersion: string | null;
+  schemaVersion: string;
+  manifestVerified: boolean;
+  checksumsVerified: boolean;
+  databaseIntegrity: 'ok';
+  foreignKeys: 'ok';
+  legacyBackup: boolean;
+  migrationsApplied: string[];
+}
+
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+
+  constructor(status: number, code: string) {
+    super(`api_${status}`);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -136,7 +262,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {}),
     },
   });
-  if (!res.ok) throw new Error(`api_${res.status}`);
+  if (!res.ok) {
+    let code = 'request_failed';
+    try {
+      const body = (await res.json()) as { error?: unknown };
+      if (typeof body.error === 'string') code = body.error;
+    } catch {
+      // Preserve a stable generic code when the API response is not JSON.
+    }
+    throw new ApiError(res.status, code);
+  }
   return (await res.json()) as T;
 }
 
@@ -144,29 +279,57 @@ export const api = {
   workouts: () => request<{ workouts: WorkoutSummary[] }>('/api/workouts'),
   workout: (id: number) => request<WorkoutDetail>(`/api/workouts/${id}`),
   trends: () => request<TrendsResponse>('/api/trends'),
+  basemap: () => request<BasemapResponse>('/api/basemap'),
   settings: () => request<{ settings: Settings }>('/api/settings'),
   saveSettings: (settings: Partial<Settings>) =>
     request<{ settings: Settings }>('/api/settings', {
       method: 'PUT',
       body: JSON.stringify({ settings }),
     }),
-  importFiles: (files: { name: string; dataBase64: string }[]) =>
+  importInventory: (files: UploadFileBody[], signal?: AbortSignal) =>
+    request<{ inventory: ImportInventoryItem[] }>('/api/import/inventory', {
+      method: 'POST',
+      body: JSON.stringify({ files }),
+      ...(signal ? { signal } : {}),
+    }),
+  importFiles: (files: UploadFileBody[], signal?: AbortSignal) =>
     request<{ result: ImportResultBody }>('/api/import', {
       method: 'POST',
       body: JSON.stringify({ files }),
+      ...(signal ? { signal } : {}),
     }),
+  importPathPreview: (path: string, signal?: AbortSignal) =>
+    request<{ preview: FolderPreviewBody }>('/api/import/path/inventory', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+      ...(signal ? { signal } : {}),
+    }),
+  importPath: (path: string, confirmationToken: string, signal?: AbortSignal) =>
+    request<{ result: ImportResultBody; skipped: FolderSkipItem[]; truncated: boolean }>(
+      '/api/import/path',
+      {
+        method: 'POST',
+        body: JSON.stringify({ path, confirmationToken }),
+        ...(signal ? { signal } : {}),
+      },
+    ),
   deleteWorkout: (id: number) =>
     request<DeleteResultBody>(`/api/workouts/${id}`, { method: 'DELETE' }),
+  deleteAllData: () =>
+    request<DeleteAllResultBody>('/api/data', {
+      method: 'DELETE',
+      body: JSON.stringify({ confirmed: true }),
+    }),
   repairWorkout: (id: number) =>
     request<RepairResultBody>(`/api/workouts/${id}/repair`, { method: 'POST' }),
   backup: (path: string) =>
-    request<{ ok: boolean; totalPages: number }>('/api/backup', {
+    request<{ ok: boolean; totalPages: number; manifest: BackupManifestSummary }>('/api/backup', {
       method: 'POST',
       body: JSON.stringify({ path }),
     }),
   restore: (path: string) =>
-    request<{ ok: boolean }>('/api/restore', {
+    request<{ ok: boolean; report: BackupIntegrityReport }>('/api/restore', {
       method: 'POST',
-      body: JSON.stringify({ path }),
+      body: JSON.stringify({ path, confirmed: true }),
     }),
 };

@@ -105,6 +105,14 @@ export interface SchemaValidationResult {
   errors: string[];
 }
 
+const ROOT_KEYS = new Set(['schemaVersion', 'promptVersion', 'sections', 'disclaimer']);
+const SECTION_KEYS = new Set(['id', 'title', 'findings']);
+const FINDING_KEYS = new Set(['text', 'evidence']);
+
+function hasUnexpectedKey(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(value).some((key) => !allowed.has(key));
+}
+
 /** Hand-rolled structural validator matching INSIGHT_OUTPUT_JSON_SCHEMA (no ajv dependency). */
 export function validateInsightOutputShape(value: unknown): SchemaValidationResult {
   const errors: string[] = [];
@@ -113,6 +121,7 @@ export function validateInsightOutputShape(value: unknown): SchemaValidationResu
   }
   const root = value as Record<string, unknown>;
 
+  if (hasUnexpectedKey(root, ROOT_KEYS)) errors.push('root_unexpected_property');
   if (root['schemaVersion'] !== INSIGHT_OUTPUT_SCHEMA_VERSION)
     errors.push('schema_version_mismatch');
   if (typeof root['promptVersion'] !== 'string' || root['promptVersion'].length === 0) {
@@ -142,10 +151,11 @@ export function validateInsightOutputShape(value: unknown): SchemaValidationResu
       errors.push(`section_${i}_unexpected`);
       return;
     }
-    if (section['id'] !== expected.id) errors.push(`section_${i}_id_mismatch`);
-    if (typeof section['title'] !== 'string' || section['title'].length === 0) {
-      errors.push(`section_${i}_missing_title`);
+    if (hasUnexpectedKey(section, SECTION_KEYS)) {
+      errors.push(`section_${i}_unexpected_property`);
     }
+    if (section['id'] !== expected.id) errors.push(`section_${i}_id_mismatch`);
+    if (section['title'] !== expected.title) errors.push(`section_${i}_title_mismatch`);
     const findings = section['findings'];
     if (!Array.isArray(findings)) {
       errors.push(`section_${i}_findings_not_array`);
@@ -157,6 +167,9 @@ export function validateInsightOutputShape(value: unknown): SchemaValidationResu
         return;
       }
       const finding = rawFinding as Record<string, unknown>;
+      if (hasUnexpectedKey(finding, FINDING_KEYS)) {
+        errors.push(`section_${i}_finding_${j}_unexpected_property`);
+      }
       if (typeof finding['text'] !== 'string' || finding['text'].length === 0) {
         errors.push(`section_${i}_finding_${j}_missing_text`);
       }

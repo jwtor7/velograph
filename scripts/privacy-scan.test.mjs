@@ -6,6 +6,8 @@ import {
   LEAK_MARKER,
   SYNTHETIC_GEO_BOX,
   extractPrintableStrings,
+  formatOpaqueViolation,
+  opaqueFileHandle,
   run,
   scanFile,
 } from './privacy-scan.mjs';
@@ -88,6 +90,7 @@ describe('privacy scanner (PRD §12.2)', () => {
   it('blocks archives and sqlite/env/auth files by name', () => {
     expect(rules(scanFile('backup.zip', buf('x')))).toContain('archive-file');
     expect(rules(scanFile('app.db', buf('x')))).toContain('sqlite-file-extension');
+    expect(rules(scanFile('basemap.mbtiles', buf('x')))).toContain('sqlite-file-extension');
     expect(rules(scanFile('.env.local', buf('x')))).toContain('env-file');
     expect(rules(scanFile('config/auth.json', buf('{}')))).toContain('provider-auth-cache-file');
   });
@@ -171,11 +174,54 @@ describe('privacy scanner (PRD §12.2)', () => {
       expect(code).toBe(1);
       const output = errors.join('\n');
       expect(output).toContain('home-directory-absolute-path');
+      expect(output).toContain(opaqueFileHandle(filePath.replaceAll('\\', '/')));
+      expect(output).not.toContain(filePath);
       expect(output).not.toContain(homePath);
       expect(output).not.toContain('somebody');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('never republishes a sensitive Health Auto Export-shaped filename in failure output', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'velograph-privacy-filename-'));
+    const sensitiveName = ['Outdoor Cycling-Heart Rate-', '20250101', '_101500.csv'].join('');
+    try {
+      const filePath = join(dir, sensitiveName);
+      writeFileSync(filePath, 'invented\n');
+      const errors = [];
+      const errSpy = vi.spyOn(console, 'error').mockImplementation((message) => {
+        errors.push(message);
+      });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const code = run(['--files', filePath]);
+      errSpy.mockRestore();
+      logSpy.mockRestore();
+
+      expect(code).toBe(1);
+      const output = errors.join('\n');
+      expect(output).toContain('health-auto-export-filename-outside-fixtures');
+      expect(output).toContain(opaqueFileHandle(filePath.replaceAll('\\', '/')));
+      expect(output).not.toContain(sensitiveName);
+      expect(output).not.toContain('20250101');
+      expect(output).not.toContain('101500');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('formats generated-artifact violations with the same opaque path contract', () => {
+    const sensitiveName = ['Outdoor Cycling-Heart Rate-', '20250101', '_101500.csv'].join('');
+    const formatted = formatOpaqueViolation({
+      path: `apps/cli/dist/${sensitiveName}`,
+      line: 7,
+      rule: 'health-auto-export-filename-outside-fixtures',
+    });
+    expect(formatted).toMatch(
+      /^file\/[0-9a-f]{16}:7 {2}\[health-auto-export-filename-outside-fixtures\]$/,
+    );
+    expect(formatted).not.toContain(sensitiveName);
+    expect(formatted).not.toContain('20250101');
   });
 
   it('blocks an out-of-box low-magnitude longitude paired with an allowed-band latitude', () => {

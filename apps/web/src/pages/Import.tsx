@@ -1,58 +1,478 @@
-import { useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { api, type ImportResultBody } from '../api.ts';
-
-interface Picked {
-  name: string;
-  size: number;
-  file: File;
-}
+import { useEffect, useRef, useState } from 'react';
+import { DEFAULT_IMPORT_UPLOAD_LIMITS } from '@velograph/shared/import-limits';
+import {
+  ApiError,
+  api,
+  type FolderPreviewBody,
+  type FolderSkipItem,
+  type ImportInventoryItem,
+  type ImportResultBody,
+} from '../api.ts';
+import { Link } from '../router.tsx';
+import {
+  createPickedFiles,
+  encodePickedFilesSequentially,
+  inventoryItemNeedsAttention,
+  inventoryMatchesSelection,
+  isAbortError,
+  isNormalImportSkipClassification,
+  isNormalImportSkipItem,
+  summarizeNormalImportSkips,
+  validateImportSelection,
+  type ImportSelectionError,
+  type PickedImportFile,
+} from './import-files.ts';
+import { resolveDroppedFolderPath, type DroppedFolderFile } from './import-folder-drop.ts';
+import { requestCurrentFolderPreview } from './import-preview.ts';
 
 const ACCEPT = '.csv,.gpx,.zip';
+export const MAX_DROPPED_DIRECTORY_DEPTH = 32;
+export const MAX_DROPPED_ENTRY_COUNT = DEFAULT_IMPORT_UPLOAD_LIMITS.maxFiles * 4;
+const STALE_FOLDER_PREVIEW_CODES = new Set([
+  'path_changed',
+  'file_changed',
+  'path_not_found',
+  'not_a_directory',
+]);
+
+function selectionErrorMessage(code: ImportSelectionError): string {
+  if (code === 'import_file_count_exceeded') {
+    return 'Too many files for browser upload. Use folder path import for a large export.';
+  }
+  if (code === 'import_file_too_large') {
+    return 'A selected file is too large for browser upload. Use folder path import instead.';
+  }
+  return 'The selected files are too large for browser upload. Use folder path import instead.';
+}
+
+function uploadErrorMessage(err: unknown): string {
+  if (isAbortError(err) || (err instanceof ApiError && err.code === 'import_cancelled')) {
+    return 'Import cancelled.';
+  }
+  if (!(err instanceof ApiError)) {
+    return 'Import failed. Check that the local API is running, then try again.';
+  }
+  if (
+    err.code === 'import_body_too_large' ||
+    err.code === 'import_file_count_exceeded' ||
+    err.code === 'import_file_too_large' ||
+    err.code === 'import_total_size_exceeded'
+  ) {
+    return 'This selection exceeds the safe browser-upload limit. Use folder path import instead.';
+  }
+  if (
+    err.code === 'invalid_import_payload' ||
+    err.code === 'invalid_base64' ||
+    err.code === 'duplicate_file_id'
+  ) {
+    return 'The file review expired or became invalid. Clear the selection and choose the files again.';
+  }
+  return 'Import failed. Check that the local API is running, then try again.';
+}
+
+type DroppedEntryTraversalErrorCode =
+  | 'import_file_count_exceeded'
+  | 'import_directory_entry_count_exceeded'
+  | 'import_directory_depth_exceeded';
+
+class DroppedEntryTraversalError extends Error {
+  constructor(readonly code: DroppedEntryTraversalErrorCode) {
+    super(code);
+    this.name = 'DroppedEntryTraversalError';
+  }
+}
+
+interface DroppedEntryTraversalState {
+  files: DroppedFolderFile[];
+  visitedEntries: number;
+  visitedFiles: number;
+}
+
+function readFileEntry(entry: FileSystemFileEntry): Promise<File | null> {
+  return new Promise((resolve) => {
+    entry.file(resolve, () => resolve(null));
+  });
+}
+
+function readDirectoryBatch(reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> {
+  return new Promise((resolve) => {
+    reader.readEntries(resolve, () => resolve([]));
+  });
+}
+
+/**
+ * Sequentially read bounded file entries under a dropped `FileSystemEntry`.
+ * One traversal state is shared across every dropped root, so neither directory
+ * batches nor top-level entries can fan out beyond the browser-upload limit.
+ * The virtual `entry.fullPath` is intentionally ignored because it is not an
+ * OS path.
+ */
+async function collectEntryFiles(
+  entry: FileSystemEntry,
+  state: DroppedEntryTraversalState,
+  relativeParent = '',
+  droppedRoot = true,
+  depth = 0,
+): Promise<void> {
+  if (state.visitedEntries >= MAX_DROPPED_ENTRY_COUNT) {
+    throw new DroppedEntryTraversalError('import_directory_entry_count_exceeded');
+  }
+  state.visitedEntries += 1;
+
+  if (entry.isFile) {
+    if (state.visitedFiles >= DEFAULT_IMPORT_UPLOAD_LIMITS.maxFiles) {
+      throw new DroppedEntryTraversalError('import_file_count_exceeded');
+    }
+    state.visitedFiles += 1;
+    const file = await readFileEntry(entry as FileSystemFileEntry);
+    if (file) {
+      state.files.push({
+        file,
+        relativePath: [relativeParent, entry.name].filter(Boolean).join('/'),
+      });
+    }
+    return;
+  }
+  if (!entry.isDirectory) return;
+  if (depth > MAX_DROPPED_DIRECTORY_DEPTH) {
+    throw new DroppedEntryTraversalError('import_directory_depth_exceeded');
+  }
+
+  const childParent = droppedRoot
+    ? relativeParent
+    : [relativeParent, entry.name].filter(Boolean).join('/');
+  const reader = (entry as FileSystemDirectoryEntry).createReader();
+  while (true) {
+    const entries = await readDirectoryBatch(reader);
+    if (entries.length === 0) return;
+    for (const child of entries) {
+      await collectEntryFiles(child, state, childParent, false, depth + 1);
+    }
+  }
+}
+
+async function readDroppedEntryFiles(entries: readonly FileSystemEntry[]) {
+  const state: DroppedEntryTraversalState = {
+    files: [],
+    visitedEntries: 0,
+    visitedFiles: 0,
+  };
+  for (const entry of entries) {
+    await collectEntryFiles(entry, state);
+  }
+  return state.files;
+}
 
 /** Import screen (IMP-001, journey 7.2): inventory, confirm, value-free result. */
 export function ImportPage() {
-  const [picked, setPicked] = useState<Picked[]>([]);
+  const [picked, setPicked] = useState<PickedImportFile[]>([]);
+  const [inventory, setInventory] = useState<ImportInventoryItem[] | null>(null);
+  const [inventoryBusy, setInventoryBusy] = useState(false);
   const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResultBody | null>(null);
+  const [resultSkipped, setResultSkipped] = useState<FolderSkipItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [dropNotice, setDropNotice] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const folderInputRef = useRef<HTMLInputElement>(null);
+  const nextFileIdRef = useRef(1);
+  const selectionVersionRef = useRef(0);
+  const fileOperationRef = useRef<AbortController | null>(null);
 
-  const addFiles = (files: FileList | File[]) => {
-    const list = [...files].filter((f) => /\.(csv|gpx|zip)$/i.test(f.name));
+  const [folderPath, setFolderPath] = useState('');
+  const folderPathRef = useRef('');
+  const [preview, setPreview] = useState<FolderPreviewBody | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [pathBusy, setPathBusy] = useState(false);
+  const pathOperationRef = useRef<AbortController | null>(null);
+  const fileOperationBusy = busy || inventoryBusy;
+  const pathOperationBusy = previewBusy || pathBusy;
+
+  useEffect(
+    () => () => {
+      fileOperationRef.current?.abort();
+      pathOperationRef.current?.abort();
+    },
+    [],
+  );
+
+  const addFiles = (files: FileList | File[], notice: string | null = null) => {
+    if (fileOperationBusy || pathOperationBusy) {
+      setError(
+        'Wait for the current review, scan, or import to finish before changing the selection.',
+      );
+      return;
+    }
+    setDropNotice(notice);
     setPicked((prev) => {
-      const seen = new Set(prev.map((p) => p.name + p.size));
-      const merged = [...prev];
-      for (const f of list) {
-        if (!seen.has(f.name + f.size)) merged.push({ name: f.name, size: f.size, file: f });
+      const created = createPickedFiles(files, nextFileIdRef.current);
+      const merged = [...prev, ...created.files];
+      const validation = validateImportSelection(merged);
+      if (validation) {
+        setError(selectionErrorMessage(validation));
+        return prev;
       }
+      nextFileIdRef.current = created.nextId;
+      selectionVersionRef.current++;
+      setInventory(null);
+      setInventoryBusy(false);
+      setError(null);
       return merged;
     });
     setResult(null);
+  };
+
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDrag(false);
+    const items = e.dataTransfer.items;
+    const entries =
+      items && items.length > 0
+        ? [...items].map((it) => it.webkitGetAsEntry?.()).filter((x): x is FileSystemEntry => !!x)
+        : [];
+    if (entries.length > 0 && entries.some((en) => en.isDirectory)) {
+      let droppedFiles: DroppedFolderFile[];
+      try {
+        droppedFiles = await readDroppedEntryFiles(entries);
+      } catch (err) {
+        if (err instanceof DroppedEntryTraversalError) {
+          setDropNotice(null);
+          setError(
+            err.code === 'import_file_count_exceeded'
+              ? selectionErrorMessage(err.code)
+              : 'This folder exceeds the safe browser traversal limit. Use folder path import instead.',
+          );
+          return;
+        }
+        throw err;
+      }
+      const folderPath =
+        entries.length === 1 && entries[0]!.isDirectory
+          ? resolveDroppedFolderPath(droppedFiles)
+          : null;
+      if (folderPath) {
+        selectionVersionRef.current++;
+        setPicked([]);
+        setInventory(null);
+        setError(null);
+        setDropNotice(
+          'Folder path detected by this local desktop runtime. Previewing it directly from disk.',
+        );
+        folderPathRef.current = folderPath;
+        setFolderPath(folderPath);
+        setPreview(null);
+        await loadPreviewForPath(folderPath);
+        return;
+      }
+      addFiles(
+        droppedFiles.map(({ file }) => file),
+        'This browser does not expose one verified absolute folder path. Velograph added the bounded loose files it could read; paste the path below for a large export.',
+      );
+      return;
+    }
+    addFiles(e.dataTransfer.files);
+  };
+
+  const reviewFiles = async () => {
+    if (pathOperationBusy) {
+      setError('Wait for the folder operation to finish before reviewing files.');
+      return;
+    }
+    const selected = picked;
+    const validation = validateImportSelection(selected);
+    if (validation) {
+      setError(selectionErrorMessage(validation));
+      return;
+    }
+    const version = selectionVersionRef.current;
+    const controller = new AbortController();
+    fileOperationRef.current = controller;
+    setInventoryBusy(true);
     setError(null);
+    try {
+      const files = await encodePickedFilesSequentially(selected, { signal: controller.signal });
+      const response = await api.importInventory(files, controller.signal);
+      if (
+        version !== selectionVersionRef.current ||
+        !inventoryMatchesSelection(selected, response.inventory)
+      ) {
+        return;
+      }
+      setInventory(response.inventory);
+    } catch (err) {
+      if (version === selectionVersionRef.current) {
+        setError(uploadErrorMessage(err));
+      }
+    } finally {
+      if (fileOperationRef.current === controller) fileOperationRef.current = null;
+      if (version === selectionVersionRef.current) {
+        setInventoryBusy(false);
+      }
+    }
   };
 
   const runImport = async () => {
+    if (pathOperationBusy) {
+      setError('Wait for the folder operation to finish before importing files.');
+      return;
+    }
+    if (!inventory || !inventoryMatchesSelection(picked, inventory)) {
+      setInventory(null);
+      setError('Review the current file selection before confirming the import.');
+      return;
+    }
+    const controller = new AbortController();
+    fileOperationRef.current = controller;
     setBusy(true);
     setError(null);
     try {
-      const files = await Promise.all(
-        picked.map(async (p) => ({
-          name: p.name,
-          dataBase64: await toBase64(p.file),
-        })),
-      );
-      const res = await api.importFiles(files);
+      const files = await encodePickedFilesSequentially(picked, { signal: controller.signal });
+      const res = await api.importFiles(files, controller.signal);
       setResult(res.result);
+      setResultSkipped([]);
       setPicked([]);
-    } catch {
-      setError('Import failed. Check that the local API is running, then try again.');
+      setInventory(null);
+      selectionVersionRef.current++;
+    } catch (err) {
+      setError(uploadErrorMessage(err));
     } finally {
+      if (fileOperationRef.current === controller) fileOperationRef.current = null;
       setBusy(false);
     }
   };
+
+  async function loadPreviewForPath(requestedPath: string) {
+    if (fileOperationBusy) {
+      setPreviewError('Wait for the file operation to finish before scanning a folder.');
+      return;
+    }
+    const normalizedRequestedPath = requestedPath.trim();
+    const controller = new AbortController();
+    pathOperationRef.current = controller;
+    setPreviewBusy(true);
+    setPreviewError(null);
+    setResult(null);
+    try {
+      const res = await requestCurrentFolderPreview(
+        normalizedRequestedPath,
+        () => folderPathRef.current,
+        (path) => api.importPathPreview(path, controller.signal),
+      );
+      if (res.status === 'stale') return;
+      setPreview(res.preview);
+      if (res.preview.truncated) {
+        setPreviewError(
+          'This folder exceeded the safe traversal or import limits. Narrow the folder and preview again.',
+        );
+      } else if (res.preview.rides.length === 0 && res.preview.ungrouped.length === 0) {
+        setPreviewError('No importable .csv/.gpx/.zip files were found in that folder.');
+      }
+    } catch (err) {
+      setPreview(null);
+      if (isAbortError(err) || (err instanceof ApiError && err.code === 'import_cancelled')) {
+        setPreviewError('Folder scan cancelled.');
+      } else {
+        setPreviewError(
+          'Could not read that folder. Check the path, that it exists, and that it is outside ' +
+            'the Velograph source checkout.',
+        );
+      }
+    } finally {
+      if (pathOperationRef.current === controller) {
+        pathOperationRef.current = null;
+        setPreviewBusy(false);
+      }
+    }
+  }
+
+  const loadPreview = async () => loadPreviewForPath(folderPath);
+
+  const confirmPathImport = async () => {
+    if (fileOperationBusy) {
+      setPreviewError('Wait for the file operation to finish before importing a folder.');
+      return;
+    }
+    const controller = new AbortController();
+    pathOperationRef.current = controller;
+    setPathBusy(true);
+    setPreviewError(null);
+    try {
+      if (!preview || preview.truncated || !preview.preflightComplete) {
+        setPreviewError(
+          'A complete file review is required before importing. Preview the folder again.',
+        );
+        return;
+      }
+      const res = await api.importPath(
+        folderPath.trim(),
+        preview.confirmationToken,
+        controller.signal,
+      );
+      setResult(res.result);
+      setResultSkipped(res.skipped);
+      setPreview(null);
+      folderPathRef.current = '';
+      setFolderPath('');
+    } catch (err) {
+      if (isAbortError(err) || (err instanceof ApiError && err.code === 'import_cancelled')) {
+        setPreviewError('Import cancelled.');
+      } else if (err instanceof ApiError && STALE_FOLDER_PREVIEW_CODES.has(err.code)) {
+        setPreview(null);
+        setPreviewError('The folder changed after preview. Preview it again before importing.');
+      } else if (err instanceof ApiError && err.code === 'folder_limits_exceeded') {
+        setPreviewError(
+          'This folder exceeded the safe traversal or import limits. Narrow the folder and preview again.',
+        );
+      } else {
+        setPreviewError('Import failed. Check that the local API is running, then try again.');
+      }
+    } finally {
+      if (pathOperationRef.current === controller) {
+        pathOperationRef.current = null;
+        setPathBusy(false);
+      }
+    }
+  };
+
+  const clearPickedFiles = () => {
+    selectionVersionRef.current++;
+    setPicked([]);
+    setInventory(null);
+    setInventoryBusy(false);
+    setError(null);
+  };
+
+  const removePickedFile = (id: string) => {
+    selectionVersionRef.current++;
+    setPicked((current) => current.filter((file) => file.id !== id));
+    setInventory(null);
+    setInventoryBusy(false);
+    setError(null);
+  };
+
+  const inventoryById = new Map(inventory?.map((item) => [item.id, item]) ?? []);
+  const normalSkipSummary = summarizeNormalImportSkips(inventory ?? []);
+  const visiblePicked =
+    inventory === null
+      ? picked
+      : picked.filter((file) => {
+          const item = inventoryById.get(file.id);
+          return !item || !isNormalImportSkipItem(item);
+        });
+  const previewNormalSkipSummary = summarizeNormalImportSkips(preview?.preflight ?? []);
+  const previewDetailedItems =
+    preview?.preflight.filter((item) => !isNormalImportSkipItem(item)) ?? [];
+  const previewNormalSkipPaths = new Set(
+    (preview?.preflight ?? []).filter(isNormalImportSkipItem).map((item) => item.relativePath),
+  );
+  const previewVisibleRides =
+    preview?.rides.flatMap((ride) => {
+      const files = ride.files.filter((file) => !previewNormalSkipPaths.has(file.relativePath));
+      return files.length > 0 ? [{ ...ride, files }] : [];
+    }) ?? [];
+  const previewVisibleUngrouped =
+    preview?.ungrouped.filter((item) => !previewNormalSkipPaths.has(item.relativePath)) ?? [];
 
   return (
     <div className="stack">
@@ -69,103 +489,179 @@ export function ImportPage() {
 
       <div
         className={`dropzone ${drag ? 'drag' : ''}`}
-        role="button"
-        tabIndex={0}
-        onClick={() => inputRef.current?.click()}
-        onKeyDown={(e) => e.key === 'Enter' && inputRef.current?.click()}
+        role="group"
+        aria-label="File import drop area"
+        aria-disabled={fileOperationBusy || pathOperationBusy}
         onDragOver={(e) => {
           e.preventDefault();
           setDrag(true);
         }}
         onDragLeave={() => setDrag(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDrag(false);
-          addFiles(e.dataTransfer.files);
-        }}
+        onDrop={(e) => void handleDrop(e)}
       >
         <p style={{ margin: 0, fontSize: 15 }}>
-          Drop your export files here, or{' '}
-          <span className="grad-text" style={{ fontWeight: 600 }}>
-            browse
-          </span>
+          Drop your export files or folder here, or use the file chooser.
         </p>
         <p className="muted" style={{ margin: '6px 0 12px', fontSize: 12 }}>
-          One CSV contains one metric. Choose the export folder or all companion files for a
-          complete ride.
+          One CSV contains one metric. Drop the whole export folder or every companion file for a
+          complete ride — or paste the folder path below for a large export.
         </p>
         <div className="row" style={{ justifyContent: 'center' }}>
           <button
             type="button"
             className="btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              inputRef.current?.click();
-            }}
+            disabled={fileOperationBusy || pathOperationBusy}
+            onClick={() => inputRef.current?.click()}
           >
             Choose files
           </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              folderInputRef.current?.click();
-            }}
-          >
-            Choose export folder
-          </button>
         </div>
         <p style={{ margin: '10px 0 0', fontSize: 11 }}>.csv · .gpx · .zip</p>
+        {dropNotice && (
+          <p className="muted" role="status" style={{ margin: '10px 0 0', fontSize: 12 }}>
+            {dropNotice}
+          </p>
+        )}
         <input
           ref={inputRef}
           type="file"
           accept={ACCEPT}
           multiple
+          disabled={fileOperationBusy || pathOperationBusy}
           hidden
-          onChange={(e) => e.target.files && addFiles(e.target.files)}
-        />
-        {/*
-          No `accept` here, deliberately. A directory matches none of the
-          allowed extensions, so combining `accept` with `webkitdirectory`
-          makes the OS picker grey folders out and the control unusable.
-          `addFiles` already filters the selection by extension, so the
-          folder can contain anything.
-        */}
-        <input
-          ref={(node) => {
-            folderInputRef.current = node;
-            node?.setAttribute('webkitdirectory', '');
+          onChange={(e) => {
+            if (e.target.files) addFiles(e.target.files);
+            e.currentTarget.value = '';
           }}
-          type="file"
-          multiple
-          hidden
-          onChange={(e) => e.target.files && addFiles(e.target.files)}
         />
       </div>
 
       {picked.length > 0 && (
         <div className="card">
-          <h2 className="card-title">Ready to import ({picked.length} files)</h2>
-          <table className="data">
-            <tbody>
-              {picked.map((p) => (
-                <tr key={p.name + p.size}>
-                  <td>{p.name}</td>
-                  <td className="muted" style={{ textAlign: 'right' }}>
-                    {(p.size / 1024).toFixed(1)} KB
-                  </td>
+          <h2 className="card-title">Selected files ({picked.length})</h2>
+          <p className="muted" style={{ marginTop: 0, fontSize: 12 }}>
+            Review asks the local API to identify every exact file before import. Distinct files are
+            preserved even when their names and sizes match.
+          </p>
+          {inventory && normalSkipSummary.total > 0 && (
+            <p className="muted" role="status" style={{ margin: '8px 0', fontSize: 12 }}>
+              <span className="badge">Normal skips</span> {normalSkipSummary.unmodelledMetric}{' '}
+              metric
+              {normalSkipSummary.unmodelledMetric === 1 ? '' : 's'} not modelled ·{' '}
+              {normalSkipSummary.nonCyclingWorkout} non-cycling workout file
+              {normalSkipSummary.nonCyclingWorkout === 1 ? '' : 's'}. These are expected and will
+              not be quarantined.
+            </p>
+          )}
+          {visiblePicked.length > 0 && (
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Status</th>
+                  <th style={{ textAlign: 'right' }}>Size</th>
+                  <th>
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {visiblePicked.map((p) => (
+                  <tr key={p.id}>
+                    <td>{p.name}</td>
+                    <td>
+                      {inventoryById.has(p.id) ? (
+                        <>
+                          <span
+                            className={`badge ${
+                              inventoryItemNeedsAttention(inventoryById.get(p.id)!) ? 'warn' : ''
+                            }`}
+                          >
+                            {inventoryById.get(p.id)!.classification.replaceAll('_', ' ')}
+                          </span>
+                          {inventoryById
+                            .get(p.id)!
+                            .outcomes.filter(
+                              (outcome) =>
+                                !isNormalImportSkipClassification(outcome.classification) &&
+                                (inventoryById.get(p.id)!.classification === 'mixed' ||
+                                  outcome.classification === 'invalid' ||
+                                  outcome.classification === 'ambiguous' ||
+                                  outcome.count > 1),
+                            )
+                            .map((outcome, index) => (
+                              <span
+                                key={`${outcome.classification}-${outcome.code ?? 'none'}-${index}`}
+                                className="muted"
+                                style={{ marginLeft: 6, fontSize: 11 }}
+                              >
+                                {outcome.count > 1 ? `${outcome.count}× ` : ''}
+                                {outcome.classification.replaceAll('_', ' ')}
+                                {outcome.code ? ` · ${outcome.code.replaceAll('_', ' ')}` : ''}
+                              </span>
+                            ))}
+                          {inventoryById.get(p.id)!.detectedType && (
+                            <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
+                              {inventoryById
+                                .get(p.id)!
+                                .detectedType!.replaceAll('_', ' ')
+                                .replaceAll(':', ' · ')}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="muted">Awaiting review</span>
+                      )}
+                    </td>
+                    <td className="muted" style={{ textAlign: 'right' }}>
+                      {(p.size / 1024).toFixed(1)} KB
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => removePickedFile(p.id)}
+                        disabled={fileOperationBusy || pathOperationBusy}
+                        aria-label={`Remove ${p.name}`}
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
           <div className="row" style={{ marginTop: 12 }}>
-            <button className="btn primary" onClick={runImport} disabled={busy}>
-              {busy ? 'Importing…' : 'Confirm import'}
-            </button>
-            <button className="btn" onClick={() => setPicked([])} disabled={busy}>
+            {inventory ? (
+              <button
+                className="btn primary"
+                onClick={runImport}
+                disabled={fileOperationBusy || pathOperationBusy}
+              >
+                {busy ? 'Importing…' : 'Confirm import'}
+              </button>
+            ) : (
+              <button
+                className="btn primary"
+                onClick={reviewFiles}
+                disabled={fileOperationBusy || pathOperationBusy}
+              >
+                {inventoryBusy ? 'Reviewing…' : 'Review files'}
+              </button>
+            )}
+            <button
+              className="btn"
+              onClick={clearPickedFiles}
+              disabled={fileOperationBusy || pathOperationBusy}
+            >
               Clear
             </button>
+            {(busy || inventoryBusy) && (
+              <button className="btn" onClick={() => fileOperationRef.current?.abort()}>
+                {busy ? 'Cancel import' : 'Cancel review'}
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -175,6 +671,180 @@ export function ImportPage() {
           <p style={{ margin: 0, color: 'var(--vg-ch-hr)' }}>{error}</p>
         </div>
       )}
+
+      <div className="card">
+        <h2 className="card-title">Import from a folder path</h2>
+        <p className="muted" style={{ marginTop: 0, fontSize: 12 }}>
+          Paste the full path to your Health Auto Export folder. The API reads it directly from disk
+          — nothing is uploaded as base64 — so this is the reliable way to bring in a large export
+          with dozens of files across many rides. Preview groups files by ride before anything is
+          imported.
+        </p>
+        <span className="field-label">Folder path</span>
+        <div className="row">
+          <input
+            type="text"
+            placeholder="/path/to/Health Auto Export"
+            value={folderPath}
+            disabled={fileOperationBusy || pathOperationBusy}
+            onChange={(e) => {
+              folderPathRef.current = e.target.value;
+              setFolderPath(e.target.value);
+              setPreview(null);
+              setPreviewError(null);
+            }}
+            style={{ flex: 1, minWidth: 260 }}
+          />
+          <button
+            className="btn"
+            onClick={loadPreview}
+            disabled={fileOperationBusy || pathOperationBusy || !folderPath.trim()}
+          >
+            {previewBusy ? 'Scanning…' : 'Preview folder'}
+          </button>
+          {previewBusy && (
+            <button className="btn" onClick={() => pathOperationRef.current?.abort()}>
+              Cancel scan
+            </button>
+          )}
+        </div>
+        {previewError && (
+          <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--vg-ch-hr)' }}>
+            {previewError}
+          </p>
+        )}
+
+        {preview && (
+          <div style={{ marginTop: 14 }}>
+            <p className="muted" style={{ fontSize: 12 }}>
+              {preview.totalFiles} file{preview.totalFiles === 1 ? '' : 's'} ·{' '}
+              {(preview.totalBytes / (1024 * 1024)).toFixed(1)} MB
+              {preview.truncated ? ' · limit exceeded — import is disabled' : ''}
+            </p>
+
+            {preview.preflightComplete ? (
+              <div style={{ margin: '8px 0' }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>
+                  Exact file review ({preview.preflight.length})
+                </div>
+                {previewNormalSkipSummary.total > 0 && (
+                  <p className="muted" role="status" style={{ margin: '4px 0', fontSize: 12 }}>
+                    <span className="badge">Normal skips</span>{' '}
+                    {previewNormalSkipSummary.unmodelledMetric} metric
+                    {previewNormalSkipSummary.unmodelledMetric === 1 ? '' : 's'} not modelled ·{' '}
+                    {previewNormalSkipSummary.nonCyclingWorkout} non-cycling workout file
+                    {previewNormalSkipSummary.nonCyclingWorkout === 1 ? '' : 's'}. These are
+                    expected and will not be quarantined.
+                  </p>
+                )}
+                {previewDetailedItems.length > 0 && (
+                  <ul
+                    className="muted"
+                    style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12 }}
+                  >
+                    {previewDetailedItems.map((item, index) => (
+                      <li key={`${item.name}-${index}`}>
+                        {item.name} — {item.classification.replaceAll('_', ' ')}
+                        {item.outcomes
+                          .filter(
+                            (outcome) =>
+                              !isNormalImportSkipClassification(outcome.classification) &&
+                              (item.classification === 'mixed' ||
+                                outcome.classification === 'invalid' ||
+                                outcome.classification === 'ambiguous' ||
+                                outcome.count > 1),
+                          )
+                          .map(
+                            (outcome) =>
+                              ` · ${outcome.count > 1 ? `${outcome.count}× ` : ''}${
+                                outcome.code?.replaceAll('_', ' ') ??
+                                outcome.classification.replaceAll('_', ' ')
+                              }`,
+                          )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ) : (
+              <p style={{ fontSize: 12, color: 'var(--vg-ch-hr)' }}>
+                Exact parser and duplicate review is incomplete. Import is disabled.
+              </p>
+            )}
+
+            {previewVisibleRides.map((r) => (
+              <div key={r.rideKey} style={{ margin: '8px 0' }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>
+                  {r.workoutType === 'indoor_cycling' ? 'Indoor' : 'Outdoor'} ride · {r.stampHint}
+                  <span className="muted" style={{ fontWeight: 400 }}>
+                    {' '}
+                    · {r.files.length} file{r.files.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <ul className="muted" style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12 }}>
+                  {r.files.map((f) => (
+                    <li key={f.relativePath}>
+                      {f.label} ({f.format})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+
+            {previewVisibleUngrouped.length > 0 && (
+              <div style={{ margin: '8px 0' }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>
+                  Not part of a recognized ride ({previewVisibleUngrouped.length})
+                </div>
+                <ul className="muted" style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12 }}>
+                  {previewVisibleUngrouped.map((u) => (
+                    <li key={u.relativePath}>
+                      {u.name} — {u.classification.replaceAll('_', ' ')}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {preview.skipped.length > 0 && (
+              <div style={{ margin: '8px 0' }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>
+                  Skipped ({preview.skipped.length})
+                </div>
+                <ul className="muted" style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12 }}>
+                  {preview.skipped.map((s, i) => (
+                    <li key={s.relativePath + i}>
+                      {s.relativePath} — {s.reason.replaceAll('_', ' ')}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="row" style={{ marginTop: 12 }}>
+              <button
+                className="btn primary"
+                onClick={confirmPathImport}
+                disabled={
+                  fileOperationBusy ||
+                  pathBusy ||
+                  preview.totalFiles === 0 ||
+                  preview.truncated ||
+                  !preview.preflightComplete
+                }
+              >
+                {pathBusy ? 'Importing…' : `Confirm import (${preview.totalFiles} files)`}
+              </button>
+              <button
+                className="btn"
+                onClick={() => (pathBusy ? pathOperationRef.current?.abort() : setPreview(null))}
+              >
+                {pathBusy ? 'Cancel import' : 'Cancel'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {result && (
         <div className="card">
@@ -189,6 +859,10 @@ export function ImportPage() {
               <div className="kpi-value">{result.skippedDuplicates}</div>
             </div>
             <div className="kpi">
+              <div className="kpi-label">Out-of-scope skipped</div>
+              <div className="kpi-value">{result.skipped}</div>
+            </div>
+            <div className="kpi">
               <div className="kpi-label">Quarantined</div>
               <div className="kpi-value">{result.quarantined}</div>
             </div>
@@ -199,6 +873,14 @@ export function ImportPage() {
               </div>
             </div>
           </div>
+          {result.skipped > 0 && (
+            <p className="muted" style={{ margin: '12px 0 0', fontSize: 12 }}>
+              {result.skippedByCode.unmodelled_metric} unmodelled cycling metric
+              {result.skippedByCode.unmodelled_metric === 1 ? '' : 's'} ·{' '}
+              {result.skippedByCode.non_cycling_workout} non-cycling workout file
+              {result.skippedByCode.non_cycling_workout === 1 ? '' : 's'}
+            </p>
+          )}
           {result.quarantinedFiles.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <h3 className="card-title">Quarantined files</h3>
@@ -206,6 +888,17 @@ export function ImportPage() {
                 <p key={q.name} style={{ margin: '4px 0', fontSize: 12 }}>
                   <span className="badge warn">{q.code.replaceAll('_', ' ')}</span>{' '}
                   <span className="muted">{q.name}</span>
+                </p>
+              ))}
+            </div>
+          )}
+          {resultSkipped.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <h3 className="card-title">Skipped by the folder walk</h3>
+              {resultSkipped.map((s, i) => (
+                <p key={s.relativePath + i} style={{ margin: '4px 0', fontSize: 12 }}>
+                  <span className="badge warn">{s.reason.replaceAll('_', ' ')}</span>{' '}
+                  <span className="muted">{s.relativePath}</span>
                 </p>
               ))}
             </div>
@@ -219,16 +912,4 @@ export function ImportPage() {
       )}
     </div>
   );
-}
-
-function toBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const url = reader.result as string;
-      resolve(url.slice(url.indexOf(',') + 1));
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
 }

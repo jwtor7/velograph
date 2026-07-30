@@ -2,8 +2,12 @@
   "name": "@velograph/insights",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
-  "description": "AI insight provider interface, minimized payload, schema, and evidence/numeric validation (stub phase — no network, process, or LLM calls)",
+  "description": "Validated AI insight orchestration with minimized payloads and local Ollama or isolated Codex runtimes",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0 <27"
+  },
   "exports": {
     ".": "./src/index.ts"
   },

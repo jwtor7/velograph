@@ -5,6 +5,9 @@ AGENTS.md
 fixtures/synthetic/
 dist/
 coverage/
+THIRD_PARTY_NOTICES.md
+LICENSE
+third_party_licenses/
 *.png
 # Nested agent worktrees (full repo copies) — see .gitignore
 .claude/

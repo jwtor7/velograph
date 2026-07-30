@@ -86,6 +86,57 @@ export function buildLineSpec(
   return { path, area, tMin, tMax, vMin, vMax, w, h };
 }
 
+/**
+ * Build one line specification from independently recorded segments. Every
+ * segment gets its own SVG subpath while sharing one time/value domain, so
+ * recording gaps are never drawn as data.
+ */
+export function buildSegmentedLineSpec(
+  segments: Pt[][],
+  w: number,
+  h: number,
+  opts: { tMin?: number; tMax?: number; zeroBase?: boolean; maxPoints?: number } = {},
+): LineSpec | null {
+  const drawable = segments
+    .filter((points) => points.length >= 2)
+    .map((points) => downsample(points, opts.maxPoints ?? 400));
+  if (drawable.length === 0) return null;
+
+  let observedTMin = Infinity;
+  let observedTMax = -Infinity;
+  let vMin = Infinity;
+  let vMax = -Infinity;
+  for (const points of drawable) {
+    for (const p of points) {
+      if (p.t < observedTMin) observedTMin = p.t;
+      if (p.t > observedTMax) observedTMax = p.t;
+      if (p.v < vMin) vMin = p.v;
+      if (p.v > vMax) vMax = p.v;
+    }
+  }
+
+  const tMin = opts.tMin ?? observedTMin;
+  const tMax = opts.tMax ?? observedTMax;
+  if (tMax <= tMin) return null;
+  const pad = (vMax - vMin) * 0.08 || Math.abs(vMax) * 0.08 || 1;
+  vMax += pad;
+  vMin = opts.zeroBase ? Math.min(0, vMin) : vMin - pad;
+
+  const x = (t: number) => r2(((t - tMin) / (tMax - tMin)) * w);
+  const y = (v: number) => r2(h - ((v - vMin) / (vMax - vMin)) * h);
+  const paths = drawable.map((points) =>
+    points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(p.t)} ${y(p.v)}`).join(''),
+  );
+  const area = drawable
+    .map((points, i) => {
+      const first = points[0]!;
+      const last = points[points.length - 1]!;
+      return `${paths[i]}L${x(last.t)} ${h}L${x(first.t)} ${h}Z`;
+    })
+    .join('');
+  return { path: paths.join(''), area, tMin, tMax, vMin, vMax, w, h };
+}
+
 export interface RoutePointIn {
   lat: number;
   lon: number;
@@ -192,14 +243,29 @@ export function buildRouteSpec(
   h: number,
   margin = 16,
 ): RouteSpec | null {
-  const all = segments.flatMap((s) => s.points);
-  if (all.length < 2) return null;
-  const lats = all.map((p) => p.lat);
-  const lons = all.map((p) => p.lon);
-  const latMin = Math.min(...lats);
-  const latMax = Math.max(...lats);
-  const lonMin = Math.min(...lons);
-  const lonMax = Math.max(...lons);
+  let pointCount = 0;
+  let latMin = Infinity;
+  let latMax = -Infinity;
+  let lonMin = Infinity;
+  let lonMax = -Infinity;
+  for (const segment of segments) {
+    for (const point of segment.points) {
+      pointCount++;
+      if (point.lat < latMin) latMin = point.lat;
+      if (point.lat > latMax) latMax = point.lat;
+      if (point.lon < lonMin) lonMin = point.lon;
+      if (point.lon > lonMax) lonMax = point.lon;
+    }
+  }
+  if (
+    pointCount < 2 ||
+    !Number.isFinite(latMin) ||
+    !Number.isFinite(latMax) ||
+    !Number.isFinite(lonMin) ||
+    !Number.isFinite(lonMax)
+  ) {
+    return null;
+  }
   const meanLat = (latMin + latMax) / 2;
   const kx = Math.cos((meanLat * Math.PI) / 180);
   const spanX = (lonMax - lonMin) * kx || 1e-9;

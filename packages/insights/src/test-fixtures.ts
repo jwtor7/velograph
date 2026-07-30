@@ -1,4 +1,10 @@
 import type { RideAnalytics } from '@velograph/analytics';
+import { NON_CLINICAL_DISCLAIMER } from './guidance.ts';
+import {
+  INSIGHT_OUTPUT_SCHEMA_VERSION,
+  INSIGHT_SECTION_ORDER,
+  type InsightOutput,
+} from './schema.ts';
 
 /** Synthetic RideAnalytics fixture for insights tests — no real ride data. */
 export function buildAnalyticsFixture(overrides: Partial<RideAnalytics> = {}): RideAnalytics {
@@ -26,5 +32,19 @@ export function buildAnalyticsFixture(overrides: Partial<RideAnalytics> = {}): R
     splits: [],
     unavailable: {},
     ...overrides,
+  };
+}
+
+/** Fully schema-valid synthetic provider output with no unsupported findings. */
+export function buildInsightOutputFixture(promptVersion = 'insight-prompt-v1'): InsightOutput {
+  return {
+    schemaVersion: INSIGHT_OUTPUT_SCHEMA_VERSION,
+    promptVersion,
+    disclaimer: NON_CLINICAL_DISCLAIMER,
+    sections: INSIGHT_SECTION_ORDER.map((section) => ({
+      id: section.id,
+      title: section.title,
+      findings: [],
+    })),
   };
 }

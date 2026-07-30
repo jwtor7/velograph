@@ -28,4 +28,19 @@ describe('instant parsing with an explicit import timezone', () => {
     expect(isValidTimeZone('Not/A_Zone')).toBe(false);
     expect(parseInstant('2032-03-14 02:30:00', { defaultTimeZone: 'America/Toronto' })).toBeNull();
   });
+
+  it('rejects impossible calendar dates and out-of-range clock components', () => {
+    expect(parseInstant('2031-02-29T08:00:00Z')).toBeNull();
+    expect(parseInstant('2032-02-30T08:00:00Z')).toBeNull();
+    expect(parseInstant('2032-13-01T08:00:00Z')).toBeNull();
+    expect(parseInstant('2032-01-01T24:00:00Z')).toBeNull();
+    expect(parseInstant('2032-01-01T08:60:00Z')).toBeNull();
+    expect(parseInstant('2032-01-01T08:00:60Z')).toBeNull();
+  });
+
+  it('rejects impossible explicit offsets instead of normalizing them', () => {
+    expect(parseInstant('2032-01-01T08:00:00+14:01')).toBeNull();
+    expect(parseInstant('2032-01-01T08:00:00+15:00')).toBeNull();
+    expect(parseInstant('2032-01-01T08:00:00+05:60')).toBeNull();
+  });
 });

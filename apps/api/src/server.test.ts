@@ -3,33 +3,48 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
-import { openDatabase, type Database } from '@velograph/db';
+import { loadWorkoutData, openDatabase, Repository, type Database } from '@velograph/db';
+import { FORMULA_VERSION } from '@velograph/analytics';
 import { runImport } from '@velograph/importers';
-import { createApiServer } from './server.ts';
+import { sha256Hex, stableStringify } from '@velograph/shared';
+import { loadSettings } from './analytics-service.ts';
+import {
+  createApiServer,
+  requestLogMethod,
+  requestLogRoute,
+  type ApiRequestLogRecord,
+} from './server.ts';
 
-const FIXTURES = join(
+const SYNTHETIC_ROOT = join(
   dirname(fileURLToPath(import.meta.url)),
   '..',
   '..',
   '..',
   'fixtures',
   'synthetic',
-  'rides',
 );
+const FIXTURES = join(SYNTHETIC_ROOT, 'rides');
+const HARDENING_FIXTURES = join(SYNTHETIC_ROOT, 'import-hardening');
 
 let db: Database;
 let server: Server;
 let base: string;
 let port: number;
+const requestLogs: ApiRequestLogRecord[] = [];
 
 beforeAll(async () => {
   db = openDatabase(':memory:');
+  new Repository(db).setSetting('analytics', { timeZone: 'UTC' });
   const files = readdirSync(FIXTURES)
     .filter((f) => /\.(csv|gpx)$/.test(f))
     .sort()
     .map((name) => ({ name, data: readFileSync(join(FIXTURES, name)) }));
   runImport(db, files, { now: Date.UTC(2031, 4, 1) });
-  server = createApiServer({ db, now: () => Date.UTC(2031, 4, 2) });
+  server = createApiServer({
+    db,
+    now: () => Date.UTC(2031, 4, 2),
+    log: (record) => requestLogs.push(record),
+  });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const addr = server.address();
   port = typeof addr === 'object' && addr ? addr.port : 0;
@@ -49,6 +64,12 @@ describe('loopback API', () => {
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
     expect(await res.json()).toMatchObject({ ok: true });
+    expect(requestLogs).toContainEqual({
+      event: 'http_request',
+      method: 'GET',
+      route: '/api/health',
+      status: 200,
+    });
   });
 
   it('lists workouts with analytics summaries (RIDE-001)', async () => {
@@ -77,7 +98,7 @@ describe('loopback API', () => {
       'heart_rate',
     ]);
     expect(body.route.length).toBeGreaterThan(0);
-    expect(body.analytics.formulaVersion).toBe('analytics-v1');
+    expect(body.analytics.formulaVersion).toBe('analytics-v2');
   });
 
   it('serves trends aggregates', async () => {
@@ -121,6 +142,21 @@ describe('loopback API', () => {
     expect(same.status).toBe(200);
   });
 
+  it('rejects cross-site browser fetch metadata while preserving local clients', async () => {
+    const crossSite = await fetch(`${base}/api/health`, {
+      headers: { 'Sec-Fetch-Site': 'cross-site' },
+    });
+    expect(crossSite.status).toBe(403);
+    expect(await crossSite.json()).toEqual({ error: 'cross_site_request' });
+
+    const sameOrigin = await fetch(`${base}/api/health`, {
+      headers: { 'Sec-Fetch-Site': 'same-origin' },
+    });
+    expect(sameOrigin.status).toBe(200);
+    // Non-browser and local command-line clients usually omit fetch metadata.
+    expect((await fetch(`${base}/api/health`)).status).toBe(200);
+  });
+
   it('requires the CSRF header on mutating requests', async () => {
     const res = await fetch(`${base}/api/import`, {
       method: 'POST',
@@ -138,7 +174,9 @@ describe('loopback API', () => {
       '2031-09-01T07:30:00Z,130,Synth Watch X1',
     ].join('\n');
     const payload = JSON.stringify({
-      files: [{ name, dataBase64: Buffer.from(csv).toString('base64') }],
+      files: [
+        { id: 'synthetic-heart-rate', name, dataBase64: Buffer.from(csv).toString('base64') },
+      ],
     });
     const headers = { 'Content-Type': 'application/json', 'x-velograph-request': '1' };
     const first = (await (
@@ -151,6 +189,38 @@ describe('loopback API', () => {
     ).json()) as { result: { imported: number; skippedDuplicates: number } };
     expect(second.result.imported).toBe(0);
     expect(second.result.skippedDuplicates).toBe(1);
+  });
+
+  it('returns a per-file ZIP quarantine while importing a valid sibling', async () => {
+    const name = 'Outdoor Cycling-Cycling Cadence-20310902_070000.csv';
+    const csv = readFileSync(join(HARDENING_FIXTURES, name));
+    const payload = JSON.stringify({
+      files: [
+        { id: 'synthetic-cadence', name, dataBase64: csv.toString('base64') },
+        {
+          id: 'synthetic-malformed-zip',
+          name: 'malformed-synthetic.zip',
+          dataBase64: Buffer.from('not a zip').toString('base64'),
+        },
+      ],
+    });
+    const response = await fetch(`${base}/api/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-velograph-request': '1' },
+      body: payload,
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      result: {
+        imported: number;
+        quarantined: number;
+        quarantinedFiles: { name: string; code: string }[];
+      };
+    };
+    expect(body.result).toMatchObject({ imported: 1, quarantined: 1 });
+    expect(body.result.quarantinedFiles).toEqual([
+      { name: 'malformed-synthetic.zip', code: 'io_error' },
+    ]);
   });
 
   it('round-trips settings', async () => {
@@ -182,7 +252,126 @@ describe('loopback API', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects invalid analytics setting patches atomically', async () => {
+    const before = (await (await fetch(`${base}/api/settings`)).json()) as {
+      settings: Record<string, unknown>;
+    };
+    const headers = { 'Content-Type': 'application/json', 'x-velograph-request': '1' };
+    const invalidPatches = [
+      { movingSpeedThresholdMs: null },
+      { movingSpeedThresholdMs: '1' },
+      { movingSpeedThresholdMs: -1 },
+      { minCoverageForEfficiency: 0 },
+      { elevationHysteresisM: 101 },
+      { hrZoneBounds: [90, 130, 130, 150, 170] },
+      { hrZoneBounds: [90, 140, 130, 150, 170] },
+      { unexpectedSetting: true },
+    ];
+
+    for (const settings of invalidPatches) {
+      const response = await fetch(`${base}/api/settings`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ settings }),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: 'invalid_settings' });
+    }
+    const after = (await (await fetch(`${base}/api/settings`)).json()) as {
+      settings: Record<string, unknown>;
+    };
+    expect(after).toEqual(before);
+  });
+
+  it('rejects unexpected settings request-envelope keys', async () => {
+    const response = await fetch(`${base}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-velograph-request': '1' },
+      body: JSON.stringify({ settings: {}, unexpected: true }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'invalid_settings' });
+  });
+
+  it('surfaces an analytics snapshot conflict without exposing stored values', async () => {
+    const conflictDb = openDatabase(':memory:');
+    const repo = new Repository(conflictDb);
+    const workoutId = repo.createWorkout('outdoor_cycling', 1_000, 9_000, 'synthetic-test');
+    const input = loadWorkoutData(conflictDb, workoutId)!;
+    const settings = loadSettings(conflictDb);
+    const settingsHash = sha256Hex(stableStringify(settings));
+    const inputHash = sha256Hex(stableStringify(input));
+    conflictDb
+      .prepare(
+        `INSERT INTO analytics_snapshots
+           (workout_id, scope, formula_version, settings_hash, input_hash, result_json, created_at)
+         VALUES (?, 'workout', ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        workoutId,
+        FORMULA_VERSION,
+        settingsHash,
+        inputHash,
+        '{"SECRET_CONFLICTING_RESULT":true}',
+        10_000,
+      );
+    const conflictServer = createApiServer({ db: conflictDb, now: () => 20_000 });
+    await new Promise<void>((resolve) => conflictServer.listen(0, '127.0.0.1', resolve));
+    const address = conflictServer.address();
+    const conflictPort = typeof address === 'object' && address ? address.port : 0;
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${conflictPort}/api/workouts/${workoutId}/repair`,
+        {
+          method: 'POST',
+          headers: { 'x-velograph-request': '1' },
+        },
+      );
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as { error: string };
+      expect(body).toEqual({ error: 'analytics_snapshot_conflict' });
+      expect(JSON.stringify(body)).not.toContain('SECRET_CONFLICTING_RESULT');
+      expect(
+        conflictDb
+          .prepare(
+            `SELECT result_json, created_at FROM analytics_snapshots
+             WHERE workout_id = ?`,
+          )
+          .get(workoutId),
+      ).toEqual({ result_json: '{"SECRET_CONFLICTING_RESULT":true}', created_at: 10_000 });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        conflictServer.close((error) => (error ? reject(error) : resolve())),
+      );
+      conflictDb.close();
+    }
+  });
+
   it('404s unknown API routes', async () => {
     expect((await fetch(`${base}/api/nope`)).status).toBe(404);
+  });
+});
+
+describe('value-free request log routing', () => {
+  it('allow-lists supported HTTP methods and collapses extension verbs', () => {
+    expect(['GET', 'HEAD', 'POST', 'PUT', 'DELETE'].map(requestLogMethod)).toEqual([
+      'GET',
+      'HEAD',
+      'POST',
+      'PUT',
+      'DELETE',
+    ]);
+    expect(requestLogMethod('PRIVATE')).toBe('UNKNOWN');
+    expect(requestLogMethod('CONNECT')).toBe('UNKNOWN');
+    expect(requestLogMethod(undefined)).toBe('UNKNOWN');
+  });
+
+  it('templates identifiers, tile coordinates, queries, unknown APIs, and web assets', () => {
+    expect(requestLogRoute('/api/workouts/987?private=query')).toBe('/api/workouts/:workoutId');
+    expect(requestLogRoute('/api/workouts/987/repair')).toBe('/api/workouts/:workoutId/repair');
+    expect(requestLogRoute('/api/basemap/tiles/12/345/678')).toBe('/api/basemap/tiles/:z/:x/:y');
+    expect(requestLogRoute('/api/private-value')).toBe('/api/unknown');
+    expect(requestLogRoute('/private-file-name.txt')).toBe('/web-asset');
   });
 });

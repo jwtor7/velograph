@@ -1,10 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, type WorkoutDetail, type WorkoutSummary } from '../api.ts';
-import { fmtDate, fmtDuration, fmtInt, fmtKm, fmtSpeedKmh, type Pt } from '../chartspec/spec.ts';
+import { fmtDate, fmtDuration, fmtInt, type Pt } from '../chartspec/spec.ts';
 import { TimeSeriesChart } from '../components/charts.tsx';
-import { ElevationProfile, RoutePanel, ZoneStrip } from '../components/route.tsx';
+import { InteractiveRouteMap } from '../components/interactive-route-map.tsx';
+import { ElevationProfile, ZoneStrip } from '../components/route.tsx';
 import { ConfirmDialog, Kpi, EmptyState } from '../components/ui.tsx';
+import { formatDistance, formatElevation, formatSpeed, speedChartValue } from '../display-units.ts';
+import {
+  priorWorkouts,
+  selectRideComparison,
+  type RideComparisonChoice,
+} from '../ride-comparison.ts';
+import {
+  DEFAULT_ROUTE_REDACTION_RADIUS_M,
+  downloadRideExport,
+  MAX_ROUTE_REDACTION_RADIUS_M,
+  MIN_ROUTE_REDACTION_RADIUS_M,
+} from '../ride-export.ts';
+import { repairAndReloadRide } from '../ride-repair.ts';
+import { Link, useNavigate, useParams } from '../router.tsx';
 
 const CH = {
   hr: 'var(--vg-ch-hr)',
@@ -21,14 +35,21 @@ export function RideDetail() {
   const [detail, setDetail] = useState<WorkoutDetail | null>(null);
   const [error, setError] = useState(false);
   const [cursorT, setCursorT] = useState<number | null>(null);
-  const [previous, setPrevious] = useState<WorkoutSummary | null>(null);
+  const [workouts, setWorkouts] = useState<WorkoutSummary[]>([]);
+  const [comparisonChoice, setComparisonChoice] = useState<RideComparisonChoice>('previous');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [confirmingExport, setConfirmingExport] = useState(false);
+  const [redactRouteEndpoints, setRedactRouteEndpoints] = useState(true);
+  const [routeRedactionRadiusM, setRouteRedactionRadiusM] = useState(
+    DEFAULT_ROUTE_REDACTION_RADIUS_M,
+  );
   const [deleting, setDeleting] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [repairMessage, setRepairMessage] = useState<string | null>(null);
   const [timeZone, setTimeZone] = useState(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
   );
+  const [displayUnits, setDisplayUnits] = useState<'metric' | 'imperial'>('metric');
 
   useEffect(() => {
     if (!id) return;
@@ -37,18 +58,27 @@ export function RideDetail() {
       .then(setDetail)
       .catch(() => setError(true));
     api
-      .workouts()
+      .settings()
       .then((r) => {
-        const sorted = [...r.workouts].sort((a, b) => a.startUtc - b.startUtc);
-        const idx = sorted.findIndex((w) => w.id === Number(id));
-        setPrevious(idx > 0 ? sorted[idx - 1]! : null);
+        setTimeZone(r.settings.timeZone);
+        setDisplayUnits(r.settings.displayUnits);
       })
       .catch(() => {});
-    api
-      .settings()
-      .then((r) => setTimeZone(r.settings.timeZone))
-      .catch(() => {});
   }, [id]);
+
+  useEffect(() => {
+    if (!id || detail?.workout.id !== Number(id)) return;
+    // Render the selected ride, charts, and map before requesting comparison
+    // summaries. On a fresh import that list may compute analytics for many
+    // rides; it must not block the primary ride-open experience.
+    const timer = window.setTimeout(() => {
+      api
+        .workouts()
+        .then((r) => setWorkouts(r.workouts))
+        .catch(() => {});
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [detail, id]);
 
   const deleteRide = async () => {
     if (!id) return;
@@ -68,14 +98,25 @@ export function RideDetail() {
     setRepairing(true);
     setRepairMessage(null);
     try {
-      const r = await api.repairWorkout(Number(id));
-      setDetail((prev) => (prev ? { ...prev, analytics: r.analytics } : prev));
-      setRepairMessage('Repaired: association span and analytics were recomputed.');
+      const refreshed = await repairAndReloadRide(api, Number(id));
+      setDetail(refreshed.detail);
+      setWorkouts(refreshed.workouts);
+      setCursorT(null);
+      setRepairMessage('Repaired: canonical ride details and analytics were reloaded.');
     } catch {
-      setRepairMessage('Repair failed — the local API may be unreachable.');
+      setRepairMessage('Repair or canonical reload failed — the local API may be unreachable.');
     } finally {
       setRepairing(false);
     }
+  };
+
+  const exportRide = () => {
+    if (!detail) return;
+    downloadRideExport(detail, {
+      redactRouteEndpoints,
+      routeRedactionRadiusM,
+    });
+    setConfirmingExport(false);
   };
 
   const series = useMemo(() => {
@@ -88,21 +129,47 @@ export function RideDetail() {
     const speedPts: Pt[] = [];
     for (let i = 1; i < dist.length; i++) {
       const dtS = (dist[i]!.t - dist[i - 1]!.t) / 1000;
-      if (dtS > 0 && dtS < 600) speedPts.push({ t: dist[i]!.t, v: (dist[i]!.value / dtS) * 3.6 });
+      if (dtS > 0 && dtS < 600) {
+        speedPts.push({
+          t: dist[i]!.t,
+          v: speedChartValue(dist[i]!.value / dtS, displayUnits),
+        });
+      }
     }
     return {
       hr: toPts(detail.metrics.heart_rate),
       cadence: toPts(detail.metrics.cadence),
       speed: speedPts,
     };
-  }, [detail]);
+  }, [detail, displayUnits]);
+
+  const comparison = useMemo(
+    () => selectRideComparison(workouts, Number(id), comparisonChoice),
+    [comparisonChoice, id, workouts],
+  );
+  const comparisonRideOptions = useMemo(
+    () =>
+      workouts
+        .filter((workout) => workout.id !== Number(id))
+        .sort((left, right) => right.startUtc - left.startUtc || right.id - left.id),
+    [id, workouts],
+  );
+  const hasPreviousRide = useMemo(
+    () => priorWorkouts(workouts, Number(id)).length > 0,
+    [id, workouts],
+  );
 
   if (error) return <EmptyState title="Ride not found." />;
   if (!detail || !series) return <p className="muted">Loading…</p>;
 
   const a = detail.analytics;
   const w = detail.workout;
-  const kmSplits = (a?.splits ?? []).filter((s) => s.kind === 'km');
+  const distanceSplits = (a?.splits ?? []).filter((s) => s.kind === 'km');
+  const rideDistance = formatDistance(a?.distanceM, displayUnits);
+  const averageSpeed = formatSpeed(a?.avgSpeedMs, displayUnits);
+  const maximumSpeed = formatSpeed(a?.maxSpeedMs, displayUnits);
+  const elevationGain = formatElevation(a?.elevation.gainM, displayUnits);
+  const elevationLoss = formatElevation(a?.elevation.lossM, displayUnits);
 
   return (
     <div className="stack">
@@ -116,6 +183,9 @@ export function RideDetail() {
           </div>
         </div>
         <div className="row">
+          <button className="btn" onClick={() => setConfirmingExport(true)}>
+            Export ride
+          </button>
           <button className="btn" onClick={repairRide} disabled={repairing}>
             {repairing ? 'Repairing…' : 'Repair ride'}
           </button>
@@ -145,8 +215,8 @@ export function RideDetail() {
           body={
             <>
               <p style={{ margin: 0 }}>
-                This permanently removes this ride from {fmtDate(w.startUtc)} — its metric samples,
-                route, and analytics — from your local database.
+                This permanently removes this ride from {fmtDate(w.startUtc, timeZone)} — its metric
+                samples, route, and analytics — from your local database.
               </p>
               <p style={{ margin: '8px 0 0', fontWeight: 600 }}>
                 This is irreversible unless you have a backup.
@@ -156,16 +226,76 @@ export function RideDetail() {
         />
       )}
 
+      {confirmingExport && (
+        <ConfirmDialog
+          title="Export this ride?"
+          confirmLabel="Download JSON"
+          onCancel={() => setConfirmingExport(false)}
+          onConfirm={exportRide}
+          body={
+            <div className="stack" style={{ gap: 10 }}>
+              <p style={{ margin: 0 }}>
+                The export contains canonical ride samples, analytics, and route coordinates. Source
+                and device metadata are excluded.
+              </p>
+              <label className="row" style={{ alignItems: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={redactRouteEndpoints}
+                  onChange={(event) => setRedactRouteEndpoints(event.target.checked)}
+                />
+                Redact route start and finish
+              </label>
+              <label>
+                <span className="muted">Redaction radius (metres)</span>
+                <input
+                  aria-label="Route redaction radius in metres"
+                  type="number"
+                  min={MIN_ROUTE_REDACTION_RADIUS_M}
+                  max={MAX_ROUTE_REDACTION_RADIUS_M}
+                  step={50}
+                  value={routeRedactionRadiusM}
+                  disabled={!redactRouteEndpoints}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (Number.isFinite(value)) {
+                      setRouteRedactionRadiusM(
+                        Math.min(
+                          MAX_ROUTE_REDACTION_RADIUS_M,
+                          Math.max(MIN_ROUTE_REDACTION_RADIUS_M, value),
+                        ),
+                      );
+                    }
+                  }}
+                  style={{ display: 'block', width: '100%', marginTop: 4 }}
+                />
+              </label>
+              {!redactRouteEndpoints && (
+                <p className="badge warn" style={{ margin: 0 }}>
+                  Exact route endpoints will be included. They may reveal a home or another private
+                  location.
+                </p>
+              )}
+            </div>
+          }
+        />
+      )}
+
       <div className="kpi-grid">
-        <Kpi label="Distance" value={fmtKm(a?.distanceM)} unit="km" />
+        <Kpi label="Distance" value={rideDistance.value} unit={rideDistance.unit} />
         <Kpi label="Moving time" value={fmtDuration(a?.movingTimeS ?? null)} />
         <Kpi
           label="Elevation gain"
-          value={fmtInt(a?.elevation.gainM)}
-          unit="m"
+          value={elevationGain.value}
+          unit={elevationGain.unit}
           color={CH.elevation}
         />
-        <Kpi label="Avg speed" value={fmtSpeedKmh(a?.avgSpeedMs)} unit="km/h" color={CH.speed} />
+        <Kpi
+          label="Avg speed"
+          value={averageSpeed.value}
+          unit={averageSpeed.unit}
+          color={CH.speed}
+        />
         <Kpi label="Avg HR" value={fmtInt(a?.heartRate.avg)} unit="bpm" color={CH.hr} />
         <Kpi label="Avg cadence" value={fmtInt(a?.cadence.avg)} unit="rpm" color={CH.cadence} />
         <Kpi label="Energy" value={fmtInt(a?.energyKj)} unit="kJ" color={CH.power} />
@@ -173,11 +303,12 @@ export function RideDetail() {
 
       <div className="two-col">
         <div className="card">
-          <div className="chart-tile-head">
-            <h2 className="card-title">Offline route map</h2>
-            <span className="badge">Local geometry · no remote tiles</span>
-          </div>
-          <RoutePanel segments={detail.route} cursorT={cursorT} />
+          <h2 className="card-title">Interactive offline route map</h2>
+          <InteractiveRouteMap
+            segments={detail.route}
+            cursorT={cursorT}
+            displayUnits={displayUnits}
+          />
         </div>
         <div className="stack">
           <div className="card">
@@ -187,9 +318,9 @@ export function RideDetail() {
                 {[
                   ['Duration', fmtDuration(a?.durationS ?? null)],
                   ['Moving time', fmtDuration(a?.movingTimeS ?? null)],
-                  ['Max speed', `${fmtSpeedKmh(a?.maxSpeedMs)} km/h`],
+                  ['Max speed', `${maximumSpeed.value} ${maximumSpeed.unit}`],
                   ['Max HR', `${fmtInt(a?.heartRate.max)} bpm`],
-                  ['Elevation loss', `${fmtInt(a?.elevation.lossM)} m`],
+                  ['Elevation loss', `${elevationLoss.value} ${elevationLoss.unit}`],
                   ['Efficiency', a?.efficiency != null ? a.efficiency.toFixed(3) : 'n/a'],
                   [
                     'HR drift (decoupling)',
@@ -208,37 +339,72 @@ export function RideDetail() {
               </tbody>
             </table>
           </div>
-          {previous && (
+          {comparisonRideOptions.length > 0 && (
             <div className="card">
-              <h2 className="card-title">vs previous ride</h2>
-              <table className="data">
-                <tbody>
-                  <tr>
-                    <td className="muted">Distance</td>
-                    <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                      {fmtKm(a?.distanceM)} km{' '}
-                      <Delta now={a?.distanceM} prev={previous.distanceM} />
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="muted">Avg speed</td>
-                    <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                      {fmtSpeedKmh(a?.avgSpeedMs)} km/h{' '}
-                      <Delta now={a?.avgSpeedMs} prev={previous.avgSpeedMs} />
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="muted">Avg HR</td>
-                    <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                      {fmtInt(a?.heartRate.avg)} bpm{' '}
-                      <Delta now={a?.heartRate.avg} prev={previous.avgHr} invert />
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-              <p className="muted" style={{ fontSize: 11, margin: '8px 0 0' }}>
-                Compared with {fmtDate(previous.startUtc, timeZone)}
-              </p>
+              <h2 className="card-title">Ride comparison</h2>
+              <label>
+                <span className="field-label">Compare with</span>
+                <select
+                  aria-label="Compare ride with"
+                  value={comparisonChoice}
+                  onChange={(event) =>
+                    setComparisonChoice(event.target.value as RideComparisonChoice)
+                  }
+                  style={{ width: '100%', marginBottom: 8 }}
+                >
+                  <option value="previous" disabled={!hasPreviousRide}>
+                    Previous ride
+                  </option>
+                  <option value="recent_median" disabled={!hasPreviousRide}>
+                    Recent median (up to 5 prior rides)
+                  </option>
+                  {comparisonRideOptions.map((ride) => (
+                    <option key={ride.id} value={`ride:${ride.id}`}>
+                      Ride on {fmtDate(ride.startUtc, timeZone)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {comparison ? (
+                <>
+                  <table className="data">
+                    <tbody>
+                      <tr>
+                        <td className="muted">Distance</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                          {rideDistance.value} {rideDistance.unit}{' '}
+                          <Delta now={a?.distanceM} prev={comparison.distanceM} />
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="muted">Avg speed</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                          {averageSpeed.value} {averageSpeed.unit}{' '}
+                          <Delta now={a?.avgSpeedMs} prev={comparison.avgSpeedMs} />
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="muted">Avg HR</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                          {fmtInt(a?.heartRate.avg)} bpm{' '}
+                          <Delta now={a?.heartRate.avg} prev={comparison.avgHr} invert />
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p className="muted" style={{ fontSize: 11, margin: '8px 0 0' }}>
+                    {comparison.kind === 'ride' && comparison.ride
+                      ? `Compared with ${fmtDate(comparison.ride.startUtc, timeZone)}`
+                      : `Recent window of ${comparison.windowSize} prior rides · median coverage distance ${comparison.sampleSizes.distanceM}/${comparison.windowSize}, speed ${comparison.sampleSizes.avgSpeedMs}/${comparison.windowSize}, HR ${comparison.sampleSizes.avgHr}/${comparison.windowSize}`}{' '}
+                    · source data quality {comparison.qualityStates.join(', ').replaceAll('_', ' ')}
+                    {' · '}formula {a?.formulaVersion ?? 'unavailable'}
+                  </p>
+                </>
+              ) : (
+                <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                  No prior ride is available. Choose a specific ride above.
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -260,7 +426,7 @@ export function RideDetail() {
           title="Speed"
           points={series.speed}
           color={CH.speed}
-          unit="km/h"
+          unit={displayUnits === 'imperial' ? 'mph' : 'km/h'}
           format={(v) => v.toFixed(1)}
           tMin={w.startUtc}
           tMax={w.endUtc}
@@ -282,13 +448,19 @@ export function RideDetail() {
           <div className="chart-tile-head">
             <span className="chart-tile-title">Elevation</span>
             <span className="chart-tile-value" style={{ color: CH.elevation }}>
-              {fmtInt(a?.elevation.gainM)}{' '}
+              {elevationGain.value}{' '}
               <span className="muted" style={{ fontWeight: 500 }}>
-                m gain
+                {elevationGain.unit} gain
               </span>
             </span>
           </div>
-          <ElevationProfile segments={detail.route} cursorT={cursorT} height={90} />
+          <ElevationProfile
+            segments={detail.route}
+            cursorT={cursorT}
+            tMin={w.startUtc}
+            tMax={w.endUtc}
+            height={90}
+          />
         </div>
       </div>
 
@@ -304,31 +476,42 @@ export function RideDetail() {
         )}
       </div>
 
-      {kmSplits.length > 0 && (
+      {distanceSplits.length > 0 && (
         <div className="card">
-          <h2 className="card-title">Splits (1 km)</h2>
+          <h2 className="card-title">Distance splits</h2>
+          <p className="muted" style={{ marginTop: 0, fontSize: 11 }}>
+            Analytics use canonical 1,000 m intervals; distances follow your display units.
+          </p>
           <table className="data">
             <thead>
               <tr>
-                <th>km</th>
+                <th>Split</th>
+                <th>Distance</th>
                 <th>Time</th>
                 <th>Speed</th>
                 <th>Avg HR</th>
               </tr>
             </thead>
             <tbody>
-              {kmSplits.map((s) => (
-                <tr key={s.index}>
-                  <td>{s.index}</td>
-                  <td>{fmtDuration(s.durationS)}</td>
-                  <td>
-                    {fmtSpeedKmh(s.avgSpeedMs)} <span className="muted">km/h</span>
-                  </td>
-                  <td style={{ color: CH.hr }}>
-                    {fmtInt(s.avgHr)} <span className="muted">bpm</span>
-                  </td>
-                </tr>
-              ))}
+              {distanceSplits.map((s) => {
+                const distance = formatDistance(s.distanceM, displayUnits);
+                const speed = formatSpeed(s.avgSpeedMs, displayUnits);
+                return (
+                  <tr key={s.index}>
+                    <td>{s.index}</td>
+                    <td>
+                      {distance.value} <span className="muted">{distance.unit}</span>
+                    </td>
+                    <td>{fmtDuration(s.durationS)}</td>
+                    <td>
+                      {speed.value} <span className="muted">{speed.unit}</span>
+                    </td>
+                    <td style={{ color: CH.hr }}>
+                      {fmtInt(s.avgHr)} <span className="muted">bpm</span>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

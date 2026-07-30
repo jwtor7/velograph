@@ -1,4 +1,4 @@
-import { NavLink, Route, Routes } from 'react-router-dom';
+import { NavLink, Route, Routes } from './router.tsx';
 import { Library } from './pages/Library.tsx';
 import { RideDetail } from './pages/RideDetail.tsx';
 import { ImportPage } from './pages/Import.tsx';
@@ -26,6 +26,7 @@ export function App() {
             key={n.to}
             to={n.to}
             end={n.to === '/'}
+            aria-label={n.label}
             className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
           >
             {n.icon}

@@ -1,0 +1,701 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "id": "@fontsource/inter@5.3.0",
+      "moduleCount": 5
+    },
+    {
+      "id": "@velograph/shared@0.1.0",
+      "moduleCount": 1
+    },
+    {
+      "id": "@velograph/web@0.1.0",
+      "moduleCount": 26
+    },
+    {
+      "id": "leaflet@1.9.4",
+      "moduleCount": 4
+    },
+    {
+      "id": "react-dom@19.2.8",
+      "moduleCount": 9
+    },
+    {
+      "id": "react@19.2.8",
+      "moduleCount": 10
+    },
+    {
+      "id": "scheduler@0.27.0",
+      "moduleCount": 4
+    }
+  ],
+  "injectedModules": [
+    "vite-modulepreload-polyfill"
+  ],
+  "files": [
+    {
+      "file": "assets/index-BfOX0-r1.js",
+      "sha256": "05e6ec9faa331e3be09537c29c34336b7d0c7485a78c3d84930f0da3b68cd1af",
+      "bytes": 430151,
+      "generatedBy": "rollup-chunk",
+      "packages": [
+        "@fontsource/inter@5.3.0",
+        "@velograph/shared@0.1.0",
+        "@velograph/web@0.1.0",
+        "leaflet@1.9.4",
+        "react-dom@19.2.8",
+        "react@19.2.8",
+        "scheduler@0.27.0"
+      ]
+    },
+    {
+      "file": "assets/index-CaET0xc1.css",
+      "sha256": "8643f7c045e63fa530b271ea8e4d4e881a033346e75f82ebee24c53d7e3071c6",
+      "bytes": 37712,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@velograph/web@0.1.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-400-normal-HOLc17fK.woff",
+      "sha256": "6e441a6c94788318fa02b6d0a633aa29eebe27b69c6567eb1e59b4edc68ed70e",
+      "bytes": 9780,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-400-normal-obahsSVq.woff2",
+      "sha256": "f0bb586459ce8f09b238285040f17e3e9e9538b2c5a7aae0775194e33c36c3c3",
+      "bytes": 7712,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-500-normal-BasfLYem.woff2",
+      "sha256": "b77a86ec16aadc157f4a99e8898d71cd75ea264753d9bdf13f962f8c3988cbb0",
+      "bytes": 7900,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-500-normal-CxZf_p3X.woff",
+      "sha256": "5be18e0345781cb882a267798518553c0e915174fc70731ab5f085ca64ba1ebc",
+      "bytes": 9940,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-600-normal-4D_pXhcN.woff",
+      "sha256": "cc190ed1b64eb650a4ad7e97c7a668cb8b34acd9c4c7f7bf4372c0cbacd35795",
+      "bytes": 9936,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-600-normal-CWCymEST.woff2",
+      "sha256": "6c2a37f82a676bcd441b735e4e2cda4edb8873a059ab9c362a84f0711f257041",
+      "bytes": 7972,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-700-normal-CjBOestx.woff2",
+      "sha256": "5917871d3cc970d8ce195101cbf65c1f68ec948022eb6070030342bb7edfb3bb",
+      "bytes": 7904,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-700-normal-DrXBdSj3.woff",
+      "sha256": "72b6daa49173e531027d8a260ef128e142a165811cab6a2875eefe0c3c58fa0e",
+      "bytes": 9912,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-800-italic-AnDrbMMD.woff2",
+      "sha256": "4bae80d27c200ccf98f31ef0770e0f553404f9439858b847bf11502a6ad75242",
+      "bytes": 8436,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-800-italic-Cm6frmE7.woff",
+      "sha256": "c80d68d1c70ff50132c4bea660a1f1f154104078a6999e07d92fb5fac2567ce6",
+      "bytes": 10604,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-ext-400-normal-BQZuk6qB.woff2",
+      "sha256": "ef572f9187a8be018d9d9c2c6b77c1f6cb2af4199f02fc16c292ea10ab25a2cc",
+      "bytes": 10232,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-ext-400-normal-DQukG94-.woff",
+      "sha256": "5cb2f1cc0936f89a42ceae34f5a5720248dc5b8114c12b1c33a7d2ef01a9b6b9",
+      "bytes": 13336,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-ext-500-normal-B0yAr1jD.woff2",
+      "sha256": "1c2db92d3cd9b237ca7c9c07af556d542f28ded1db54cd4382cf776501c5291f",
+      "bytes": 10432,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-ext-500-normal-BmqWE9Dz.woff",
+      "sha256": "e250c05aebcf49971e0b25f476992dd463c28c0292ebb204d9db542fb5066ca7",
+      "bytes": 13452,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-ext-600-normal-Bcila6Z-.woff",
+      "sha256": "a5073285409443f4653c858de58c5dc0bfc2fd33e60d8747388345e7c5ab1ab3",
+      "bytes": 13464,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-ext-600-normal-Dfes3d0z.woff2",
+      "sha256": "509fca9c59564f9a846fa69bc647f9b050fc11abf1c9f6f3da71fb2d5ed425bd",
+      "bytes": 10484,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-ext-700-normal-BjwYoWNd.woff2",
+      "sha256": "a46b99781170971e2c99a87ff7ee9f5cf90a9dfcd18175e1be6300201d030123",
+      "bytes": 10496,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-ext-700-normal-LO58E6JB.woff",
+      "sha256": "0f3d4be2bd7018f78fa3484a5f6e9d8ce567689426643b84a47e8cabb91e5f16",
+      "bytes": 13408,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-ext-800-italic-BglixrpZ.woff",
+      "sha256": "9d10bd223dcd51e2615e840f329e560f3b238dd6fed11650ee19c1219ae63b48",
+      "bytes": 14336,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-cyrillic-ext-800-italic-DRmT-sl9.woff2",
+      "sha256": "d8ace6f0e99e8d660b463553df8263d0d3d7037b92d4d945044e5b6530561632",
+      "bytes": 11140,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-400-normal-B4URO6DV.woff2",
+      "sha256": "c15ddd00a9927b56f5c655a41f976f79bd848a20cce91fc14227751872a1cc27",
+      "bytes": 7776,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-400-normal-q2sYcFCs.woff",
+      "sha256": "bdae9d28729e8c68587d5d54e216d771a40d7a6800e824586a6e2f570c2f10df",
+      "bytes": 9924,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-500-normal-BIZE56-Y.woff2",
+      "sha256": "cc197d79d33a3615a047baae85f4d1957f6f98b8898313658e160b1d519b1b6f",
+      "bytes": 7920,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-500-normal-Xzm54t5V.woff",
+      "sha256": "86d55a4b1b9cbced7e61e76d5d44cf49d0bd1c814d3df2de67b7136ab4fdcece",
+      "bytes": 9980,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-600-normal-BZpKdvQh.woff",
+      "sha256": "090b24e22fc4ddf41450d13bdec81c8a74808b9fc7edaf8df06c909b177a8992",
+      "bytes": 10032,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-600-normal-plRanbMR.woff2",
+      "sha256": "9c5a897f9d9fcfe60d90631d766ae62b4bf1edd76633fa7a4b2f8c87e036789b",
+      "bytes": 7944,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-700-normal-BUv2fZ6O.woff",
+      "sha256": "53368f53d5fc43381dcc45c8533ba2476f80337136313525f96dcbdc736616a5",
+      "bytes": 9980,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-700-normal-C3JjAnD8.woff2",
+      "sha256": "737c6c91cd60372d30e6540096ada83c89c9b4613cd7472e3366bf2e07ad99f1",
+      "bytes": 7920,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-800-italic-CAz9iQdo.woff",
+      "sha256": "525ef70f561cb0a278ac228f7af363629e3e63395b1457bca893817b2960d74e",
+      "bytes": 10720,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-800-italic-xnQm2hpU.woff2",
+      "sha256": "75b0d5e45ca73e16b6945ebabc507f017415f39b7fe8cc81dfa92322e3e03e6e",
+      "bytes": 8636,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-ext-400-normal-DGGRlc-M.woff2",
+      "sha256": "eadedd9e13c2582430a9fb1519eb86152fdabb483a6f66d90f8d8a52e977a1b7",
+      "bytes": 5264,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-ext-400-normal-KugGGMne.woff",
+      "sha256": "4f2b6f92ddfece8812e79774d446218aa6e0773ff8c2d31130fe2bdc23bd22d0",
+      "bytes": 7064,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-ext-500-normal-2j5mBUwD.woff",
+      "sha256": "c85d11bde719108cc9a4f6f5b008087f6c36493b47395580d4f5336182b0f0c7",
+      "bytes": 7192,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-ext-500-normal-C4iEst2y.woff2",
+      "sha256": "75a9ec9383a3b7a7bf7cfb94f64edf38d9cfdc5f7ffa0cbed2733627a6e4426d",
+      "bytes": 5428,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-ext-600-normal-B8X0CLgF.woff",
+      "sha256": "efc7aa9cce5c505dd8cc4c4daf00247fa805f37bcda96079239ba3358ab27dfb",
+      "bytes": 7212,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-ext-600-normal-DRtmH8MT.woff2",
+      "sha256": "399f94d75aa73403e40e2353e8c0cc75c38f7362a6ca263b3b02d9723157ffe5",
+      "bytes": 5432,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-ext-700-normal-BoQ6DsYi.woff",
+      "sha256": "b26ed64c9135a750ad580b92152bedeef90771e74e18f6f7759a6d7adb0f1b5d",
+      "bytes": 7216,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-ext-700-normal-qfdV9bQt.woff2",
+      "sha256": "b7b2732ebc981b30a5463ffc850407649dba41e625aee124cc63293da4547629",
+      "bytes": 5444,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-ext-800-italic-BfCZ4YUI.woff2",
+      "sha256": "7e83d6e11833de789b88930de421a0e0f419a01c57624f1312c0d745cd3473f0",
+      "bytes": 5728,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-greek-ext-800-italic-BL-p0pxG.woff",
+      "sha256": "a01e52ff8a7b4182de880c619b99748e332c5782d65a9bc5f9047a674c69ac17",
+      "bytes": 7604,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-400-normal-C38fXH4l.woff2",
+      "sha256": "8909904ab6c872eb994093482a88a28eca2cd95912d7b6fecd72103b0dc07edc",
+      "bytes": 23664,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-400-normal-CyCys3Eg.woff",
+      "sha256": "e20fa0b4fd2dd26e4d14b3ac3cc922509c3a63fa5e910e90c614544aa042dd45",
+      "bytes": 30696,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-500-normal-BL9OpVg8.woff",
+      "sha256": "9b42c108da48b5ed55a3072e815ffee2d271562e6c0dd6998910e8f9c09e0a3d",
+      "bytes": 31284,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-500-normal-Cerq10X2.woff2",
+      "sha256": "f3779f1efccc4bdcdf9c0a02ab95bf6bd092ed09c48c08cedc725889edd1d19f",
+      "bytes": 24272,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-600-normal-CiBQ2DWP.woff",
+      "sha256": "6a9cb3a509b4eeaf12b7dda6c4aacac3e85d07f4201bf4dd716e332e692b87bd",
+      "bytes": 31260,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-600-normal-LgqL8muc.woff2",
+      "sha256": "f9a06e79cd3a2a20951c0f0e28f66dd0e6d3fda73911d640a2125c8fcb78f21a",
+      "bytes": 24452,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-700-normal-BLAVimhd.woff",
+      "sha256": "7c5ed5655730de337704d3fc94628515cd7e3d8d32368871709bf56ac0397e7a",
+      "bytes": 31320,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-700-normal-Yt3aPRUw.woff2",
+      "sha256": "6f56409fd3d64bb85f7d070bce20749db2d66b6d63cec586cc22d1c761be2491",
+      "bytes": 24356,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-800-italic-ChYulYeS.woff2",
+      "sha256": "fe4520b77c9ad201f3a7ec11133713097e265f277bece602f21573bcd9c00428",
+      "bytes": 25924,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-800-italic-CpiF405c.woff",
+      "sha256": "cb354c1ffc9873b1bba8971c6212ac81f2578e7ce9f5134f66a7c1935e952fa9",
+      "bytes": 33096,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-ext-400-normal-77YHD8bZ.woff",
+      "sha256": "22ae8360fbad24d2af7c6c9898a346c881774dc87f7cf94bd262c48ad58d7116",
+      "bytes": 47560,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-ext-400-normal-C1nco2VV.woff2",
+      "sha256": "6744a7f509ebc6ab220a6cd4ea77e898adf014f03d88dcda5d45d8a9feefb4e9",
+      "bytes": 35000,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-ext-500-normal-BxGbmqWO.woff",
+      "sha256": "30d2903ce97f8a89ea0e9c083b42cb8bf97e7bbb5607e7f00352815f19cb0d5b",
+      "bytes": 48492,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-ext-500-normal-CV4jyFjo.woff2",
+      "sha256": "2c6fbc42d315528beb06c1096df45487bf4186c4b78b8111d12c9c951f8acca2",
+      "bytes": 36024,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-ext-600-normal-CIVaiw4L.woff",
+      "sha256": "22ff20a6170674fb9637c2a072227be86303bb6ec52b829b9d7077405f7196a6",
+      "bytes": 48668,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-ext-600-normal-D2bJ5OIk.woff2",
+      "sha256": "e4bdf67b0cd15ca9e184509275be95db942195d3cc2b17f6a0452f2adf75d0bf",
+      "bytes": 36260,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-ext-700-normal-Ca8adRJv.woff2",
+      "sha256": "143f9504f1377012aa3e39c90c4354ef429cb0494b9ac0e1437f1a81e5412236",
+      "bytes": 36244,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-ext-700-normal-TidjK2hL.woff",
+      "sha256": "1761edba32014180deab3dbbe3f7156c64ef6f34bc76313ba31ce227fc9ff391",
+      "bytes": 48632,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-ext-800-italic-BszKrP_S.woff",
+      "sha256": "cd84b59b30e6d0c10102324807fc748ecd1a48fa7a32658868f76b2e0c8685aa",
+      "bytes": 52524,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-latin-ext-800-italic-CaXKTVTG.woff2",
+      "sha256": "f23d7bf28d678b34c3738cf59a42c6c35ca55cec2cafad9c7234986b4fd6088b",
+      "bytes": 39056,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-vietnamese-400-normal-Bbgyi5SW.woff",
+      "sha256": "54aa42d325bcdfd623ecb9eac4a5e3c6420c63d7b86e9d8545fb479f653beb57",
+      "bytes": 6500,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-vietnamese-400-normal-DMkecbls.woff2",
+      "sha256": "547ad9fdaeb0ae43487f4b8a02e47c36553c0c0cb73c8aa98f93b7b615f6b55d",
+      "bytes": 4972,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-vietnamese-500-normal-DOriooB6.woff2",
+      "sha256": "44e36aa5a8f12130029a29bb0e6695d0262b67446ce321e878b1fb56162b5de6",
+      "bytes": 5112,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-vietnamese-500-normal-mJboJaSs.woff",
+      "sha256": "18a4a09f751671cd8929d7c66e8fe7d820b511c36e51cf6047ffceab88eec4a4",
+      "bytes": 6596,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-vietnamese-600-normal-BuLX-rYi.woff",
+      "sha256": "24a01e7bd947aeef91ae8f7b8edeb23fadaf5ceda34a610ce62d2bbdaea57e83",
+      "bytes": 6640,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-vietnamese-600-normal-Cc8MFFhd.woff2",
+      "sha256": "1aeb94ae9db052a4a2fe6f3046f928cff1fdbd7abdf870a9a01c13cae6faeba5",
+      "bytes": 5100,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-vietnamese-700-normal-BZaoP0fm.woff",
+      "sha256": "412023ab2f41333b373e2c6eb2a3ebab806fddd610015d2ae8cd4f4314c7ba92",
+      "bytes": 6632,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-vietnamese-700-normal-DlLaEgI2.woff2",
+      "sha256": "5fafa3829a16d9ea5ac3a67c51e54186353122790b604a3e361f96cab188da8b",
+      "bytes": 5104,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-vietnamese-800-italic-CVzwPYwc.woff2",
+      "sha256": "176d31bd8efc9f27f56a7bdefec5a7076d0750778be70de627d69d0c508606f7",
+      "bytes": 5324,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "assets/inter-vietnamese-800-italic-icjhgzPi.woff",
+      "sha256": "42e796df2ff343c395df52809971f9c995532eea6e1f24bf1a0017dc9470aa15",
+      "bytes": 6836,
+      "generatedBy": "rollup-asset",
+      "packages": [
+        "@fontsource/inter@5.3.0"
+      ]
+    },
+    {
+      "file": "index.html",
+      "sha256": "2082be3c027585f8aedbbaa2d2ae80354efdb66f05c3d7e2805a1f535cd6e0c3",
+      "bytes": 442,
+      "generatedBy": "vite-html-entry",
+      "packages": [
+        "@velograph/web@0.1.0"
+      ]
+    }
+  ]
+}

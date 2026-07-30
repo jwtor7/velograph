@@ -26,7 +26,8 @@ export interface MetricSample {
 }
 
 export interface RoutePoint {
-  t: number;
+  /** Absolute instant when recorded; some GPX points legitimately omit it. */
+  t: number | null;
   lat: number;
   lon: number;
   /** Elevation in metres, when recorded. */
@@ -71,20 +72,31 @@ export type ParsedFile = ParsedMetricFile | ParsedRouteFile;
 export type QuarantineCode =
   | 'unsupported_file_type'
   | 'unrecognized_headers'
+  | 'metric_kind_mismatch'
+  | 'unit_unsupported'
   | 'empty_file'
   | 'malformed_csv'
+  | 'csv_limits_exceeded'
   | 'malformed_xml'
   | 'xml_doctype_rejected'
   | 'gpx_limits_exceeded'
   | 'no_valid_samples'
   | 'timestamps_invalid'
+  | 'numeric_value_invalid'
+  | 'association_conflict'
+  | 'association_ambiguous'
   | 'zip_entry_rejected'
   | 'zip_limits_exceeded'
   | 'io_error';
 
+/** Normal, value-free reasons why a well-formed export file is not imported. */
+export type ImportSkipCode = 'unmodelled_metric' | 'non_cycling_workout';
+
 export interface ImportCounts {
   imported: number;
   skippedDuplicates: number;
+  skipped: number;
+  skippedByCode: Record<ImportSkipCode, number>;
   quarantined: number;
   workoutsCreated: number;
   workoutsUpdated: number;

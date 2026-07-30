@@ -14,6 +14,9 @@ PRD requirement IDs:
 
 ## Dependency and licence impact
 
+Contribution-licensing status (core-code owner/authorized agent, trivial correction, or
+signed CLA on file):
+
 ## Migration / rollback notes
 
 _N/A unless the change touches the database schema._
@@ -23,3 +26,4 @@ _N/A unless the change touches the database schema._
 ## Attestation
 
 - [ ] **This change contains no real health, location, account, credential, or user data.**
+- [ ] **The contribution-licensing status above is accurate; no required CLA information or personal data is included publicly.**
